@@ -238,11 +238,11 @@ CareerCrew/
 │   ├── run_cli.py                       # CLI 启动
 │   └── start_dashboard.py               # Dashboard 启动
 │
-├── pyproject.toml                       # 依赖：langgraph / pymilvus / sentence-transformers / FlagEmbedding
+├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest
 └── README.md
 ```
 
-> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `pymilvus`(milvus-lite) / `sentence-transformers` / `FlagEmbedding`(BGE-M3 + bge-reranker-v2)。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线（chunking/embedding/retrieval/rerank/vector_store）全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
+> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI) / `pymilvus`(milvus-lite) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
 
 ### 5.3 模块职责表
 
@@ -387,7 +387,7 @@ agent 调 rag_query 工具
       ▼
 自建 HybridSearch
   ├─ Dense (Embedding) ──┐
-  ├─ Sparse (BM25)    ──┤──> RRF 融合 ──> Rerank ──> Top-K
+  ├─ Sparse (BGE-M3)    ──┤──> RRF 融合 ──> Rerank ──> Top-K
   └─ 向量库: Milvus (careercrew_kb) ──┘
       │
       ▼

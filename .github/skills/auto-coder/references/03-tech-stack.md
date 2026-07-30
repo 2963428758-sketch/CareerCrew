@@ -229,14 +229,14 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 | 环节 | 选型 | 实现位置 | 说明 |
 |------|------|---------|------|
 | Chunking | RecursiveCharacterTextSplitter + **Contextual Chunking** | `careercrew_core/rag/chunking/` | Markdown 感知切分；每块调 LLM 生成 50-100 token 上下文前置再索引（Anthropic Contextual Retrieval，减 49% 检索失败） |
-| Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 sentence-transformers；稀疏路免额外 BM25 索引 |
+| Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 FlagEmbedding；稀疏路免额外 BM25 索引 |
 | 检索 | Hybrid（BGE-M3 dense + sparse）+ RRF 融合 | `careercrew_core/rag/retrieval/` | 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索 |
 | Rerank | **硅基流动 rerank API**（bge-reranker-v2-m3） | `careercrew_ai/reranker/` | cross-encoder 中文重排，低频走 API；可关（None）回退 |
 | 向量库 | Milvus Lite + Chroma 兜底 | `careercrew_ai/vector_store/` | 见 3.5 |
 
 #### 3.7.2 设计亮点
 - **BGE-M3 三合一 > 分离的 BM25+Embedding**：一次前向同时得 dense/sparse/colbert，稀疏路无需维护倒排索引，与 Milvus 原生混合检索直接对接。
-- **Contextual Chunking**：ingestion 阶段用 LLM 给每块生成文档级上下文前置，解决"块脱离上下文难检索"问题；用 prompt caching 控成本。
+- **Contextual Chunking**：ingestion 阶段用 LLM 给每块生成文档级上下文前置，解决"块脱离上下文难检索"问题；可用 prompt caching 控成本（若 provider 支持）。
 - **可插拔**：Embedding/Rerank/VectorStore 均为 `Base*` 抽象 + 工厂，配置切换（如换 OpenAI embedding、Cohere rerank）零代码。
 
 #### 3.7.3 知识库 Ingestion
@@ -355,7 +355,7 @@ HITL 确认投递 (apply) ── interrupt
 
 | 层 | 包名 | 职责 |
 |----|------|------|
-| AI 层 | `careercrew_ai` | 自建 `llm_factory`/embedding(BGE-M3)/rerank/vector_store；手写 ReAct 内核；agent prompts |
+| AI 层 | `careercrew_ai` | LLM 适配(init_chat_model)/embedding(BGE-M3)/reranker/vector_store；手写 ReAct 内核；agent prompts |
 | 核心层 | `careercrew_core` | LangGraph supervisor + 5 agent 节点 + 记忆 + 工具注册表 + state |
 | 产品层 | `careercrew_cli` | 求职周期工作流编排 + HITL 闸门 + CLI 入口 |
 | UI 层 | `careercrew_ui` | CLI 渲染 + Streamlit Dashboard |

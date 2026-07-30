@@ -1,7 +1,7 @@
 <!-- CareerCrew DEV_SPEC 初稿。基于 prompts/gen_dev_spec.md (v3) 生成，结构参照主流 DEV_SPEC 模板。 -->
 # Developer Specification (DEV_SPEC)
 
-> 版本：0.1 - 初稿（MVP 核心 + 高级方向分层）
+> 版本：0.2 - 初稿（自建 RAG + 硅基流动 + conda env）
 
 ## 目录
 
@@ -37,7 +37,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - 自建 RAG（BGE-M3 三合一 + Contextual Chunking + bge-reranker）
 
 #### 2️⃣ 开箱即用与深度扩展并重 (Plug-and-Play & Extensible)
-- **开箱即用**：CLI 优先，本地零外部服务（Milvus Lite 嵌入式），`pip install` 即可跑通求职闭环。
+- **开箱即用**：CLI 优先，本地服务零依赖（Milvus Lite 嵌入式），LLM/Rerank 走硅基流动 API，`pip install` 即可跑通求职闭环。
 - **深度扩展**：MVP 跑通主流程后，高级方向（Hermes 完整记忆 / Loop Engineering / 轨迹级评估 / 自建 MCP）提供清晰升级路径。
 - **分层标注**：spec 中每项技术明确标注【MVP 核心】或【高级方向】，避免"把高级内容当必做"。
 
@@ -82,7 +82,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 **append-only 树的红利**：会话是只增不改的树，任何历史轨迹可完整回放——这是轨迹级评估（黄金轨迹回放）的基础。
 
 ### 自建 RAG 流水线（最新技术）
-- **Embedding：BGE-M3 三合一**：一个模型同时输出 dense + sparse + ColBERT 多向量，中文 100+ 语言，8192 token，MIT 许可，本地 sentence-transformers 可跑--比"分离的 BM25 + 单独 embedding"更优雅，稀疏路免额外倒排索引。
+- **Embedding：BGE-M3 三合一**：一个模型同时输出 dense + sparse + ColBERT 多向量，中文 100+ 语言，8192 token，MIT 许可，本地 FlagEmbedding 可跑--比"分离的 BM25 + 单独 embedding"更优雅，稀疏路免额外倒排索引。
 - **Chunking：RecursiveCharacterTextSplitter + Contextual Chunking**：Markdown 感知切分 + Anthropic Contextual Retrieval（LLM 给每块生成 50-100 token 上下文前置，再做 embedding/sparse 索引），减少 49% 检索失败，叠加 rerank 降 67%。
 - **检索：Hybrid + RRF**：BGE-M3 dense + BGE-M3 sparse 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索。
 - **Rerank：硅基流动 rerank API**（托管 bge-reranker-v2-m3）：cross-encoder 中文重排，低频走 API。
@@ -346,14 +346,14 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 | 环节 | 选型 | 实现位置 | 说明 |
 |------|------|---------|------|
 | Chunking | RecursiveCharacterTextSplitter + **Contextual Chunking** | `careercrew_core/rag/chunking/` | Markdown 感知切分；每块调 LLM 生成 50-100 token 上下文前置再索引（Anthropic Contextual Retrieval，减 49% 检索失败） |
-| Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 sentence-transformers；稀疏路免额外 BM25 索引 |
+| Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 FlagEmbedding；稀疏路免额外 BM25 索引 |
 | 检索 | Hybrid（BGE-M3 dense + sparse）+ RRF 融合 | `careercrew_core/rag/retrieval/` | 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索 |
 | Rerank | **硅基流动 rerank API**（bge-reranker-v2-m3） | `careercrew_ai/reranker/` | cross-encoder 中文重排，低频走 API；可关（None）回退 |
 | 向量库 | Milvus Lite + Chroma 兜底 | `careercrew_ai/vector_store/` | 见 3.5 |
 
 #### 3.7.2 设计亮点
 - **BGE-M3 三合一 > 分离的 BM25+Embedding**：一次前向同时得 dense/sparse/colbert，稀疏路无需维护倒排索引，与 Milvus 原生混合检索直接对接。
-- **Contextual Chunking**：ingestion 阶段用 LLM 给每块生成文档级上下文前置，解决"块脱离上下文难检索"问题；用 prompt caching 控成本。
+- **Contextual Chunking**：ingestion 阶段用 LLM 给每块生成文档级上下文前置，解决"块脱离上下文难检索"问题；可用 prompt caching 控成本（若 provider 支持）。
 - **可插拔**：Embedding/Rerank/VectorStore 均为 `Base*` 抽象 + 工厂，配置切换（如换 OpenAI embedding、Cohere rerank）零代码。
 
 #### 3.7.3 知识库 Ingestion
@@ -472,7 +472,7 @@ HITL 确认投递 (apply) ── interrupt
 
 | 层 | 包名 | 职责 |
 |----|------|------|
-| AI 层 | `careercrew_ai` | 自建 `llm_factory`/embedding(BGE-M3)/rerank/vector_store；手写 ReAct 内核；agent prompts |
+| AI 层 | `careercrew_ai` | LLM 适配(init_chat_model)/embedding(BGE-M3)/reranker/vector_store；手写 ReAct 内核；agent prompts |
 | 核心层 | `careercrew_core` | LangGraph supervisor + 5 agent 节点 + 记忆 + 工具注册表 + state |
 | 产品层 | `careercrew_cli` | 求职周期工作流编排 + HITL 闸门 + CLI 入口 |
 | UI 层 | `careercrew_ui` | CLI 渲染 + Streamlit Dashboard |
@@ -820,11 +820,11 @@ CareerCrew/
 │   ├── run_cli.py                       # CLI 启动
 │   └── start_dashboard.py               # Dashboard 启动
 │
-├── pyproject.toml                       # 依赖：langgraph / pymilvus / sentence-transformers / FlagEmbedding
+├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest
 └── README.md
 ```
 
-> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `pymilvus`(milvus-lite) / `sentence-transformers` / `FlagEmbedding`(BGE-M3 + bge-reranker-v2)。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线（chunking/embedding/retrieval/rerank/vector_store）全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
+> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI) / `pymilvus`(milvus-lite) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
 
 ### 5.3 模块职责表
 
@@ -969,7 +969,7 @@ agent 调 rag_query 工具
       ▼
 自建 HybridSearch
   ├─ Dense (Embedding) ──┐
-  ├─ Sparse (BM25)    ──┤──> RRF 融合 ──> Rerank ──> Top-K
+  ├─ Sparse (BGE-M3)    ──┤──> RRF 融合 ──> Rerank ──> Top-K
   └─ 向量库: Milvus (careercrew_kb) ──┘
       │
       ▼
@@ -1091,6 +1091,7 @@ dashboard:
 > - **1 小时一个可验收增量**：每个小阶段（≈1h）给出"验收标准 + 测试方法"，尽量 TDD。
 > - **先打通主闭环，再补高级亮点**：MVP 在 A-L，跑通求职闭环；高级亮点挑 1-2 个放 M-N。
 > - **外部依赖可替换/可 Mock**：LLM / Milvus / MCP 真实调用在单元测试中一律 Fake/Mock，集成测试再开真实后端。
+> - **环境**：所有命令在 conda env `careercrew` 下运行（`conda activate careercrew` 或 `conda run -n careercrew ...`）。
 
 ### 阶段总览（大阶段 -> 目的）
 
@@ -1291,7 +1292,7 @@ dashboard:
   - 各子包 `__init__.py`（按目录树补齐）
   - `careercrew_cli/app.py`（最小 CLI 入口占位）
   - `config/settings.yaml`（最小可解析配置）
-  - `pyproject.toml`（依赖：langgraph / pymilvus / sentence-transformers / FlagEmbedding / modelscope / pytest 等）、`README.md`、`.gitignore`
+  - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest 等）、`README.md`、`.gitignore`
 - **环境与依赖**：
   - `conda create -n careercrew python=3.12 -y`
   - `conda activate careercrew` 后 `pip install -e .`（装 pyproject.toml 定义的全部依赖进 conda env）
@@ -1844,5 +1845,5 @@ dashboard:
 
 ---
 
-> **文档状态**：初稿 v0.1。后续按实际开发迭代细化各节（尤其是排期子任务的修改文件列表与验收标准，需在实现中校正）。
+> **文档状态**：初稿 v0.2（自建 RAG + 硅基流动 + conda env）。后续按实际开发迭代细化各节（尤其是排期子任务的修改文件列表与验收标准，需在实现中校正）。
 > **决策记录**：见 `prompts/gen_dev_spec.md` 末尾"决策记录"小节（供参考，不写进 spec）。

@@ -6,6 +6,7 @@
 > - **1 小时一个可验收增量**：每个小阶段（≈1h）给出"验收标准 + 测试方法"，尽量 TDD。
 > - **先打通主闭环，再补高级亮点**：MVP 在 A-L，跑通求职闭环；高级亮点挑 1-2 个放 M-N。
 > - **外部依赖可替换/可 Mock**：LLM / Milvus / MCP 真实调用在单元测试中一律 Fake/Mock，集成测试再开真实后端。
+> - **环境**：所有命令在 conda env `careercrew` 下运行（`conda activate careercrew` 或 `conda run -n careercrew ...`）。
 
 ### 阶段总览（大阶段 -> 目的）
 
@@ -206,7 +207,7 @@
   - 各子包 `__init__.py`（按目录树补齐）
   - `careercrew_cli/app.py`（最小 CLI 入口占位）
   - `config/settings.yaml`（最小可解析配置）
-  - `pyproject.toml`（依赖：langgraph / pymilvus / sentence-transformers / FlagEmbedding / modelscope / pytest 等）、`README.md`、`.gitignore`
+  - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest 等）、`README.md`、`.gitignore`
 - **环境与依赖**：
   - `conda create -n careercrew python=3.12 -y`
   - `conda activate careercrew` 后 `pip install -e .`（装 pyproject.toml 定义的全部依赖进 conda env）

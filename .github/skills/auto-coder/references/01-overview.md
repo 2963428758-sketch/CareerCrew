@@ -20,7 +20,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - 自建 RAG（BGE-M3 三合一 + Contextual Chunking + bge-reranker）
 
 #### 2️⃣ 开箱即用与深度扩展并重 (Plug-and-Play & Extensible)
-- **开箱即用**：CLI 优先，本地零外部服务（Milvus Lite 嵌入式），`pip install` 即可跑通求职闭环。
+- **开箱即用**：CLI 优先，本地服务零依赖（Milvus Lite 嵌入式），LLM/Rerank 走硅基流动 API，`pip install` 即可跑通求职闭环。
 - **深度扩展**：MVP 跑通主流程后，高级方向（Hermes 完整记忆 / Loop Engineering / 轨迹级评估 / 自建 MCP）提供清晰升级路径。
 - **分层标注**：spec 中每项技术明确标注【MVP 核心】或【高级方向】，避免"把高级内容当必做"。
 
