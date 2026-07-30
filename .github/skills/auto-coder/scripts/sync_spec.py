@@ -31,6 +31,8 @@ NUMBER_SLUG_MAP = {
     5: "architecture",
     6: "schedule",
     7: "future",
+    8: "interview-mapping",
+    9: "quickstart",
 }
 
 

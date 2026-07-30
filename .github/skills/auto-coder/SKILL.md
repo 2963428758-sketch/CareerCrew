@@ -37,6 +37,8 @@ All files under `.github/skills/auto-coder/references/`:
 | `05-architecture.md` | Architecture & module design | When creating/modifying modules |
 | `06-schedule.md` | Task schedule & status | Every cycle (Sync Spec step) |
 | `07-future.md` | Future roadmap | When planning or assessing scope |
+| `08-interview-mapping.md` | 面试考点与简历亮点映射 | When preparing interviews / writing resume bullets |
+| `09-quickstart.md` | 快速开始（环境/配置/运行/测试） | When needing run commands / env setup |
 
 ---
 
