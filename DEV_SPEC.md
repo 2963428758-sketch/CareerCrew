@@ -1105,7 +1105,7 @@ dashboard:
 | **J** 谈判师 + 规划师 | 补齐 5 agent | MVP |
 | **K** HITL 接工具层 | 高风险闸门落地 | MVP |
 | **L** 评估 + Dashboard | 评估闭环 + 可视化 | MVP |
-| **M** 高级亮点（选 1-2） | Loop 视角 / Pre-compaction flush / 多 agent 会诊 | 高级 |
+| **M** 高级亮点（选 1-2） | Loop / flush / 会诊 / Agentic RAG / Self-RAG / RAPTOR / ColBERT | 高级 |
 | **N** 自建 MCP + dogfood + 收尾 | 真实投递 + 拿 offer 验收 | 高级 |
 
 ---
@@ -1240,6 +1240,10 @@ dashboard:
 | M1 | Loop Engineering 七步闭环 + 三角色（选） | [ ] | | Goal->...->Govern |
 | M2 | Pre-compaction Memory Flush（选） | [ ] | | 压缩前 flush 长期记忆 |
 | M3 | 多 agent 会诊（选） | [ ] | | fan-out + join |
+| M4 | Agentic RAG（query router + decomposition）（选） | [ ] | | rag/agent_router.py |
+| M5 | 检索自纠正 Self-RAG / CRAG（选） | [ ] | | rag/retrieval_assessor.py |
+| M6 | 层级/图 RAG（RAPTOR 或 LightRAG）（选） | [ ] | | rag/hierarchical/ |
+| M7 | Late Chunking / ColBERT 多向量（选） | [ ] | | bge_m3 colbert 模式 |
 
 #### 阶段 N：自建 MCP + dogfood + 收尾
 
@@ -1269,9 +1273,9 @@ dashboard:
 | 阶段 J | 4 | 0 | 0% |
 | 阶段 K | 4 | 0 | 0% |
 | 阶段 L | 5 | 0 | 0% |
-| 阶段 M | 3 | 0 | 0% |
+| 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **61** | **0** | **0%** |
+| **总计** | **65** | **0** | **0%** |
 
 ---
 
@@ -1765,6 +1769,22 @@ dashboard:
 ### M3：多 agent 会诊（选）
 - **修改文件**：`careercrew_core/supervisor/graph.py`（fan-out + join）
 - **验收标准**：同一问题多 agent 并行给意见并综合。
+
+### M4：Agentic RAG（query router + decomposition）（选）
+- **修改文件**：`careercrew_core/rag/agent_router.py`、`query_decomposer.py`
+- **验收标准**：query router 按意图路由到 KB / web / 记忆；多跳问题分解为子查询并发检索后综合。
+
+### M5：检索自纠正 Self-RAG / CRAG（选）
+- **修改文件**：`careercrew_core/rag/retrieval_assessor.py`
+- **验收标准**：检索评估器对召回质量打分，差则触发查询改写 / 重试 / web 回退；提升 Grounding。
+
+### M6：层级/图 RAG（RAPTOR 或 LightRAG）（选）
+- **修改文件**：`careercrew_core/rag/hierarchical/`（递归抽象树 或 轻量知识图）
+- **验收标准**：面经跨文档关联检索；全局性问题可命中。
+
+### M7：Late Chunking / ColBERT 多向量（选）
+- **修改文件**：`careercrew_ai/embedding/bge_m3_embedding.py`（colbert 模式）、`careercrew_core/rag/chunking/late_chunker.py`
+- **验收标准**：BGE-M3 colbert 多向量 token 级匹配；late chunking 长文档处理。
 
 ---
 
