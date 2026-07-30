@@ -30,6 +30,8 @@ dependencies = [
 [project.optional-dependencies]
 # milvus-lite 嵌入式后端（D2 阶段用；Windows wheel 单独装，不阻塞 A1）
 milvus = ["milvus-lite>=2.4.0"]
+# 多格式文档加载（D4 阶段用：PDF/Word/Excel -> Markdown）
+ingestion = ["markitdown>=0.0.1"]
 # 答案级评估（L1 阶段用）
 eval = ["ragas>=0.2.0"]
 # Streamlit Dashboard（L4 阶段用）
