@@ -89,6 +89,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - **检索：Hybrid + RRF**：BGE-M3 dense + BGE-M3 sparse 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索。
 - **Rerank：硅基流动 rerank API**（托管 bge-reranker-v2-m3）：cross-encoder 中文重排，低频走 API。
 - **向量库：Milvus Lite**（原生 BGE-M3 hybrid、嵌入式零外部服务）+ Chroma 兜底，配置切换。
+- **文档加载：多格式**：MarkItDown 统一加载 PDF/Word/Markdown，转 Markdown 后走 Markdown 感知切分。
 - **知识库**：大模型八股 + 真实面试题、算法岗面经、JD 库（mcp-jobs 沉淀）、公司/薪资公开数据、简历范本。RAG 知识库与记忆向量共用 Milvus（collection 隔离）。
 
 ### Function calling 统一工具层
@@ -347,6 +348,7 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 #### 3.7.1 技术栈分层
 | 环节 | 选型 | 实现位置 | 说明 |
 |------|------|---------|------|
+| Loader | MarkItDown（统一）+ Markdown 直读 | `careercrew_core/rag/loaders/` | PDF/Word/Excel/HTML 转 Markdown；.md 直读；BaseLoader 可插拔 |
 | Chunking | RecursiveCharacterTextSplitter + **Contextual Chunking** | `careercrew_core/rag/chunking/` | Markdown 感知切分；每块调 LLM 生成 50-100 token 上下文前置再索引（Anthropic Contextual Retrieval，减 49% 检索失败） |
 | Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 FlagEmbedding；稀疏路免额外 BM25 索引 |
 | 检索 | Hybrid（BGE-M3 dense + sparse）+ RRF 融合 | `careercrew_core/rag/retrieval/` | 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索 |
@@ -366,7 +368,24 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 - 公司/薪资公开数据
 - 简历范本
 
-流水线：Loader -> Splitter -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Milvus Upsert。
+流水线：Loader（PDF/Word/Markdown 统一转 Markdown）-> Splitter -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Milvus Upsert。
+
+#### 3.7.4 文档加载（多格式）【MVP 核心】
+
+**目标：** 知识库文档格式多样（PDF 面经、Markdown 八股、Word 简历范本），统一加载为 `Document(text + metadata)` 供后续切分。
+
+**选型：MarkItDown（统一）+ Markdown 直读**
+- **Markdown（.md）**：直接读文本，保留标题层级，无需转换。
+- **PDF / Word(.docx) / Excel / PPT / HTML**：用 [MarkItDown](https://github.com/microsoft/markitdown)（微软）统一转 Markdown，再走 Markdown 感知切分。一个库覆盖多格式，省去维护多个 parser。
+- **回退**：若 MarkItDown 对某 PDF 效果差，可换 PyMuPDF（fitz）做 PDF 文本提取；Word 可换 python-docx。`BaseLoader` 抽象保证可插拔。
+
+**实现位置**：`careercrew_core/rag/loaders/`
+- `base_loader.py`：`BaseLoader.load(path) -> Document`（`text` + `metadata:{source_path, doc_type, title}`）
+- `markdown_loader.py`：Markdown 直读
+- `markitdown_loader.py`：MarkItDown 统一转 PDF/Word/etc.
+- 工厂按扩展名路由：`.md` -> MarkdownLoader；`.pdf/.docx/.doc/...` -> MarkItDownLoader
+
+**Document 契约**：`{id, text(markdown), metadata:{source_path, doc_type, title}}`，与下游 Splitter 衔接。
 
 ---
 
@@ -519,6 +538,7 @@ HITL 确认投递 (apply) ── interrupt
 | ADR-10 | HITL 策略 | 全自动 / 默认确认 / 分级 | **默认确认（高 stakes）** | 求职决策高 stakes，默认 HITL，仅低风险自动化。高级方向 Delegate 三级授权。 |
 | ADR-11 | Chunking | 定长 / 语义 / Contextual | **Recursive + Contextual Chunking** | Anthropic 法减 49% 检索失败，叠加 rerank 降 67%。 |
 | ADR-12 | 模型下载源 | HuggingFace / ModelScope | **ModelScope** | 本机 HF 直连被拦（SSL 断流），ModelScope 可通。 |
+| ADR-13 | 文档加载 | per-format（PyMuPDF/python-docx）/ MarkItDown 统一 | **MarkItDown 统一 + Markdown 直读** | 一个库覆盖 PDF/Word/Excel/HTML 转 Markdown，与 Markdown 感知 Splitter 天然衔接；BaseLoader 抽象可回退 per-format。 |
 
 ---
 
@@ -745,6 +765,11 @@ CareerCrew/
 │   │   └── compaction.py               # compaction 基础版（保留区+压缩区）
 │   ├── rag/                             # 自建 RAG 流水线
 │   │   ├── __init__.py
+│   │   ├── loaders/                    # 文档加载（多格式）
+│   │   │   ├── __init__.py
+│   │   │   ├── base_loader.py           # BaseLoader 抽象
+│   │   │   ├── markdown_loader.py       # Markdown 直读
+│   │   │   └── markitdown_loader.py     # MarkItDown 统一转 PDF/Word/Excel/HTML
 │   │   ├── chunking/                   # 切分 + Contextual Chunking
 │   │   │   ├── __init__.py
 │   │   │   ├── document_chunker.py     # Document -> Chunks（调用 ai.splitter）
@@ -841,11 +866,11 @@ CareerCrew/
 │   ├── run_cli.py                       # CLI 启动
 │   └── start_dashboard.py               # Dashboard 启动
 │
-├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest
+├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest
 └── README.md
 ```
 
-> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI) / `pymilvus`(milvus-lite) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
+> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI) / `pymilvus`(milvus-lite) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `markitdown`(多格式文档加载) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
 
 ### 5.3 模块职责表
 
@@ -877,6 +902,8 @@ CareerCrew/
 | `memory/user_model.py` | User Model 读写 | 结构化字段约束 |
 | `memory/vector_index.py` | 情景记忆向量索引 | Milvus collection 隔离 |
 | `memory/compaction.py` | compaction 基础版 | token 占比触发 + 保留区 + 压缩区 |
+| `rag/loaders/markitdown_loader.py` | PDF/Word/Excel 转 Markdown | MarkItDown 统一加载多格式 |
+| `rag/loaders/markdown_loader.py` | Markdown 直读 | 保留标题层级 |
 | `rag/chunking/contextualizer.py` | Contextual Chunking | LLM 给每块生成上下文前置 |
 | `rag/retrieval/hybrid_search.py` | Hybrid 检索编排 | BGE-M3 dense+sparse 召回 + RRF 融合 |
 | `rag/pipeline.py` | Ingestion 编排 | load->split->contextualize->embed->upsert |
@@ -1046,6 +1073,8 @@ rag:
     chunk_size: 800
     chunk_overlap: 100
     contextual: true         # Contextual Chunking（LLM 加上下文前置）
+  loaders:
+    backend: markitdown        # markitdown | pymupdf | python-docx（per-format 回退）
 
 # LangGraph supervisor 配置
 supervisor:
@@ -1340,7 +1369,7 @@ dashboard:
   - 各子包 `__init__.py`（按目录树补齐）
   - `careercrew_cli/app.py`（最小 CLI 入口占位）
   - `config/settings.yaml`（最小可解析配置）
-  - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest 等）、`README.md`、`.gitignore`
+  - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest 等）、`README.md`、`.gitignore`
 - **环境与依赖**：
   - `conda create -n careercrew python=3.12 -y`
   - `conda activate careercrew` 后 `pip install -e .`（装 pyproject.toml 定义的全部依赖进 conda env）
@@ -1570,14 +1599,15 @@ dashboard:
 - **目标**：封装自建 RAG 为 `rag_query` 工具；实现 Ingestion pipeline 摄取知识库到 Milvus（collection `careercrew_kb`）。
 - **修改文件**：
   - `careercrew_core/tools/internal/rag_query.py`
+  - `careercrew_core/rag/loaders/`（PDF/Word/Markdown 多格式加载）
   - `careercrew_core/rag/pipeline.py`（load->split->contextualize->embed->upsert）
   - `scripts/ingest_knowledge.py`
   - `data/knowledge/`（样例文档）
   - `tests/unit/test_rag_query_tool.py`
 - **实现类/函数**：
   - `rag_query(query, top_k, collection) -> list[Chunk]`（调 HybridSearch + Rerank）
-  - `IngestionPipeline.run(source_path, collection)`（编排 chunking + contextual + BGE-M3 编码 + Milvus upsert）
-- **验收标准**：八股/面经/JD/简历范本样例可摄取并检索；rag_query 返回结构化结果。
+  - `IngestionPipeline.run(source_path, collection)`（编排 load + chunking + contextual + BGE-M3 编码 + Milvus upsert）
+- **验收标准**：PDF/Markdown/Word 文档可加载并摄取；八股/面经/JD/简历范本样例可摄取并检索；rag_query 返回结构化结果。
 - **测试方法**：`pytest -q tests/unit/test_rag_query_tool.py` + 手动跑 `python scripts/ingest_knowledge.py`。
 
 ### D5：配置切换 milvus/chroma 验证
@@ -1904,6 +1934,7 @@ dashboard:
 | 三层记忆 | append-only 树解决什么？回溯算法复杂度？compaction 怎么触发/防丢？ | 仿 Hermes 三层记忆，append-only 树支持黄金轨迹回放与轨迹级评估 |
 | BGE-M3 RAG | 三路输出怎么拿？为什么本地跑？sparse vs BM25 区别？colbert 代价？ | 自建 RAG：BGE-M3 三合一 + Contextual Chunking，检索失败率降 49% |
 | Hybrid+RRF | RRF 公式？为什么用排名倒数不用分数？top_k 怎么定？ | Hybrid 检索 + RRF 融合 + bge-reranker 精排，两段式架构平衡查准与查全 |
+| 文档加载 | 为什么用 MarkItDown？多格式怎么统一？BaseLoader 怎么抽象？ | 多格式文档加载（PDF/Word/Markdown）统一转 Markdown，MarkItDown + BaseLoader 可插拔 |
 | Milvus 可插拔 | BaseVectorStore 怎么抽象？milvus-lite vs Docker？collection 隔离？ | 自建 Milvus 后端 + Chroma 兜底，配置驱动零代码切换向量库 |
 | HITL 闸门 | interrupt 怎么恢复状态一致？哪些动作必确认？Delegate 三级？ | 高 stakes 决策默认 HITL，LangGraph interrupt 实现投递/接 offer 闸门 |
 | 工具层 | MCP 与内部函数怎么统一？requires_confirmation 怎么标记？ | 统一工具注册表，MCP+内部函数同 schema，风险分级触发 HITL |

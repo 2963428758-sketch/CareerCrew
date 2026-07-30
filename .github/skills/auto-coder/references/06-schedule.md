@@ -39,10 +39,10 @@
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| A1 | 四层目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [ ] | | conda env + 依赖安装进 env |
-| A2 | 引入 pytest 并建立测试目录约定 | [ ] | | tests/unit\|integration\|e2e\|fixtures |
-| A3 | 配置加载与校验（Settings） | [ ] | | settings.yaml + load_settings + fail-fast |
-| A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [ ] | | init_chat_model + Base* 抽象+工厂 |
+| A1 | 四层目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [x] | 2026-07-30 | conda env + 依赖安装进 env |
+| A2 | 引入 pytest 并建立测试目录约定 | [x] | 2026-07-30 | tests/unit\|integration\|e2e\|fixtures |
+| A3 | 配置加载与校验（Settings） | [x] | 2026-07-30 | settings.yaml + load_settings + fail-fast |
+| A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [x] | 2026-07-30 | init_chat_model + Base* 抽象+工厂 |
 
 #### 阶段 B：LangGraph supervisor + 手写 ReAct 骨架
 
@@ -180,7 +180,7 @@
 
 | 阶段 | 总任务数 | 已完成 | 进度 |
 |------|---------|--------|------|
-| 阶段 A | 4 | 0 | 0% |
+| 阶段 A | 4 | 4 | 100% |
 | 阶段 B | 5 | 0 | 0% |
 | 阶段 C | 6 | 0 | 0% |
 | 阶段 D | 5 | 0 | 0% |
@@ -194,7 +194,7 @@
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **0** | **0%** |
+| **总计** | **65** | **4** | **6%** |
 
 ---
 
@@ -207,7 +207,7 @@
   - 各子包 `__init__.py`（按目录树补齐）
   - `careercrew_cli/app.py`（最小 CLI 入口占位）
   - `config/settings.yaml`（最小可解析配置）
-  - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest 等）、`README.md`、`.gitignore`
+  - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest 等）、`README.md`、`.gitignore`
 - **环境与依赖**：
   - `conda create -n careercrew python=3.12 -y`
   - `conda activate careercrew` 后 `pip install -e .`（装 pyproject.toml 定义的全部依赖进 conda env）
@@ -437,14 +437,15 @@
 - **目标**：封装自建 RAG 为 `rag_query` 工具；实现 Ingestion pipeline 摄取知识库到 Milvus（collection `careercrew_kb`）。
 - **修改文件**：
   - `careercrew_core/tools/internal/rag_query.py`
+  - `careercrew_core/rag/loaders/`（PDF/Word/Markdown 多格式加载）
   - `careercrew_core/rag/pipeline.py`（load->split->contextualize->embed->upsert）
   - `scripts/ingest_knowledge.py`
   - `data/knowledge/`（样例文档）
   - `tests/unit/test_rag_query_tool.py`
 - **实现类/函数**：
   - `rag_query(query, top_k, collection) -> list[Chunk]`（调 HybridSearch + Rerank）
-  - `IngestionPipeline.run(source_path, collection)`（编排 chunking + contextual + BGE-M3 编码 + Milvus upsert）
-- **验收标准**：八股/面经/JD/简历范本样例可摄取并检索；rag_query 返回结构化结果。
+  - `IngestionPipeline.run(source_path, collection)`（编排 load + chunking + contextual + BGE-M3 编码 + Milvus upsert）
+- **验收标准**：PDF/Markdown/Word 文档可加载并摄取；八股/面经/JD/简历范本样例可摄取并检索；rag_query 返回结构化结果。
 - **测试方法**：`pytest -q tests/unit/test_rag_query_tool.py` + 手动跑 `python scripts/ingest_knowledge.py`。
 
 ### D5：配置切换 milvus/chroma 验证

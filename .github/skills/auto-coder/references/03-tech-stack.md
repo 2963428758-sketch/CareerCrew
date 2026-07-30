@@ -228,6 +228,7 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 #### 3.7.1 技术栈分层
 | 环节 | 选型 | 实现位置 | 说明 |
 |------|------|---------|------|
+| Loader | MarkItDown（统一）+ Markdown 直读 | `careercrew_core/rag/loaders/` | PDF/Word/Excel/HTML 转 Markdown；.md 直读；BaseLoader 可插拔 |
 | Chunking | RecursiveCharacterTextSplitter + **Contextual Chunking** | `careercrew_core/rag/chunking/` | Markdown 感知切分；每块调 LLM 生成 50-100 token 上下文前置再索引（Anthropic Contextual Retrieval，减 49% 检索失败） |
 | Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 FlagEmbedding；稀疏路免额外 BM25 索引 |
 | 检索 | Hybrid（BGE-M3 dense + sparse）+ RRF 融合 | `careercrew_core/rag/retrieval/` | 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索 |
@@ -247,7 +248,24 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 - 公司/薪资公开数据
 - 简历范本
 
-流水线：Loader -> Splitter -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Milvus Upsert。
+流水线：Loader（PDF/Word/Markdown 统一转 Markdown）-> Splitter -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Milvus Upsert。
+
+#### 3.7.4 文档加载（多格式）【MVP 核心】
+
+**目标：** 知识库文档格式多样（PDF 面经、Markdown 八股、Word 简历范本），统一加载为 `Document(text + metadata)` 供后续切分。
+
+**选型：MarkItDown（统一）+ Markdown 直读**
+- **Markdown（.md）**：直接读文本，保留标题层级，无需转换。
+- **PDF / Word(.docx) / Excel / PPT / HTML**：用 [MarkItDown](https://github.com/microsoft/markitdown)（微软）统一转 Markdown，再走 Markdown 感知切分。一个库覆盖多格式，省去维护多个 parser。
+- **回退**：若 MarkItDown 对某 PDF 效果差，可换 PyMuPDF（fitz）做 PDF 文本提取；Word 可换 python-docx。`BaseLoader` 抽象保证可插拔。
+
+**实现位置**：`careercrew_core/rag/loaders/`
+- `base_loader.py`：`BaseLoader.load(path) -> Document`（`text` + `metadata:{source_path, doc_type, title}`）
+- `markdown_loader.py`：Markdown 直读
+- `markitdown_loader.py`：MarkItDown 统一转 PDF/Word/etc.
+- 工厂按扩展名路由：`.md` -> MarkdownLoader；`.pdf/.docx/.doc/...` -> MarkItDownLoader
+
+**Document 契约**：`{id, text(markdown), metadata:{source_path, doc_type, title}}`，与下游 Splitter 衔接。
 
 ---
 
@@ -400,5 +418,6 @@ HITL 确认投递 (apply) ── interrupt
 | ADR-10 | HITL 策略 | 全自动 / 默认确认 / 分级 | **默认确认（高 stakes）** | 求职决策高 stakes，默认 HITL，仅低风险自动化。高级方向 Delegate 三级授权。 |
 | ADR-11 | Chunking | 定长 / 语义 / Contextual | **Recursive + Contextual Chunking** | Anthropic 法减 49% 检索失败，叠加 rerank 降 67%。 |
 | ADR-12 | 模型下载源 | HuggingFace / ModelScope | **ModelScope** | 本机 HF 直连被拦（SSL 断流），ModelScope 可通。 |
+| ADR-13 | 文档加载 | per-format（PyMuPDF/python-docx）/ MarkItDown 统一 | **MarkItDown 统一 + Markdown 直读** | 一个库覆盖 PDF/Word/Excel/HTML 转 Markdown，与 Markdown 感知 Splitter 天然衔接；BaseLoader 抽象可回退 per-format。 |
 
 ---

@@ -142,6 +142,11 @@ CareerCrew/
 │   │   └── compaction.py               # compaction 基础版（保留区+压缩区）
 │   ├── rag/                             # 自建 RAG 流水线
 │   │   ├── __init__.py
+│   │   ├── loaders/                    # 文档加载（多格式）
+│   │   │   ├── __init__.py
+│   │   │   ├── base_loader.py           # BaseLoader 抽象
+│   │   │   ├── markdown_loader.py       # Markdown 直读
+│   │   │   └── markitdown_loader.py     # MarkItDown 统一转 PDF/Word/Excel/HTML
 │   │   ├── chunking/                   # 切分 + Contextual Chunking
 │   │   │   ├── __init__.py
 │   │   │   ├── document_chunker.py     # Document -> Chunks（调用 ai.splitter）
@@ -238,11 +243,11 @@ CareerCrew/
 │   ├── run_cli.py                       # CLI 启动
 │   └── start_dashboard.py               # Dashboard 启动
 │
-├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / ragas / pytest
+├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest
 └── README.md
 ```
 
-> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI) / `pymilvus`(milvus-lite) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
+> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI) / `pymilvus`(milvus-lite) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `markitdown`(多格式文档加载) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
 
 ### 5.3 模块职责表
 
@@ -274,6 +279,8 @@ CareerCrew/
 | `memory/user_model.py` | User Model 读写 | 结构化字段约束 |
 | `memory/vector_index.py` | 情景记忆向量索引 | Milvus collection 隔离 |
 | `memory/compaction.py` | compaction 基础版 | token 占比触发 + 保留区 + 压缩区 |
+| `rag/loaders/markitdown_loader.py` | PDF/Word/Excel 转 Markdown | MarkItDown 统一加载多格式 |
+| `rag/loaders/markdown_loader.py` | Markdown 直读 | 保留标题层级 |
 | `rag/chunking/contextualizer.py` | Contextual Chunking | LLM 给每块生成上下文前置 |
 | `rag/retrieval/hybrid_search.py` | Hybrid 检索编排 | BGE-M3 dense+sparse 召回 + RRF 融合 |
 | `rag/pipeline.py` | Ingestion 编排 | load->split->contextualize->embed->upsert |
@@ -404,7 +411,7 @@ agent 调 rag_query 工具
 # LLM 配置（硅基流动，OpenAI 兼容；init_chat_model 适配）
 llm:
   provider: openai           # 走 init_chat_model 的 openai provider（OpenAI 兼容）
-  model: "Qwen/Qwen2.5-72B-Instruct"   # 硅基流动上的模型，可换 DeepSeek/GLM 等
+  model: "deepseek-ai/DeepSeek-V4-Flash"   # 默认 Flash（便宜快，工具调用已验证）；可换 V4-Pro/V3.2/GLM 等
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
 
@@ -443,6 +450,8 @@ rag:
     chunk_size: 800
     chunk_overlap: 100
     contextual: true         # Contextual Chunking（LLM 加上下文前置）
+  loaders:
+    backend: markitdown        # markitdown | pymupdf | python-docx（per-format 回退）
 
 # LangGraph supervisor 配置
 supervisor:

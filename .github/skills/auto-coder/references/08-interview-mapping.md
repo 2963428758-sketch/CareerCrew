@@ -9,6 +9,7 @@
 | 三层记忆 | append-only 树解决什么？回溯算法复杂度？compaction 怎么触发/防丢？ | 仿 Hermes 三层记忆，append-only 树支持黄金轨迹回放与轨迹级评估 |
 | BGE-M3 RAG | 三路输出怎么拿？为什么本地跑？sparse vs BM25 区别？colbert 代价？ | 自建 RAG：BGE-M3 三合一 + Contextual Chunking，检索失败率降 49% |
 | Hybrid+RRF | RRF 公式？为什么用排名倒数不用分数？top_k 怎么定？ | Hybrid 检索 + RRF 融合 + bge-reranker 精排，两段式架构平衡查准与查全 |
+| 文档加载 | 为什么用 MarkItDown？多格式怎么统一？BaseLoader 怎么抽象？ | 多格式文档加载（PDF/Word/Markdown）统一转 Markdown，MarkItDown + BaseLoader 可插拔 |
 | Milvus 可插拔 | BaseVectorStore 怎么抽象？milvus-lite vs Docker？collection 隔离？ | 自建 Milvus 后端 + Chroma 兜底，配置驱动零代码切换向量库 |
 | HITL 闸门 | interrupt 怎么恢复状态一致？哪些动作必确认？Delegate 三级？ | 高 stakes 决策默认 HITL，LangGraph interrupt 实现投递/接 offer 闸门 |
 | 工具层 | MCP 与内部函数怎么统一？requires_confirmation 怎么标记？ | 统一工具注册表，MCP+内部函数同 schema，风险分级触发 HITL |
