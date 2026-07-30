@@ -1,0 +1,451 @@
+## 5. 系统架构与模块设计
+
+### 5.1 整体架构图
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          前端层 (CLI / Dashboard)                            │
+│                                                                             │
+│    ┌──────────────────────┐              ┌──────────────────────┐           │
+│    │   CLI (careercrew_ui)│              │ Streamlit Dashboard  │           │
+│    │  交互渲染 + HITL 提示 │              │ 系统总览/数据/追踪    │           │
+│    └──────────┬───────────┘              └──────────┬───────────┘           │
+│               │          订阅事件 / 调用产品层            │                    │
+└───────────────┼───────────────────────────────────────┼─────────────────────┘
+                │                                       │
+                ▼                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  产品层 (careercrew_cli) - 工作流 + HITL                      │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    求职周期工作流编排 (Workflow)                        │  │
+│  │   intent->planning->match->resume->interview->negotiate->apply->track │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────┐                                                    │
+│  │   HITL 闸门管理       │  interrupt / 确认 / 拒绝 / 修改                    │
+│  └──────────┬───────────┘                                                    │
+└─────────────┼───────────────────────────────────────────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              核心层 (careercrew_core) - 编排 + Agent + 记忆 + 工具            │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                  LangGraph Supervisor (路由/HITL/checkpointer)         │  │
+│  │            stage + user_intent -> route to agent / interrupt / end     │  │
+│  └───────────────────────────────────┬───────────────────────────────────┘  │
+│                                      │ 路由                                  │
+│    ┌───────────┬───────────┬─────────┴────────┬───────────┬───────────┐    │
+│    ▼           ▼           ▼                  ▼           ▼           ▼    │
+│ ┌────────┐ ┌────────┐ ┌────────┐  ┌────────────────┐ ┌────────┐ ┌────────┐│
+│ │job_    │ │resume_ │ │inter-  │  │salary_         │ │career_ │ │ 多agent ││
+│ │matcher │ │advisor │ │viewer  │  │negotiator      │ │planner │ │ 会诊   ││
+│ └───┬────┘ └───┬────┘ └───┬────┘  └───────┬────────┘ └───┬────┘ └────────┘│
+│     │          │          │               │              │        (高级)   │
+│     └──────────┴──────────┴───────┬───────┴──────────────┘                 │
+│                                    ▼                                        │
+│             ┌──────────────────────────────────────────┐                    │
+│             │       手写 ReAct 循环内核 (可见 while)    │                    │
+│             │  组装上下文->调LLM->判tool_call->执行->回喂 │                    │
+│             └──────────────────────┬───────────────────┘                    │
+│                                    │ 调用                                   │
+│     ┌──────────────────────────────┼──────────────────────────────┐         │
+│     ▼                              ▼                              ▼         │
+│ ┌────────────────┐    ┌─────────────────────┐       ┌────────────────────┐  │
+│ │  工具注册表     │    │     记忆系统 (3层)   │       │   Trace 打点       │  │
+│ │ ┌────────────┐ │    │ 短期: Context Window│       │ (复用 MODULAR-RAG) │  │
+│ │ │rag_query   │ │    │ 情景: JSONL+树+向量 │       │  agent_loop/hitl/  │  │
+│ │ │memory_search││    │ 长期: User Model    │       │  memory_op/compact │  │
+│ │ │profile_upd │ │    │ compaction (基础版) │       └────────────────────┘  │
+│ │ │mcp-jobs    │ │    └─────────────────────┘                               │
+│ │ │google_mcp  │ │                                                         │
+│ │ └────────────┘ │                                                         │
+│ │ requires_conf..│                                                         │
+│ └────────────────┘                                                         │
+└────────────────────────────────────┬────────────────────────────────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              ▼                      ▼                      ▼
+┌──────────────────────┐ ┌─────────────────────┐ ┌──────────────────────────┐
+│ AI 层 (careercrew_ai)│ │  RAG 后端 (复用)     │ │       存储层              │
+│ 复用 llm_factory     │ │ MODULAR-RAG-MCP     │ │  Milvus Lite (KB+记忆)   │
+│ BaseLLM/Embedding    │ │ Hybrid(BM25+Dense   │ │  SQLite checkpointer     │
+│ agent prompts        │ │  +RRF)+Rerank       │ │  JSONL transcripts       │
+│                      │ │ +Milvus 后端(新扩)  │ │  user_model.json         │
+└──────────────────────┘ └─────────────────────┘ │  traces.jsonl            │
+                                                  └──────────────────────────┘
+```
+
+### 5.2 目录结构
+
+```
+CareerCrew/
+│
+├── careercrew_ai/                       # AI 基础层（复用 llm_factory）
+│   ├── __init__.py
+│   ├── llm/                             # 复用/适配 MODULAR-RAG 的 llm_factory
+│   │   ├── __init__.py
+│   │   └── llm_adapter.py              # 薄适配层：复用 llm_factory，按 CareerCrew 配置创建
+│   ├── react/                           # 手写 ReAct 循环内核
+│   │   ├── __init__.py
+│   │   ├── react_loop.py               # 可见 while 循环（组装上下文->调LLM->判tool_call->执行->回喂）
+│   │   └── context_builder.py          # 上下文组装（短期对话+记忆+工具结果）
+│   └── prompts/                         # agent system prompts
+│       ├── job_matcher.txt
+│       ├── resume_advisor.txt
+│       ├── interviewer.txt
+│       ├── salary_negotiator.txt
+│       └── career_planner.txt
+│
+├── careercrew_core/                     # 核心层（LangGraph + Agent + 记忆 + 工具）
+│   ├── __init__.py
+│   ├── state/                           # Thread State + checkpointer
+│   │   ├── __init__.py
+│   │   ├── thread_state.py             # CareerCrewState TypedDict
+│   │   └── checkpointer.py             # SQLite checkpointer 封装
+│   ├── supervisor/                      # LangGraph supervisor 编排
+│   │   ├── __init__.py
+│   │   ├── graph.py                    # 图构建（节点+边+路由）
+│   │   ├── router.py                   # 阶段->agent 路由逻辑
+│   │   └── hitl.py                     # interrupt / 确认恢复
+│   ├── agents/                          # 5 个 agent 节点
+│   │   ├── __init__.py
+│   │   ├── base_agent.py               # agent 节点基类（套 ReAct 循环）
+│   │   ├── job_matcher.py
+│   │   ├── resume_advisor.py
+│   │   ├── interviewer.py
+│   │   ├── salary_negotiator.py
+│   │   └── career_planner.py
+│   ├── memory/                          # 3 层记忆系统
+│   │   ├── __init__.py
+│   │   ├── types.py                    # MemoryEntry / TreeNode / UserModel
+│   │   ├── short_term.py               # 短期 Context Window 管理
+│   │   ├── episodic.py                 # append-only JSONL + parentId 树 + 回溯重建
+│   │   ├── user_model.py               # 长期 User Model 结构化读写
+│   │   ├── vector_index.py             # 情景记忆向量索引（Milvus）
+│   │   └── compaction.py               # compaction 基础版（保留区+压缩区）
+│   └── tools/                           # 统一工具注册表
+│       ├── __init__.py
+│       ├── registry.py                 # 工具注册表（统一 schema + requires_confirmation）
+│       ├── internal/                   # 内部函数工具
+│       │   ├── rag_query.py            # 封装 MODULAR-RAG 检索
+│       │   ├── memory_search.py        # 主动记忆检索
+│       │   ├── memory_write.py         # 写情景记忆
+│       │   └── profile_update.py       # 更新 User Model
+│       └── mcp/                         # MCP 工具接入
+│           ├── mcp_client.py           # MCP client（发现+注册 mcp-jobs/Google MCP）
+│           └── mock_apply.py           # MVP 投递/进度跟踪 mock
+│
+├── careercrew_cli/                      # 产品层（工作流 + HITL + 入口）
+│   ├── __init__.py
+│   ├── workflow/                        # 求职周期工作流闭环
+│   │   ├── __init__.py
+│   │   └── job_cycle.py                # intent->...->review->循环 编排
+│   ├── hitl/                            # 人工闸门
+│   │   ├── __init__.py
+│   │   └── gates.py                    # 投递/打招呼/接offer/谈薪话术 闸门
+│   └── app.py                           # CLI 入口（命令分发）
+│
+├── careercrew_ui/                       # UI 层（CLI 渲染 + Streamlit）
+│   ├── __init__.py
+│   ├── cli/                             # CLI 渲染
+│   │   ├── __init__.py
+│   │   └── renderer.py                 # 对话渲染 + HITL 提示
+│   └── dashboard/                       # Streamlit Dashboard
+│       ├── __init__.py
+│       ├── app.py                      # Streamlit 入口
+│       └── pages/
+│           ├── overview.py             # 系统总览
+│           ├── data_browser.py         # User Model / 情景记忆树 / 候选数据
+│           └── traces.py               # agent ReAct 轨迹 / HITL 历史
+│
+├── config/                              # 配置文件
+│   ├── settings.yaml                    # 主配置
+│   └── prompts/                         # （agent prompts 也可能放这，二选一）
+│
+├── data/                                # 数据目录
+│   ├── db/
+│   │   ├── milvus/                      # Milvus Lite 嵌入式（KB + 情景记忆向量）
+│   │   ├── checkpointer.db              # LangGraph SQLite checkpointer
+│   │   └── (chroma 兜底目录)
+│   ├── transcripts/                     # 情景记忆 JSONL（{user_id}/{thread_id}.jsonl）
+│   │   └── {user_id}/
+│   ├── user_model.json                  # 长期 User Model
+│   └── knowledge/                       # 知识库原始文档（八股/面经/JD/简历范本）
+│
+├── logs/                                # 日志
+│   ├── traces.jsonl                     # 全链路 trace（复用 MODULAR-RAG 格式）
+│   └── app.log
+│
+├── tests/                               # 测试
+│   ├── unit/
+│   │   ├── test_react_loop.py
+│   │   ├── test_episodic_memory.py
+│   │   ├── test_user_model.py
+│   │   ├── test_compaction.py
+│   │   ├── test_tool_registry.py
+│   │   ├── test_supervisor_router.py
+│   │   └── ...
+│   ├── integration/
+│   │   ├── test_supervisor_agent_react.py
+│   │   ├── test_agent_memory.py
+│   │   ├── test_agent_rag.py
+│   │   ├── test_hitl_flow.py
+│   │   └── test_milvus_backend.py
+│   ├── e2e/
+│   │   ├── test_match_resume_loop.py    # M1 闭环
+│   │   ├── test_interview_sim.py
+│   │   ├── test_apply_hitl.py
+│   │   └── test_dogfood_cycle.py
+│   └── fixtures/
+│       ├── golden_routes.json           # 路由 golden 集
+│       └── golden_trajectories/         # 轨迹 golden 集
+│
+├── scripts/
+│   ├── ingest_knowledge.py              # 知识库摄取（复用 MODULAR-RAG pipeline）
+│   ├── run_cli.py                       # CLI 启动
+│   └── start_dashboard.py               # Dashboard 启动
+│
+├── pyproject.toml                       # 依赖：langgraph / pymilvus / 复用 MODULAR-RAG (-e)
+└── README.md
+```
+
+> **依赖说明**：`pyproject.toml` 中以 editable 方式依赖本地 `F:/agent_develop/MODULAR-RAG-MCP-SERVER`，复用其 `llm_factory` / `trace` / `evaluator` / `BaseVectorStore`。Milvus 后端实现位于 MODULAR-RAG 仓库内（`src/libs/vector_store/milvus_store.py`），D 阶段贡献。
+
+### 5.3 模块职责表
+
+#### 5.3.1 AI 层 (`careercrew_ai`)
+
+| 模块 | 职责 | 关键技术点 |
+|------|------|-----------|
+| `llm/llm_adapter.py` | 复用 MODULAR-RAG `llm_factory` 创建 LLM | 按 CareerCrew `settings.llm` 路由 provider |
+| `react/react_loop.py` | 手写 ReAct 可见 while 循环 | 解析 tool_calls、轮次上限、异常中断 |
+| `react/context_builder.py` | 每轮上下文组装 | 短期对话 + 按需检索记忆 + 工具结果 |
+| `prompts/*.txt` | 5 个 agent 的 system prompt | 角色定义 + 工具使用指引 |
+
+#### 5.3.2 核心层 (`careercrew_core`)
+
+| 模块 | 职责 | 关键技术点 |
+|------|------|-----------|
+| `state/thread_state.py` | Thread 状态定义 | `CareerCrewState` TypedDict |
+| `state/checkpointer.py` | 短期状态持久化 | SQLite checkpointer（WAL） |
+| `supervisor/graph.py` | LangGraph 图构建 | 节点+边+条件路由 |
+| `supervisor/router.py` | 阶段->agent 路由 | 状态机路由逻辑 |
+| `supervisor/hitl.py` | HITL interrupt 与恢复 | `interrupt` + 确认回填 |
+| `agents/base_agent.py` | agent 节点基类 | 套 ReAct 循环 + 产出格式化 |
+| `agents/*` | 5 个专职 agent | 各自 prompt + 工具子集 |
+| `memory/episodic.py` | 情景记忆 append-only 树 | JSONL + parentId + 回溯重建 |
+| `memory/user_model.py` | User Model 读写 | 结构化字段约束 |
+| `memory/vector_index.py` | 情景记忆向量索引 | Milvus collection 隔离 |
+| `memory/compaction.py` | compaction 基础版 | token 占比触发 + 保留区 + 压缩区 |
+| `tools/registry.py` | 统一工具注册表 | 统一 schema + `requires_confirmation` |
+| `tools/internal/*` | 内部函数工具 | rag_query / memory_search / memory_write / profile_update |
+| `tools/mcp/mcp_client.py` | MCP 工具发现与注册 | mcp-jobs / Google MCP |
+
+#### 5.3.3 产品层 (`careercrew_cli`)
+
+| 模块 | 职责 | 关键技术点 |
+|------|------|-----------|
+| `workflow/job_cycle.py` | 求职周期闭环编排 | 阶段流转 + 循环陪跑 |
+| `hitl/gates.py` | 人工闸门 | 投递/打招呼/接offer/谈薪话术 |
+| `app.py` | CLI 入口 | 命令分发 |
+
+#### 5.3.4 UI 层 (`careercrew_ui`)
+
+| 模块 | 职责 | 关键技术点 |
+|------|------|-----------|
+| `cli/renderer.py` | CLI 对话渲染 | HITL 提示、agent 输出格式化 |
+| `dashboard/app.py` | Streamlit 入口 | 多页面导航 |
+| `dashboard/pages/overview.py` | 系统总览 | agent 配置 + 记忆统计 + 当前阶段 |
+| `dashboard/pages/data_browser.py` | 数据浏览 | User Model / 情景记忆树 / 候选数据 |
+| `dashboard/pages/traces.py` | 追踪查看 | ReAct 轨迹回放 / HITL 历史 |
+
+### 5.4 数据流说明
+
+#### 5.4.1 Agent 编排流（单轮 supervisor -> agent -> 工具）
+
+```
+用户输入 + 当前阶段
+      │
+      ▼
+┌─────────────────┐
+│   Supervisor    │  读 state -> 判断阶段 -> 路由到 agent
+│   (router)      │
+└────────┬────────┘
+         │ route(agent_name)
+         ▼
+┌─────────────────┐
+│  Agent 节点     │  套手写 ReAct 循环
+│  (base_agent)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│        ReAct while 循环              │
+│  组装上下文(短期+记忆+工具结果)       │
+│       ▼                             │
+│  调 LLM(带工具 schema)              │
+│       ▼                             │
+│  有 tool_call? ──是──> 执行工具 ──┐ │
+│       │ 否                        ▼ │
+│       ▼                       回喂结果│
+│  返回最终答案 <────────────────────┘ │
+└────────────────┬────────────────────┘
+                 │ 工具执行前检查
+                 ▼
+        requires_confirmation?
+           │              │
+          是              否
+           ▼              ▼
+    ┌────────────┐   直接执行
+    │ HITL       │
+    │ interrupt  │
+    └─────┬──────┘
+          │ 确认/拒绝/修改
+          ▼
+    执行(或中止) -> 写情景记忆
+```
+
+#### 5.4.2 记忆读写流
+
+```
+【写入】关键事件触发
+面试结束 / 投递 / offer / 匹配命中
+      │
+      ▼
+episodic.write(entry)  ──> append JSONL (id+parentId)
+      │
+      └──> vector_index.upsert(embedding) ──> Milvus (careercrew_episodic)
+
+profile_update(字段) ──> user_model.json 结构化更新
+
+【读取】上下文重建 + 主动检索
+ReAct 组装上下文:
+  ├─ short_term: state.messages (Context Window)
+  ├─ episodic 回溯: 从当前叶子沿 parentId 到根拼接
+  └─ memory_search(主动): query -> Milvus 语义检索情景记忆 -> top_k 注入
+```
+
+#### 5.4.3 求职周期工作流
+
+```
+intent -> planning(规划师:画像+目标公司池)
+              -> match(匹配官:搜JD+打分+入库)
+                   -> resume(简历顾问:定制+评估)
+                        -> interview(面试官:模拟+记录)
+                             -> negotiate(谈判师:策略+话术)
+                                  -> apply(HITL确认投递) [interrupt]
+                                       -> track(跟踪, mock/自建MCP)
+                                            -> review(复盘写记忆)
+                                                 -> 回 match (循环)
+```
+
+#### 5.4.4 RAG 检索流（复用 MODULAR-RAG）
+
+```
+agent 调 rag_query 工具
+      │
+      ▼
+MODULAR-RAG HybridSearch
+  ├─ Dense (Embedding) ──┐
+  ├─ Sparse (BM25)    ──┤──> RRF 融合 ──> Rerank ──> Top-K
+  └─ 向量库: Milvus (careercrew_kb) ──┘
+      │
+      ▼
+结果回喂 ReAct 循环
+```
+
+### 5.5 配置驱动设计
+
+系统通过 `config/settings.yaml` 统一配置，支持零代码切换组件：
+
+```yaml
+# config/settings.yaml 示例
+
+# LLM 配置（复用 llm_factory）
+llm:
+  provider: azure            # azure | openai | ollama | deepseek
+  model: gpt-4o
+  azure_endpoint: "..."
+  api_key: "${AZURE_API_KEY}"
+
+# Embedding 配置
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+
+# 向量库配置（Milvus 可插拔）
+vector_store:
+  backend: milvus_lite       # milvus_lite | milvus_docker | chroma
+  persist_path: ./data/db/milvus
+  collections:
+    knowledge: careercrew_kb
+    episodic_memory: careercrew_episodic
+
+# RAG 后端（复用 MODULAR-RAG）
+rag_backend:
+  modular_rag_path: F:/agent_develop/MODULAR-RAG-MCP-SERVER
+  retrieval:
+    fusion_algorithm: rrf
+    top_k_dense: 20
+    top_k_sparse: 20
+    top_k_final: 10
+  rerank:
+    backend: cross_encoder   # none | cross_encoder | llm
+
+# LangGraph supervisor 配置
+supervisor:
+  checkpointer:
+    backend: sqlite
+    path: ./data/db/checkpointer.db
+  max_consecutive_agent_turns: 10
+
+# 记忆系统
+memory:
+  episodic:
+    transcript_dir: ./data/transcripts
+    vectorize: true
+  user_model:
+    path: ./data/user_model.json
+  compaction:
+    enabled: true
+    token_threshold_ratio: 0.7   # token 占比阈值（用模型真实 usage）
+    retention_tokens: 20000       # 保留区大小
+
+# 工具层
+tools:
+  registry:
+    internal: [rag_query, memory_search, memory_write, profile_update]
+    mcp: [mcp_jobs, google_mcp]
+  hitl:
+    requires_confirmation:
+      - submit_application
+      - send_greeting
+      - accept_offer
+      - salary_talk_script
+
+# HITL 默认策略
+hitl:
+  default_policy: confirm        # 默认 HITL，仅低风险自动化
+
+# 可观测性（复用 MODULAR-RAG trace）
+observability:
+  enabled: true
+  log_file: ./logs/traces.jsonl
+
+# Dashboard
+dashboard:
+  enabled: true
+  port: 8501
+  traces_dir: ./logs
+```
+
+### 5.6 扩展性设计要点
+
+1. **新增 agent**：继承 `base_agent`，加 system prompt，在 `supervisor/router.py` 注册路由。
+2. **新增工具**：实现统一 schema，在 `tools/registry.py` 注册；MCP 工具自动发现。
+3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
+4. **换 LLM**：改 `llm.provider` 配置（复用 llm_factory）。
+5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
+
+---

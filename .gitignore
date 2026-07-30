@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env / secrets
+.env
+.env.*
+secrets.yaml
+*.log
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# CareerCrew runtime data
+data/
+logs/
+cache/
+
+# Skill caches (derived from DEV_SPEC)
+.github/skills/auto-coder/.spec_hash
+
+# OS
+.DS_Store
+Thumbs.db
