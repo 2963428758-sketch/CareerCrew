@@ -1,0 +1,95 @@
+# CareerCrew 主配置（结构对齐 DEV_SPEC §5.5）
+# ${VAR} 占位由 careercrew_core/state/settings.py 的 load_settings 做环境变量替换
+
+# ── LLM（硅基流动，OpenAI 兼容；init_chat_model 薄适配） ──
+llm:
+  provider: openai               # 走 init_chat_model 的 openai provider（OpenAI 兼容）
+  model: "Qwen/Qwen2.5-72B-Instruct"
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
+  temperature: 0.3
+  max_tokens: 2048
+
+# ── Embedding（本地 BGE-M3 三合一：dense + sparse + colbert） ──
+embedding:
+  provider: bge_m3_local         # bge_m3_local | openai | siliconflow_dense
+  model: BAAI/bge-m3
+  model_path: ./data/ms_cache/models/BAAI--bge-m3/snapshots/master
+  use_fp16: false                # CPU 跑关闭 fp16
+  batch_size: 12
+
+# ── Rerank（硅基流动 rerank API） ──
+rerank:
+  backend: siliconflow           # none | siliconflow | local_bge
+  model: BAAI/bge-reranker-v2-m3
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
+  top_m: 30                      # 精排候选数
+
+# ── 向量库（Milvus 可插拔） ──
+vector_store:
+  backend: milvus_lite           # milvus_lite | milvus_docker | chroma
+  persist_path: ./data/db/milvus
+  collections:
+    knowledge: careercrew_kb
+    episodic_memory: careercrew_episodic
+
+# ── RAG 检索（自建） ──
+rag:
+  retrieval:
+    mode: hybrid                 # hybrid | dense | sparse
+    fusion_algorithm: rrf        # rrf | weighted_sum
+    top_k_dense: 20
+    top_k_sparse: 20
+    top_k_final: 10
+  chunking:
+    strategy: recursive          # recursive | semantic
+    chunk_size: 800
+    chunk_overlap: 100
+    contextual: true             # Contextual Chunking（LLM 加上下文前置）
+
+# ── LangGraph supervisor ──
+supervisor:
+  checkpointer:
+    backend: sqlite
+    path: ./data/db/checkpointer.db
+  max_consecutive_agent_turns: 10
+
+# ── 记忆系统 ──
+memory:
+  episodic:
+    transcript_dir: ./data/transcripts
+    vectorize: true
+  user_model:
+    path: ./data/user_model.json
+  compaction:
+    enabled: true
+    token_threshold_ratio: 0.7   # token 占比阈值（用模型真实 usage）
+    retention_tokens: 20000      # 保留区大小
+
+# ── 工具层 ──
+tools:
+  registry:
+    internal: [rag_query, memory_search, memory_write, profile_update]
+    mcp: [mcp_jobs, google_mcp]
+  hitl:
+    requires_confirmation:
+      - submit_application
+      - send_greeting
+      - accept_offer
+      - salary_talk_script
+
+# ── HITL 默认策略 ──
+hitl:
+  default_policy: confirm        # 默认 HITL，仅低风险自动化
+
+# ── 可观测性（自建 trace） ──
+observability:
+  enabled: true
+  log_file: ./logs/traces.jsonl
+
+# ── Dashboard ──
+dashboard:
+  enabled: true
+  port: 8501
+  traces_dir: ./logs

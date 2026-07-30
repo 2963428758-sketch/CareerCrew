@@ -1172,10 +1172,10 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| A1 | 四层目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [ ] | | conda env + 依赖安装进 env |
-| A2 | 引入 pytest 并建立测试目录约定 | [ ] | | tests/unit\|integration\|e2e\|fixtures |
-| A3 | 配置加载与校验（Settings） | [ ] | | settings.yaml + load_settings + fail-fast |
-| A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [ ] | | init_chat_model + Base* 抽象+工厂 |
+| A1 | 四层目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [x] | 2026-07-30 | conda env + 依赖安装进 env |
+| A2 | 引入 pytest 并建立测试目录约定 | [x] | 2026-07-30 | tests/unit\|integration\|e2e\|fixtures |
+| A3 | 配置加载与校验（Settings） | [x] | 2026-07-30 | settings.yaml + load_settings + fail-fast |
+| A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [x] | 2026-07-30 | init_chat_model + Base* 抽象+工厂 |
 
 #### 阶段 B：LangGraph supervisor + 手写 ReAct 骨架
 
@@ -1313,7 +1313,7 @@ dashboard:
 
 | 阶段 | 总任务数 | 已完成 | 进度 |
 |------|---------|--------|------|
-| 阶段 A | 4 | 0 | 0% |
+| 阶段 A | 4 | 4 | 100% |
 | 阶段 B | 5 | 0 | 0% |
 | 阶段 C | 6 | 0 | 0% |
 | 阶段 D | 5 | 0 | 0% |
@@ -1327,7 +1327,7 @@ dashboard:
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **0** | **0%** |
+| **总计** | **65** | **4** | **6%** |
 
 ---
 

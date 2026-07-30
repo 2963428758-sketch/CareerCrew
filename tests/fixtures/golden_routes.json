@@ -1,0 +1,4 @@
+{
+  "_comment": "golden 路由集占位 - B3 阶段（supervisor router）填充真实用例。结构：[{stage, user_intent, expected_agent}]",
+  "routes": []
+}
