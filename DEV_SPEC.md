@@ -1007,7 +1007,7 @@ agent 调 rag_query 工具
 # LLM 配置（硅基流动，OpenAI 兼容；init_chat_model 适配）
 llm:
   provider: openai           # 走 init_chat_model 的 openai provider（OpenAI 兼容）
-  model: "Qwen/Qwen2.5-72B-Instruct"   # 硅基流动上的模型，可换 DeepSeek/GLM 等
+  model: "deepseek-ai/DeepSeek-V4-Flash"   # 默认 Flash（便宜快，工具调用已验证）；可换 V4-Pro/V3.2/GLM 等
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
 

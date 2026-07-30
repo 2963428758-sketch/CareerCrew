@@ -4,7 +4,7 @@
 # ── LLM（硅基流动，OpenAI 兼容；init_chat_model 薄适配） ──
 llm:
   provider: openai               # 走 init_chat_model 的 openai provider（OpenAI 兼容）
-  model: "Qwen/Qwen2.5-72B-Instruct"
+  model: "deepseek-ai/DeepSeek-V4-Flash"
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
   temperature: 0.3

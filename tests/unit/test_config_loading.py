@@ -32,7 +32,7 @@ def yaml_safe_dump(data: dict) -> str:
 def test_load_settings_ok(tmp_path: Path, valid_config_data: dict) -> None:
     settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert isinstance(settings, Settings)
-    assert settings.llm.model == "Qwen/Qwen2.5-72B-Instruct"
+    assert settings.llm.model == "deepseek-ai/DeepSeek-V4-Flash"
     assert settings.vector_store.backend == "milvus_lite"
     assert settings.vector_store.collections["knowledge"] == "careercrew_kb"
     assert settings.rag.retrieval.mode == "hybrid"

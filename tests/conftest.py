@@ -15,7 +15,7 @@ def valid_config() -> dict:
     return {
         "llm": {
             "provider": "openai",
-            "model": "Qwen/Qwen2.5-72B-Instruct",
+            "model": "deepseek-ai/DeepSeek-V4-Flash",
             "base_url": "https://api.siliconflow.cn/v1",
             "api_key": "sk-test-literal",
             "temperature": 0.3,
