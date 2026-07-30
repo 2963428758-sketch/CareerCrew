@@ -44,9 +44,9 @@
 |------|---------|
 | **supervisor + agent + ReAct** | 路由到 agent -> ReAct 执行工具 -> 返回 supervisor |
 | **agent + 记忆** | ReAct 主动 `memory_search` -> 结果回喂 -> 写情景记忆 |
-| **agent + RAG** | `rag_query` 调 MODULAR-RAG 检索 -> 结果回喂 |
+| **agent + RAG** | `rag_query` 调自建 RAG 检索 -> 结果回喂 |
 | **HITL 流程** | 高风险工具 -> interrupt -> 人工确认 -> 恢复 -> 写记忆 |
-| **Milvus + MODULAR-RAG** | 知识库 ingestion -> 检索 roundtrip（真实 milvus-lite） |
+| **Milvus + RAG** | 知识库 ingestion -> 检索 roundtrip（真实 milvus-lite） |
 
 #### 4.2.3 端到端测试 (E2E Tests)
 模拟真实求职闭环：

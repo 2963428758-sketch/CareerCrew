@@ -14,7 +14,7 @@
 | **A** 工程骨架与配置 | 可运行/可配置/可测试的工程骨架 | MVP |
 | **B** LangGraph supervisor + 手写 ReAct 骨架 | 编排与 agent 内核可跑通 | MVP |
 | **C** 3 层记忆 + append-only 树 | 记忆系统基础版 | MVP |
-| **D** RAG 接入 + 扩 Milvus 后端 | 检索可用、Milvus 可插拔 | MVP |
+| **D** 自建 RAG 流水线 | BGE-M3 + Contextual Chunking + Hybrid + Rerank 跑通 | MVP |
 | **E** 职位匹配官 | 第一个 agent 落地 | MVP |
 | **F** 简历顾问 | 第二个 agent + RAG 简历定制 | MVP |
 | **G** CLI + M1 闭环 | 部分求职闭环可跑通 | MVP |
@@ -41,7 +41,7 @@
 | A1 | 初始化四层目录树与最小可运行入口 | [ ] | | careercrew_ai/core/cli/ui 骨架 + main 入口 |
 | A2 | 引入 pytest 并建立测试目录约定 | [ ] | | tests/unit\|integration\|e2e\|fixtures |
 | A3 | 配置加载与校验（Settings） | [ ] | | settings.yaml + load_settings + fail-fast |
-| A4 | 接入 MODULAR-RAG 依赖（editable install + import 验证） | [ ] | | 复用 llm_factory/trace/evaluator |
+| A4 | 自建 AI 基础层（llm_factory/embedding/vector_store 抽象+工厂） | [ ] | | BaseLLM/BaseEmbedding/BaseVectorStore+工厂 |
 
 #### 阶段 B：LangGraph supervisor + 手写 ReAct 骨架
 
@@ -64,14 +64,14 @@
 | C5 | 长期 User Model 结构化读写 | [ ] | | user_model.py + profile_update |
 | C6 | 基础写入触发点（面试/投递/offer 后写） | [ ] | | memory_write 工具 |
 
-#### 阶段 D：RAG 接入 + 扩 Milvus 后端
+#### 阶段 D：自建 RAG 流水线
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| D1 | 接入 MODULAR-RAG 检索（封装 rag_query 工具） | [ ] | | tools/internal/rag_query.py |
-| D2 | 给 MODULAR-RAG VectorStore 加 Milvus 后端 | [ ] | | milvus_store.py（贡献 MODULAR-RAG） |
-| D3 | milvus-lite 本地嵌入式配置 | [ ] | | 配置 + 持久化路径 |
-| D4 | 知识库 ingestion（八股/面经/JD/简历范本） | [ ] | | 复用 MODULAR-RAG pipeline |
+| D1 | BGE-M3 Embedding + 切分/Contextual Chunking | [ ] | | bge_m3_embedding.py / contextualizer.py |
+| D2 | Milvus 后端（BaseVectorStore 实现） | [ ] | | milvus_store.py（CareerCrew 自有） |
+| D3 | Hybrid Search + RRF + Rerank 编排 | [ ] | | hybrid_search.py / fusion.py / rerank.py |
+| D4 | rag_query 工具 + 知识库 ingestion pipeline | [ ] | | rag_query.py / pipeline.py / ingest_knowledge.py |
 | D5 | 配置切换 milvus/chroma 验证 | [ ] | | 工厂路由 roundtrip 测试 |
 
 #### 阶段 E：职位匹配官
@@ -91,7 +91,7 @@
 | F1 | resume_advisor system prompt | [ ] | | prompts/resume_advisor.txt |
 | F2 | 简历范本 RAG 检索 | [ ] | | rag_query 检索简历范本 |
 | F3 | 简历定制生成（JD 定向） | [ ] | | 按 JD 定制简历 |
-| F4 | 简历匹配度评估（复用 evaluator） | [ ] | | 答案级评估 |
+| F4 | 简历匹配度评估（集成 evaluator） | [ ] | | 答案级评估 |
 | F5 | 测试 | [ ] | | |
 
 #### 阶段 G：CLI + M1 闭环
@@ -145,9 +145,9 @@
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| L1 | 答案级评估（简历匹配度/面试题质量，复用 Ragas） | [ ] | | CompositeEvaluator |
+| L1 | 答案级评估（简历匹配度/面试题质量，集成 Ragas） | [ ] | | CompositeEvaluator |
 | L2 | 业务级评估（转化率/通过率/offer） | [ ] | | 情景记忆事件统计 |
-| L3 | 复用 MODULAR-RAG trace 全链路打点 | [ ] | | agent_loop/hitl/memory_op |
+| L3 | 自建 trace 全链路打点 | [ ] | | agent_loop/hitl/memory_op |
 | L4 | Streamlit Dashboard（总览/数据/追踪） | [ ] | | 三页面 |
 | L5 | 测试 | [ ] | | |
 
@@ -224,7 +224,7 @@
 - **修改文件**：
   - `careercrew_core/state/settings.py`（新增：Settings 数据结构 + load/validate）
   - `careercrew_cli/app.py`（启动调 `load_settings()`，缺字段 fail-fast）
-  - `config/settings.yaml`（补齐字段：llm/embedding/vector_store/rag_backend/supervisor/memory/tools/hitl/observability/dashboard）
+  - `config/settings.yaml`（补齐字段：llm/embedding/rerank/vector_store/rag/supervisor/memory/tools/hitl/observability/dashboard）
   - `tests/unit/test_config_loading.py`
 - **实现类/函数**：
   - `Settings`（dataclass：结构与最小校验，不做网络/IO）
@@ -233,16 +233,19 @@
 - **验收标准**：启动加载成功；缺失关键字段（如 `vector_store.backend`）时抛可读错误。
 - **测试方法**：`pytest -q tests/unit/test_config_loading.py`。
 
-### A4：接入 MODULAR-RAG 依赖
-- **目标**：以 editable install 依赖本地 MODULAR-RAG，验证可复用 `llm_factory`/`trace`/`evaluator`/`BaseVectorStore`。
+### A4：自建 AI 基础层（llm/embedding/vector_store/reranker 抽象 + 工厂）
+- **目标**：自建 `BaseLLM`/`BaseEmbedding`/`BaseVectorStore`/`BaseReranker` 抽象基类 + 工厂，为后续 RAG 与 agent 提供可插拔底座（**不依赖外部 RAG 项目**）。
 - **修改文件**：
-  - `pyproject.toml`（依赖 `MODULAR-RAG-MCP-SERVER`，本地 `-e` 路径）
-  - `careercrew_ai/llm/llm_adapter.py`（薄适配层：复用 llm_factory）
-  - `tests/unit/test_modular_rag_import.py`
+  - `careercrew_ai/llm/base_llm.py`、`llm_adapter.py`（BaseLLM + 工厂，Azure/OpenAI/Ollama/DeepSeek 适配）
+  - `careercrew_ai/embedding/base_embedding.py`（BaseEmbedding 抽象）
+  - `careercrew_ai/vector_store/base_vector_store.py`（BaseVectorStore 抽象）
+  - `careercrew_ai/reranker/base_reranker.py`（BaseReranker 抽象）
+  - `tests/unit/test_ai_base_factories.py`
 - **实现类/函数**：
-  - `create_llm(settings) -> BaseLLM`（调用 MODULAR-RAG `LLMFactory`）
-- **验收标准**：能 import MODULAR-RAG 的 `llm_factory`/`trace`/`evaluator`/`BaseVectorStore`；`create_llm` 可创建 LLM（Fake provider 验证）。
-- **测试方法**：`pytest -q tests/unit/test_modular_rag_import.py`。
+  - `BaseLLM` / `LLMFactory.create(settings) -> BaseLLM`
+  - `BaseEmbedding` / `BaseReranker` / `BaseVectorStore`（契约 + 工厂骨架，Fake 实现验证路由）
+- **验收标准**：四个工厂按配置路由到 Fake 实现；契约测试约束输入输出 shape。
+- **测试方法**：`pytest -q tests/unit/test_ai_base_factories.py`。
 
 ---
 
@@ -377,47 +380,61 @@
 
 ---
 
-## 阶段 D：RAG 接入 + 扩 Milvus 后端（目标：检索可用、Milvus 可插拔）
+## 阶段 D：自建 RAG 流水线（目标：BGE-M3 + Contextual Chunking + Hybrid + Rerank 跑通）
 
-### D1：接入 MODULAR-RAG 检索（rag_query 工具）
-- **目标**：封装 MODULAR-RAG 检索为内部工具。
+### D1：BGE-M3 Embedding + 切分/Contextual Chunking
+- **目标**：实现 BGE-M3 embedding（dense+sparse+colbert）+ RecursiveCharacterTextSplitter + Contextual Chunking（LLM 给每块生成上下文前置）。
 - **修改文件**：
-  - `careercrew_core/tools/internal/rag_query.py`
-  - `tests/unit/test_rag_query_tool.py`
+  - `careercrew_ai/embedding/bge_m3_embedding.py`（BaseEmbedding + BGE-M3）
+  - `careercrew_ai/splitter/recursive_splitter.py`
+  - `careercrew_core/rag/chunking/document_chunker.py`、`contextualizer.py`
+  - `careercrew_ai/prompts/contextual_chunking.txt`
+  - `tests/unit/test_bge_m3_embedding.py`、`test_contextual_chunking.py`
 - **实现类/函数**：
-  - `rag_query(query, top_k, collection) -> list[Chunk]`（调 MODULAR-RAG HybridSearch）
-- **验收标准**：Mock MODULAR-RAG 检索，工具返回结构化结果。
-- **测试方法**：`pytest -q tests/unit/test_rag_query_tool.py`。
+  - `BGEM3Embedding(BaseEmbedding).encode(texts) -> (dense, sparse, colbert)`（一次前向三路输出）
+  - `Contextualizer.contextualize(chunk, doc) -> str`（调 LLM 生成 50-100 token 上下文前置）
+- **验收标准**：BGE-M3 三路输出维度正确；Contextual Chunking 产出带上下文的块（Mock LLM）。
+- **测试方法**：`pytest -q tests/unit/test_bge_m3_embedding.py tests/unit/test_contextual_chunking.py`。
 
-### D2：给 MODULAR-RAG VectorStore 加 Milvus 后端
-- **目标**：在 MODULAR-RAG 仓库实现 `milvus_store.py`，满足 `BaseVectorStore` 契约。
+### D2：Milvus 后端（BaseVectorStore 实现）
+- **目标**：在 `careercrew_ai/vector_store/milvus_store.py` 实现 `MilvusStore`，满足 `BaseVectorStore` 契约，支持 BGE-M3 dense+sparse 混合检索。
 - **修改文件**：
-  - `F:/agent_develop/MODULAR-RAG-MCP-SERVER/src/libs/vector_store/milvus_store.py`
-  - `F:/agent_develop/MODULAR-RAG-MCP-SERVER/src/libs/vector_store/vector_store_factory.py`（注册 milvus 路由）
+  - `careercrew_ai/vector_store/milvus_store.py`
+  - `careercrew_ai/vector_store/vector_store_factory.py`（注册 milvus 路由）
   - `tests/integration/test_milvus_backend.py`
 - **实现类/函数**：
   - `MilvusStore(BaseVectorStore)`：`upsert` / `query` / `delete_by_metadata` / `get_by_ids`
-  - 支持 Dense + Sparse 混合检索
+  - 支持 Dense + Sparse 混合检索（Milvus 原生 BGE-M3 hybrid）
 - **验收标准**：upsert -> query roundtrip 确定性；collection 隔离。
 - **测试方法**：`pytest -q tests/integration/test_milvus_backend.py`（真实 milvus-lite）。
 
-### D3：milvus-lite 本地嵌入式配置
-- **目标**：配置 milvus-lite 本地持久化，零外部服务。
+### D3：Hybrid Search + RRF + Rerank 编排
+- **目标**：实现 Hybrid 检索（BGE-M3 dense + sparse 并行召回 + RRF 融合）+ Rerank 编排（bge-reranker-v2，None 回退）。
 - **修改文件**：
-  - `config/settings.yaml`（vector_store.backend=milvus_lite）
-  - `tests/unit/test_vector_store_factory_routing.py`
-- **实现类/函数**：无（配置 + 工厂路由）。
-- **验收标准**：backend=milvus_lite 时工厂创建 MilvusStore（lite 模式）。
-- **测试方法**：`pytest -q tests/unit/test_vector_store_factory_routing.py`。
+  - `careercrew_core/rag/retrieval/hybrid_search.py`、`fusion.py`
+  - `careercrew_core/rag/rerank.py`
+  - `careercrew_ai/reranker/bge_reranker.py`（BaseReranker + bge-reranker-v2）
+  - `tests/unit/test_hybrid_search_rrf.py`
+- **实现类/函数**：
+  - `HybridSearch.search(query, top_k) -> list[Chunk]`（dense+sparse 召回 + RRF）
+  - `RRFFusion.fuse(dense_results, sparse_results) -> ranked`（`1/(k+rank)` 加权）
+  - `Reranker.rerank(query, candidates) -> ranked`（bge-reranker-v2；超时/失败回退 None）
+- **验收标准**：RRF 融合分数计算正确且确定性；Rerank 失败回退原排序。
+- **测试方法**：`pytest -q tests/unit/test_hybrid_search_rrf.py`。
 
-### D4：知识库 ingestion
-- **目标**：摄取知识库到 Milvus（collection careercrew_kb）。
+### D4：rag_query 工具 + 知识库 ingestion pipeline
+- **目标**：封装自建 RAG 为 `rag_query` 工具；实现 Ingestion pipeline 摄取知识库到 Milvus（collection `careercrew_kb`）。
 - **修改文件**：
-  - `scripts/ingest_knowledge.py`（复用 MODULAR-RAG pipeline）
+  - `careercrew_core/tools/internal/rag_query.py`
+  - `careercrew_core/rag/pipeline.py`（load->split->contextualize->embed->upsert）
+  - `scripts/ingest_knowledge.py`
   - `data/knowledge/`（样例文档）
-- **实现类/函数**：无（脚本调用）。
-- **验收标准**：八股/面经/JD/简历范本样例可摄取并检索。
-- **测试方法**：手动跑 `python scripts/ingest_knowledge.py` + 检索验证。
+  - `tests/unit/test_rag_query_tool.py`
+- **实现类/函数**：
+  - `rag_query(query, top_k, collection) -> list[Chunk]`（调 HybridSearch + Rerank）
+  - `IngestionPipeline.run(source_path, collection)`（编排 chunking + contextual + BGE-M3 编码 + Milvus upsert）
+- **验收标准**：八股/面经/JD/简历范本样例可摄取并检索；rag_query 返回结构化结果。
+- **测试方法**：`pytest -q tests/unit/test_rag_query_tool.py` + 手动跑 `python scripts/ingest_knowledge.py`。
 
 ### D5：配置切换 milvus/chroma 验证
 - **目标**：验证 milvus/chroma 配置切换零代码。
@@ -487,7 +504,7 @@
 - **验收标准**：产出结构化简历草稿。
 
 ### F4：简历匹配度评估
-- **目标**：复用 MODULAR-RAG evaluator 评估简历-JD 匹配度。
+- **目标**：集成 Ragas 评估简历-JD 匹配度。
 - **修改文件**：`careercrew_core/agents/resume_advisor.py`（调 evaluator）
 - **验收标准**：输出匹配度分数。
 
@@ -630,14 +647,14 @@
 ## 阶段 L：评估 + Dashboard（目标：评估闭环 + 可视化）
 
 ### L1：答案级评估
-- **修改文件**：`careercrew_core/evaluation/answer_eval.py`（复用 MODULAR-RAG CompositeEvaluator）
+- **修改文件**：`careercrew_core/evaluation/answer_eval.py`（自建 CompositeEvaluator）
 - **验收标准**：简历匹配度/面试题质量指标输出。
 
 ### L2：业务级评估
 - **修改文件**：`careercrew_core/evaluation/business_eval.py`（统计情景记忆事件）
 - **验收标准**：转化率/通过率/offer 统计。
 
-### L3：复用 MODULAR-RAG trace 全链路打点
+### L3：自建 trace 全链路打点
 - **修改文件**：各 agent / supervisor / memory 模块（注入 trace 打点）
 - **验收标准**：agent_loop/hitl/memory_op/compaction trace 落 logs/traces.jsonl。
 

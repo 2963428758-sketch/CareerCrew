@@ -15,9 +15,9 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - 多 Agent 编排（LangGraph supervisor 路由 / HITL interrupt / checkpointer）
 - 手写 ReAct 循环（可见的 while 循环，不依赖 agent 黑盒）
 - 三层记忆系统（短期 / 情景 append-only 树 / 长期 User Model）
-- 向量库可插拔（给 MODULAR-RAG 扩 Milvus 后端，Chroma 兜底）
+- 向量库可插拔（自建 Milvus 后端，Chroma 兜底）
 - Function calling 工具层（MCP 工具 + 内部函数统一注册）
-- RAG 复用（Hybrid 检索 BM25+Dense+RRF + 两段式 Rerank）
+- 自建 RAG（BGE-M3 三合一 + Contextual Chunking + bge-reranker）
 
 #### 2️⃣ 开箱即用与深度扩展并重 (Plug-and-Play & Extensible)
 - **开箱即用**：CLI 优先，本地零外部服务（Milvus Lite 嵌入式），`pip install` 即可跑通求职闭环。

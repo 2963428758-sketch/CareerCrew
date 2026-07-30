@@ -27,9 +27,12 @@
 
 **append-only 树的红利**：会话是只增不改的树，任何历史轨迹可完整回放——这是轨迹级评估（黄金轨迹回放）的基础。
 
-### RAG 后端复用 + Milvus 可插拔
-- **复用** `F:\agent_develop\MODULAR-RAG-MCP-SERVER`：Hybrid 检索（BM25 + Dense + RRF）+ 两段式 Rerank + MCP 暴露；复用 `llm_factory` / `trace` / `evaluator`。
-- **扩展**：给 MODULAR-RAG 的 `BaseVectorStore` 抽象基类加 **Milvus 后端**（与 Chroma 并存，配置切换）；本地用 **milvus-lite**（嵌入式零外部服务），Docker 演示用完整 Milvus。
+### 自建 RAG 流水线（最新技术）
+- **Embedding：BGE-M3 三合一**：一个模型同时输出 dense + sparse + ColBERT 多向量，中文 100+ 语言，8192 token，MIT 许可，本地 sentence-transformers 可跑--比"分离的 BM25 + 单独 embedding"更优雅，稀疏路免额外倒排索引。
+- **Chunking：RecursiveCharacterTextSplitter + Contextual Chunking**：Markdown 感知切分 + Anthropic Contextual Retrieval（LLM 给每块生成 50-100 token 上下文前置，再做 embedding/sparse 索引），减少 49% 检索失败，叠加 rerank 降 67%。
+- **检索：Hybrid + RRF**：BGE-M3 dense + BGE-M3 sparse 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索。
+- **Rerank：bge-reranker-v2**：cross-encoder 中文重排，本地可跑。
+- **向量库：Milvus Lite**（原生 BGE-M3 hybrid、嵌入式零外部服务）+ Chroma 兜底，配置切换。
 - **知识库**：大模型八股 + 真实面试题、算法岗面经、JD 库（mcp-jobs 沉淀）、公司/薪资公开数据、简历范本。RAG 知识库与记忆向量共用 Milvus（collection 隔离）。
 
 ### Function calling 统一工具层
@@ -46,11 +49,12 @@
 意向 -> 规划师建画像+目标公司池 -> 匹配官搜新 JD -> 命中 -> 简历顾问定制 -> 面试官模拟+记录 -> 谈判师准备策略 -> HITL 确认投递 -> 跟踪 -> 复盘写入记忆 -> 循环。一个完整的、可 dogfood 的求职陪跑闭环。
 
 ### 全链路可观测 + 评估闭环
-- **可观测性**：复用 MODULAR-RAG 全链路 trace（JSON Lines）+ Streamlit 基础 Dashboard（系统总览 / 数据浏览 / 追踪查看）。不依赖 LangSmith。
-- **评估**：答案级（简历匹配度 / 面试题质量，复用 Ragas）+ 业务级（投递->面试转化率、面试通过率、拿 offer dogfood）。高级方向补轨迹级评估。
+- **可观测性**：自建全链路 trace（JSON Lines，TraceContext 机制）+ Streamlit 基础 Dashboard（系统总览 / 数据浏览 / 追踪查看）。不依赖 LangSmith。
+- **评估**：答案级（简历匹配度 / 面试题质量，集成 Ragas）+ 业务级（投递->面试转化率、面试通过率、拿 offer dogfood）。高级方向补轨迹级评估。
 
 ### 本地优先 (Local-First)
-- LLM 可插拔复用 `llm_factory`（Azure/OpenAI/Ollama/DeepSeek）。
+- LLM 可插拔：自建 `llm_factory` 抽象（Azure/OpenAI/Ollama/DeepSeek），配置切换。
+- Embedding/Rerank 本地可跑：BGE-M3 + bge-reranker-v2（sentence-transformers）。
 - 向量库 Milvus Lite 嵌入式，Chroma 兜底。
 - checkpointer SQLite，情景记忆 JSONL，User Model JSON。
 - **零外部服务依赖**即可跑通 MVP。

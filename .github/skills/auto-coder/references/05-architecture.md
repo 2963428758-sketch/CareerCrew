@@ -53,7 +53,7 @@
 │     ▼                              ▼                              ▼         │
 │ ┌────────────────┐    ┌─────────────────────┐       ┌────────────────────┐  │
 │ │  工具注册表     │    │     记忆系统 (3层)   │       │   Trace 打点       │  │
-│ │ ┌────────────┐ │    │ 短期: Context Window│       │ (复用 MODULAR-RAG) │  │
+│ │ ┌────────────┐ │    │ 短期: Context Window│       │ (自建 TraceContext) │  │
 │ │ │rag_query   │ │    │ 情景: JSONL+树+向量 │       │  agent_loop/hitl/  │  │
 │ │ │memory_search││    │ 长期: User Model    │       │  memory_op/compact │  │
 │ │ │profile_upd │ │    │ compaction (基础版) │       └────────────────────┘  │
@@ -67,11 +67,11 @@
               ┌──────────────────────┼──────────────────────┐
               ▼                      ▼                      ▼
 ┌──────────────────────┐ ┌─────────────────────┐ ┌──────────────────────────┐
-│ AI 层 (careercrew_ai)│ │  RAG 后端 (复用)     │ │       存储层              │
-│ 复用 llm_factory     │ │ MODULAR-RAG-MCP     │ │  Milvus Lite (KB+记忆)   │
-│ BaseLLM/Embedding    │ │ Hybrid(BM25+Dense   │ │  SQLite checkpointer     │
-│ agent prompts        │ │  +RRF)+Rerank       │ │  JSONL transcripts       │
-│                      │ │ +Milvus 后端(新扩)  │ │  user_model.json         │
+│ AI 层 (careercrew_ai)│ │  RAG 流水线 (自建)   │ │       存储层              │
+│ 自建 llm_factory     │ │ BGE-M3 + Rerank     │ │  Milvus Lite (KB+记忆)   │
+│ BaseLLM/Embedding    │ │ Hybrid + RRF        │ │  SQLite checkpointer     │
+│ agent prompts        │ │ + bge-reranker-v2   │ │  JSONL transcripts       │
+│                      │ │ + Milvus/Chroma     │ │  user_model.json         │
 └──────────────────────┘ └─────────────────────┘ │  traces.jsonl            │
                                                   └──────────────────────────┘
 ```
@@ -81,21 +81,36 @@
 ```
 CareerCrew/
 │
-├── careercrew_ai/                       # AI 基础层（复用 llm_factory）
+├── careercrew_ai/                       # AI 基础层（自建 llm_factory / embedding / rerank / vector_store）
 │   ├── __init__.py
-│   ├── llm/                             # 复用/适配 MODULAR-RAG 的 llm_factory
+│   ├── llm/                             # 自建 llm_factory（BaseLLM + 工厂 + provider 实现）
 │   │   ├── __init__.py
-│   │   └── llm_adapter.py              # 薄适配层：复用 llm_factory，按 CareerCrew 配置创建
+│   │   └── llm_adapter.py              # llm 工厂入口，按 CareerCrew 配置创建 LLM
+│   ├── embedding/                       # BGE-M3 三合一（dense + sparse + colbert）
+│   │   ├── __init__.py
+│   │   └── bge_m3_embedding.py         # BaseEmbedding + BGE-M3 实现
+│   ├── reranker/                        # bge-reranker-v2（cross-encoder 中文重排）
+│   │   ├── __init__.py
+│   │   └── bge_reranker.py             # BaseReranker + bge-reranker-v2 实现
+│   ├── vector_store/                    # 向量库可插拔
+│   │   ├── __init__.py
+│   │   ├── base_vector_store.py        # BaseVectorStore 抽象
+│   │   ├── milvus_store.py             # Milvus 后端（BGE-M3 hybrid）
+│   │   └── chroma_store.py             # Chroma 兜底
+│   ├── splitter/                        # 切分策略
+│   │   ├── __init__.py
+│   │   └── recursive_splitter.py       # RecursiveCharacterTextSplitter（Markdown 感知）
 │   ├── react/                           # 手写 ReAct 循环内核
 │   │   ├── __init__.py
 │   │   ├── react_loop.py               # 可见 while 循环（组装上下文->调LLM->判tool_call->执行->回喂）
 │   │   └── context_builder.py          # 上下文组装（短期对话+记忆+工具结果）
-│   └── prompts/                         # agent system prompts
+│   └── prompts/                         # agent system prompts + RAG prompts
 │       ├── job_matcher.txt
 │       ├── resume_advisor.txt
 │       ├── interviewer.txt
 │       ├── salary_negotiator.txt
-│       └── career_planner.txt
+│       ├── career_planner.txt
+│       └── contextual_chunking.txt     # Contextual Chunking 上下文生成 prompt
 │
 ├── careercrew_core/                     # 核心层（LangGraph + Agent + 记忆 + 工具）
 │   ├── __init__.py
@@ -124,11 +139,23 @@ CareerCrew/
 │   │   ├── user_model.py               # 长期 User Model 结构化读写
 │   │   ├── vector_index.py             # 情景记忆向量索引（Milvus）
 │   │   └── compaction.py               # compaction 基础版（保留区+压缩区）
+│   ├── rag/                             # 自建 RAG 流水线
+│   │   ├── __init__.py
+│   │   ├── chunking/                   # 切分 + Contextual Chunking
+│   │   │   ├── __init__.py
+│   │   │   ├── document_chunker.py     # Document -> Chunks（调用 ai.splitter）
+│   │   │   └── contextualizer.py       # LLM 给每块生成上下文前置（Anthropic 法）
+│   │   ├── retrieval/                  # Hybrid 检索
+│   │   │   ├── __init__.py
+│   │   │   ├── hybrid_search.py        # BGE-M3 dense + sparse 并行召回
+│   │   │   └── fusion.py               # RRF 融合
+│   │   ├── rerank.py                   # 编排 ai.reranker（None/Cross-Encoder 回退）
+│   │   └── pipeline.py                 # Ingestion 编排：load->split->contextualize->embed->upsert
 │   └── tools/                           # 统一工具注册表
 │       ├── __init__.py
 │       ├── registry.py                 # 工具注册表（统一 schema + requires_confirmation）
 │       ├── internal/                   # 内部函数工具
-│       │   ├── rag_query.py            # 封装 MODULAR-RAG 检索
+│       │   ├── rag_query.py            # 封装自建 RAG 检索
 │       │   ├── memory_search.py        # 主动记忆检索
 │       │   ├── memory_write.py         # 写情景记忆
 │       │   └── profile_update.py       # 更新 User Model
@@ -174,7 +201,7 @@ CareerCrew/
 │   └── knowledge/                       # 知识库原始文档（八股/面经/JD/简历范本）
 │
 ├── logs/                                # 日志
-│   ├── traces.jsonl                     # 全链路 trace（复用 MODULAR-RAG 格式）
+│   ├── traces.jsonl                     # 全链路 trace（自建格式）
 │   └── app.log
 │
 ├── tests/                               # 测试
@@ -185,6 +212,10 @@ CareerCrew/
 │   │   ├── test_compaction.py
 │   │   ├── test_tool_registry.py
 │   │   ├── test_supervisor_router.py
+│   │   ├── test_bge_m3_embedding.py
+│   │   ├── test_hybrid_search_rrf.py
+│   │   ├── test_contextual_chunking.py
+│   │   ├── test_milvus_store.py
 │   │   └── ...
 │   ├── integration/
 │   │   ├── test_supervisor_agent_react.py
@@ -202,15 +233,15 @@ CareerCrew/
 │       └── golden_trajectories/         # 轨迹 golden 集
 │
 ├── scripts/
-│   ├── ingest_knowledge.py              # 知识库摄取（复用 MODULAR-RAG pipeline）
+│   ├── ingest_knowledge.py              # 知识库摄取（自建 pipeline）
 │   ├── run_cli.py                       # CLI 启动
 │   └── start_dashboard.py               # Dashboard 启动
 │
-├── pyproject.toml                       # 依赖：langgraph / pymilvus / 复用 MODULAR-RAG (-e)
+├── pyproject.toml                       # 依赖：langgraph / pymilvus / sentence-transformers / FlagEmbedding
 └── README.md
 ```
 
-> **依赖说明**：`pyproject.toml` 中以 editable 方式依赖本地 `F:/agent_develop/MODULAR-RAG-MCP-SERVER`，复用其 `llm_factory` / `trace` / `evaluator` / `BaseVectorStore`。Milvus 后端实现位于 MODULAR-RAG 仓库内（`src/libs/vector_store/milvus_store.py`），D 阶段贡献。
+> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `pymilvus`(milvus-lite) / `sentence-transformers` / `FlagEmbedding`(BGE-M3 + bge-reranker-v2)。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线（chunking/embedding/retrieval/rerank/vector_store）全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
 
 ### 5.3 模块职责表
 
@@ -218,7 +249,7 @@ CareerCrew/
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `llm/llm_adapter.py` | 复用 MODULAR-RAG `llm_factory` 创建 LLM | 按 CareerCrew `settings.llm` 路由 provider |
+| `llm/llm_adapter.py` | 自建 `llm_factory` 创建 LLM | 按 CareerCrew `settings.llm` 路由 provider |
 | `react/react_loop.py` | 手写 ReAct 可见 while 循环 | 解析 tool_calls、轮次上限、异常中断 |
 | `react/context_builder.py` | 每轮上下文组装 | 短期对话 + 按需检索记忆 + 工具结果 |
 | `prompts/*.txt` | 5 个 agent 的 system prompt | 角色定义 + 工具使用指引 |
@@ -340,13 +371,13 @@ intent -> planning(规划师:画像+目标公司池)
                                                  -> 回 match (循环)
 ```
 
-#### 5.4.4 RAG 检索流（复用 MODULAR-RAG）
+#### 5.4.4 RAG 检索流（自建）
 
 ```
 agent 调 rag_query 工具
       │
       ▼
-MODULAR-RAG HybridSearch
+自建 HybridSearch
   ├─ Dense (Embedding) ──┐
   ├─ Sparse (BM25)    ──┤──> RRF 融合 ──> Rerank ──> Top-K
   └─ 向量库: Milvus (careercrew_kb) ──┘
@@ -362,17 +393,24 @@ MODULAR-RAG HybridSearch
 ```yaml
 # config/settings.yaml 示例
 
-# LLM 配置（复用 llm_factory）
+# LLM 配置（自建 llm_factory）
 llm:
   provider: azure            # azure | openai | ollama | deepseek
   model: gpt-4o
   azure_endpoint: "..."
   api_key: "${AZURE_API_KEY}"
 
-# Embedding 配置
+# Embedding 配置（BGE-M3 三合一：dense + sparse + colbert）
 embedding:
-  provider: openai
-  model: text-embedding-3-small
+  provider: bge_m3            # bge_m3 | openai | ollama
+  model: BAAI/bge-m3
+  # BGE-M3 一次前向同时输出 dense + sparse，稀疏路免额外 BM25 索引
+
+# Rerank 配置（bge-reranker-v2）
+rerank:
+  backend: bge_reranker_v2    # none | bge_reranker_v2 | llm
+  model: BAAI/bge-reranker-v2-m3
+  top_m: 30                   # 精排候选数
 
 # 向量库配置（Milvus 可插拔）
 vector_store:
@@ -382,16 +420,19 @@ vector_store:
     knowledge: careercrew_kb
     episodic_memory: careercrew_episodic
 
-# RAG 后端（复用 MODULAR-RAG）
-rag_backend:
-  modular_rag_path: F:/agent_develop/MODULAR-RAG-MCP-SERVER
+# RAG 检索配置（自建）
+rag:
   retrieval:
-    fusion_algorithm: rrf
+    mode: hybrid             # hybrid | dense | sparse
+    fusion_algorithm: rrf    # rrf | weighted_sum
     top_k_dense: 20
     top_k_sparse: 20
     top_k_final: 10
-  rerank:
-    backend: cross_encoder   # none | cross_encoder | llm
+  chunking:
+    strategy: recursive      # recursive | semantic
+    chunk_size: 800
+    chunk_overlap: 100
+    contextual: true         # Contextual Chunking（LLM 加上下文前置）
 
 # LangGraph supervisor 配置
 supervisor:
@@ -428,7 +469,7 @@ tools:
 hitl:
   default_policy: confirm        # 默认 HITL，仅低风险自动化
 
-# 可观测性（复用 MODULAR-RAG trace）
+# 可观测性（自建 trace）
 observability:
   enabled: true
   log_file: ./logs/traces.jsonl
@@ -445,7 +486,7 @@ dashboard:
 1. **新增 agent**：继承 `base_agent`，加 system prompt，在 `supervisor/router.py` 注册路由。
 2. **新增工具**：实现统一 schema，在 `tools/registry.py` 注册；MCP 工具自动发现。
 3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
-4. **换 LLM**：改 `llm.provider` 配置（复用 llm_factory）。
+4. **换 LLM**：改 `llm.provider` 配置（自建 llm_factory）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
 
 ---
