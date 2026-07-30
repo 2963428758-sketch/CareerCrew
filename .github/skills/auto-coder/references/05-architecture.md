@@ -499,4 +499,31 @@ dashboard:
 4. **换 LLM**：改 `llm` 配置（init_chat_model 适配）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
 
+### 5.7 错误处理与降级策略
+
+> 每个外部依赖与关键组件的失败场景 + 降级，确保单点失败不阻塞主流程。
+
+| 组件 | 失败场景 | 降级策略 |
+|------|---------|---------|
+| LLM（硅基流动） | 超时 / 限流 / 5xx | 指数退避重试 ≤3 次；仍失败抛可读错误（含 trace_id），不吞异常 |
+| LLM | API key 错 / 余额不足 | 启动时 fail-fast（A3 配置校验 + 首次调用探活） |
+| BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
+| Milvus | 连接失败 / 查询超时 | 切 Chroma 兜底（`backend=chroma`）；无兜底则返回空结果 + 错误日志 |
+| Rerank（硅基流动） | 超时 / 失败 | 回退 NoneReranker（原 RRF 排序），不阻塞检索 |
+| MCP 工具（mcp-jobs/Google） | 超时 / 不可用 | 工具返回错误信息给 agent，agent 决定重试/换路径；MVP 用 mock 兜底 |
+| Contextual Chunking LLM | 生成上下文失败 | 该块不加上下文前缀（降级为普通块），继续 ingestion |
+| compaction | 总结 LLM 失败 | 保留原 state 不压缩，记录警告，下轮重试 |
+| 情景记忆写入 | JSONL 写失败 | 重试；失败则内存暂存 + 告警（不丢数据） |
+| checkpointer | SQLite 锁 / 写失败 | 重试；失败则降级内存 checkpointer（进程内，重启丢失） |
+
+**原则**：检索/生成链路任何环节失败都走"降级 + 可观测"，不让用户看到原始 stack trace；高风险动作（投递/接 offer）即使降级也必走 HITL 确认。
+
+### 5.8 安全与隐私
+
+- **API key**：通过环境变量注入（`${SILICONFLOW_API_KEY}`），不硬编码；`.gitignore` 排除 `.env`。`package` skill 打包时自动 sanitize。
+- **用户数据**：简历 / 薪资 / 面经属敏感信息，存本地（`data/`），不上传第三方；User Model 结构化存储，不外泄。
+- **投递动作**：必走 HITL 确认，避免误投（求职高 stakes）。
+- **日志脱敏**：trace 日志不记录完整简历正文 / 薪资数字，只记摘要 + 长度 + 来源。
+- **依赖安全**：固定依赖版本（`pyproject.toml`），定期 `pip audit`。
+
 ---

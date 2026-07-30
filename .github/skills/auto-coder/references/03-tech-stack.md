@@ -382,4 +382,23 @@ HITL 确认投递 (apply) ── interrupt
 - **事件驱动 + 单向依赖**：core 只跑逻辑发事件不碰渲染，UI 订阅事件，一套 core 配 CLI + Dashboard 双前端。
 - **自建求职者端 MCP**：仿 boss-zhipin-mcp 的 Playwright+CDP（投递/进度跟踪/面经采集）。
 
+### 3.14 关键设计决策记录（ADR）
+
+> 记录"为什么这么选"，便于面试讲解与后续复盘。每条含：决策点、备选、选定、理由。
+
+| # | 决策点 | 备选 | 选定 | 理由 |
+|---|--------|------|------|------|
+| ADR-1 | Agent 架构 | 纯 LangGraph / AutoGen / CrewAI / Hybrid | **Hybrid（LangGraph 编排 + 手写 ReAct）** | LangGraph 擅长状态机/HITL/checkpointer；手写 ReAct 让工具推理可见可控可测试。AutoGen/CrewAI 偏黑盒，可控性与可观测性弱。 |
+| ADR-2 | RAG 实现 | 复用 MODULAR-RAG / 自建 | **自建** | 用最新技术（BGE-M3+Contextual Chunking），不被外部项目约束；面试能讲透每个环节。 |
+| ADR-3 | Embedding | API dense / 本地 BGE-M3 / OpenAI | **本地 BGE-M3** | 三合一(dense+sparse+colbert)只有本地 FlagEmbedding 能拿；API 只给 dense。高频调用留本地省钱。 |
+| ADR-4 | LLM 调用 | 自建 BaseLLM 工厂 / 裸 openai SDK / init_chat_model | **init_chat_model 薄适配** | LangGraph 原生用 ChatOpenAI，自建只是包 SDK 无价值；init_chat_model 是 LangChain 现代工厂，base_url 切 provider。 |
+| ADR-5 | LLM 平台 | Azure/OpenAI/Ollama/硅基流动 | **硅基流动** | 国内可访问、OpenAI 兼容、模型多（Qwen/DeepSeek/GLM）、便宜。 |
+| ADR-6 | Rerank | 本地 bge-reranker / 硅基流动 API | **硅基流动 API** | 低频（每查询仅 top-30 候选），API 即可，省本地算力。 |
+| ADR-7 | 向量库 | Chroma / Qdrant / Milvus | **Milvus Lite + Chroma 兜底** | Milvus 原生支持 BGE-M3 hybrid、milvus-lite 嵌入式零服务；Chroma 兜底保可用。 |
+| ADR-8 | 记忆架构 | 单层 / 数据库 / 仿 Hermes | **仿 Hermes 3 层** | 短期/情景/长期分层清晰；append-only 树支持轨迹回放（轨迹级评估基础）。 |
+| ADR-9 | 环境 | venv / conda / Docker | **conda env** | 本机 miniconda，conda 管理科学计算栈（torch/FlagEmbedding）更顺手；venv 在 torch wheel 上踩过坑。 |
+| ADR-10 | HITL 策略 | 全自动 / 默认确认 / 分级 | **默认确认（高 stakes）** | 求职决策高 stakes，默认 HITL，仅低风险自动化。高级方向 Delegate 三级授权。 |
+| ADR-11 | Chunking | 定长 / 语义 / Contextual | **Recursive + Contextual Chunking** | Anthropic 法减 49% 检索失败，叠加 rerank 降 67%。 |
+| ADR-12 | 模型下载源 | HuggingFace / ModelScope | **ModelScope** | 本机 HF 直连被拦（SSL 断流），ModelScope 可通。 |
+
 ---

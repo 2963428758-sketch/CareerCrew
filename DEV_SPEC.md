@@ -12,6 +12,8 @@
 - 系统架构与模块设计
 - 项目排期
 - 可扩展性与未来展望
+- 面试考点与简历亮点映射
+- 快速开始
 
 ---
 
@@ -498,6 +500,25 @@ HITL 确认投递 (apply) ── interrupt
 - **Hooks 统一接口**：`before_tool_call`(HITL闸门) / `before_model`(记忆注入、context改写) / `before_compaction`(flush) / `after_compaction`。
 - **事件驱动 + 单向依赖**：core 只跑逻辑发事件不碰渲染，UI 订阅事件，一套 core 配 CLI + Dashboard 双前端。
 - **自建求职者端 MCP**：仿 boss-zhipin-mcp 的 Playwright+CDP（投递/进度跟踪/面经采集）。
+
+### 3.14 关键设计决策记录（ADR）
+
+> 记录"为什么这么选"，便于面试讲解与后续复盘。每条含：决策点、备选、选定、理由。
+
+| # | 决策点 | 备选 | 选定 | 理由 |
+|---|--------|------|------|------|
+| ADR-1 | Agent 架构 | 纯 LangGraph / AutoGen / CrewAI / Hybrid | **Hybrid（LangGraph 编排 + 手写 ReAct）** | LangGraph 擅长状态机/HITL/checkpointer；手写 ReAct 让工具推理可见可控可测试。AutoGen/CrewAI 偏黑盒，可控性与可观测性弱。 |
+| ADR-2 | RAG 实现 | 复用 MODULAR-RAG / 自建 | **自建** | 用最新技术（BGE-M3+Contextual Chunking），不被外部项目约束；面试能讲透每个环节。 |
+| ADR-3 | Embedding | API dense / 本地 BGE-M3 / OpenAI | **本地 BGE-M3** | 三合一(dense+sparse+colbert)只有本地 FlagEmbedding 能拿；API 只给 dense。高频调用留本地省钱。 |
+| ADR-4 | LLM 调用 | 自建 BaseLLM 工厂 / 裸 openai SDK / init_chat_model | **init_chat_model 薄适配** | LangGraph 原生用 ChatOpenAI，自建只是包 SDK 无价值；init_chat_model 是 LangChain 现代工厂，base_url 切 provider。 |
+| ADR-5 | LLM 平台 | Azure/OpenAI/Ollama/硅基流动 | **硅基流动** | 国内可访问、OpenAI 兼容、模型多（Qwen/DeepSeek/GLM）、便宜。 |
+| ADR-6 | Rerank | 本地 bge-reranker / 硅基流动 API | **硅基流动 API** | 低频（每查询仅 top-30 候选），API 即可，省本地算力。 |
+| ADR-7 | 向量库 | Chroma / Qdrant / Milvus | **Milvus Lite + Chroma 兜底** | Milvus 原生支持 BGE-M3 hybrid、milvus-lite 嵌入式零服务；Chroma 兜底保可用。 |
+| ADR-8 | 记忆架构 | 单层 / 数据库 / 仿 Hermes | **仿 Hermes 3 层** | 短期/情景/长期分层清晰；append-only 树支持轨迹回放（轨迹级评估基础）。 |
+| ADR-9 | 环境 | venv / conda / Docker | **conda env** | 本机 miniconda，conda 管理科学计算栈（torch/FlagEmbedding）更顺手；venv 在 torch wheel 上踩过坑。 |
+| ADR-10 | HITL 策略 | 全自动 / 默认确认 / 分级 | **默认确认（高 stakes）** | 求职决策高 stakes，默认 HITL，仅低风险自动化。高级方向 Delegate 三级授权。 |
+| ADR-11 | Chunking | 定长 / 语义 / Contextual | **Recursive + Contextual Chunking** | Anthropic 法减 49% 检索失败，叠加 rerank 降 67%。 |
+| ADR-12 | 模型下载源 | HuggingFace / ModelScope | **ModelScope** | 本机 HF 直连被拦（SSL 断流），ModelScope 可通。 |
 
 ---
 
@@ -1080,6 +1101,33 @@ dashboard:
 3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
 4. **换 LLM**：改 `llm` 配置（init_chat_model 适配）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
+
+### 5.7 错误处理与降级策略
+
+> 每个外部依赖与关键组件的失败场景 + 降级，确保单点失败不阻塞主流程。
+
+| 组件 | 失败场景 | 降级策略 |
+|------|---------|---------|
+| LLM（硅基流动） | 超时 / 限流 / 5xx | 指数退避重试 ≤3 次；仍失败抛可读错误（含 trace_id），不吞异常 |
+| LLM | API key 错 / 余额不足 | 启动时 fail-fast（A3 配置校验 + 首次调用探活） |
+| BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
+| Milvus | 连接失败 / 查询超时 | 切 Chroma 兜底（`backend=chroma`）；无兜底则返回空结果 + 错误日志 |
+| Rerank（硅基流动） | 超时 / 失败 | 回退 NoneReranker（原 RRF 排序），不阻塞检索 |
+| MCP 工具（mcp-jobs/Google） | 超时 / 不可用 | 工具返回错误信息给 agent，agent 决定重试/换路径；MVP 用 mock 兜底 |
+| Contextual Chunking LLM | 生成上下文失败 | 该块不加上下文前缀（降级为普通块），继续 ingestion |
+| compaction | 总结 LLM 失败 | 保留原 state 不压缩，记录警告，下轮重试 |
+| 情景记忆写入 | JSONL 写失败 | 重试；失败则内存暂存 + 告警（不丢数据） |
+| checkpointer | SQLite 锁 / 写失败 | 重试；失败则降级内存 checkpointer（进程内，重启丢失） |
+
+**原则**：检索/生成链路任何环节失败都走"降级 + 可观测"，不让用户看到原始 stack trace；高风险动作（投递/接 offer）即使降级也必走 HITL 确认。
+
+### 5.8 安全与隐私
+
+- **API key**：通过环境变量注入（`${SILICONFLOW_API_KEY}`），不硬编码；`.gitignore` 排除 `.env`。`package` skill 打包时自动 sanitize。
+- **用户数据**：简历 / 薪资 / 面经属敏感信息，存本地（`data/`），不上传第三方；User Model 结构化存储，不外泄。
+- **投递动作**：必走 HITL 确认，避免误投（求职高 stakes）。
+- **日志脱敏**：trace 日志不记录完整简历正文 / 薪资数字，只记摘要 + 长度 + 来源。
+- **依赖安全**：固定依赖版本（`pyproject.toml`），定期 `pip audit`。
 
 ---
 
@@ -1842,6 +1890,80 @@ dashboard:
 - **多用户**：checkpointer 换 Postgres、User Model 换 DB。
 - **云端部署**：Milvus Docker/K8s、API 化。
 - **求职知识库沉淀**：从代码 -> 八股 -> 面试技巧，形成完整求职知识库，反哺社区。
+
+---
+
+## 8. 面试考点与简历亮点映射
+
+> "教是最好的学"--每个模块对应的高频面试题与简历 bullet，开发时同步整理。配套 skill：`interview-prep`（模拟面试）/ `resume-writer`（写简历）/ `project-review`（复习）/ `project-learner`（知识点学习）。
+
+| 模块 | 高频面试题 | 简历亮点 bullet |
+|------|-----------|----------------|
+| 多 Agent 编排 | LangGraph supervisor 怎么路由？为什么不纯 LangGraph？checkpointer 存什么？多 agent 会诊怎么做？ | 设计 5 agent + supervisor 状态机路由，9 阶段求职闭环可 dogfood |
+| 手写 ReAct | 为什么不用 create_react_agent？怎么判 tool_call？轮次上限？每轮上下文怎么组装？ | 手写可见 ReAct 循环，工具推理过程全链路 trace 可回放，不依赖黑盒 |
+| 三层记忆 | append-only 树解决什么？回溯算法复杂度？compaction 怎么触发/防丢？ | 仿 Hermes 三层记忆，append-only 树支持黄金轨迹回放与轨迹级评估 |
+| BGE-M3 RAG | 三路输出怎么拿？为什么本地跑？sparse vs BM25 区别？colbert 代价？ | 自建 RAG：BGE-M3 三合一 + Contextual Chunking，检索失败率降 49% |
+| Hybrid+RRF | RRF 公式？为什么用排名倒数不用分数？top_k 怎么定？ | Hybrid 检索 + RRF 融合 + bge-reranker 精排，两段式架构平衡查准与查全 |
+| Milvus 可插拔 | BaseVectorStore 怎么抽象？milvus-lite vs Docker？collection 隔离？ | 自建 Milvus 后端 + Chroma 兜底，配置驱动零代码切换向量库 |
+| HITL 闸门 | interrupt 怎么恢复状态一致？哪些动作必确认？Delegate 三级？ | 高 stakes 决策默认 HITL，LangGraph interrupt 实现投递/接 offer 闸门 |
+| 工具层 | MCP 与内部函数怎么统一？requires_confirmation 怎么标记？ | 统一工具注册表，MCP+内部函数同 schema，风险分级触发 HITL |
+| 评估 | 答案级 vs 业务级 vs 轨迹级？业务数据从哪来？黄金回放？ | 答案级(Ragas)+业务级(转化率)+轨迹级(黄金回放) 三层评估闭环 |
+| 可观测 | 为什么不用 LangSmith？trace schema？怎么定位坏 case？ | 自建全链路 trace(JSON Lines)+Streamlit Dashboard，零外部依赖可观测 |
+| 工程化 | 四层依赖方向？TDD 分层？conda env？CI？ | 四层单向依赖架构 + TDD 分层测试，单元覆盖≥80% |
+
+> 每完成一个模块：用 `project-review` / `project-learner` 自测掌握度，用 `resume-writer` 沉淀简历 bullet，用 `interview-prep` 模拟面试。
+
+---
+
+## 9. 快速开始
+
+> 开发/运行速查。自动开发直接说 `auto code`，auto-coder skill 走"同步 spec -> 找任务 -> 实现 -> 测试 -> 持久化"流水线。
+
+### 9.1 环境准备
+
+```bash
+# conda env careercrew（Python 3.12，已建好）
+conda activate careercrew
+# BGE-M3 模型已下至 data/ms_cache/（ModelScope，HF 直连被拦）
+# 模型路径: data/ms_cache/models/BAAI--bge-m3/snapshots/master
+```
+
+### 9.2 配置
+
+```bash
+# 1. 设硅基流动 API key（环境变量，不硬编码）
+export SILICONFLOW_API_KEY="sk-xxx"            # Git Bash
+# $env:SILICONFLOW_API_KEY="sk-xxx"            # PowerShell
+
+# 2. 编辑 config/settings.yaml（见 §5.5 完整配置示例）
+#    关键：llm.base_url 指向硅基流动、embedding.provider=bge_m3_local、rerank.backend=siliconflow
+```
+
+### 9.3 运行
+
+```bash
+conda run -n careercrew python -m careercrew_cli.app          # CLI 求职顾问
+conda run -n careercrew python scripts/start_dashboard.py     # Streamlit Dashboard
+conda run -n careercrew python scripts/ingest_knowledge.py data/knowledge/   # 知识库摄取
+```
+
+### 9.4 测试
+
+```bash
+conda run -n careercrew pytest -q tests/unit/         # 单元（秒级）
+conda run -n careercrew pytest -q tests/integration/  # 集成（多组件协作）
+conda run -n careercrew pytest -q tests/e2e/          # 端到端（求职闭环）
+```
+
+### 9.5 自动开发（auto-coder）
+
+```bash
+# 说 "auto code" -> 自动找下一个待办任务并实现
+# 说 "auto code A1" -> 指定任务
+# 说 "auto code --no-commit" -> 跑完不 commit
+```
+
+> 所有 python/pytest 命令都在 conda env `careercrew` 下（`conda activate careercrew` 或 `conda run -n careercrew ...`）。
 
 ---
 
