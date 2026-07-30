@@ -68,8 +68,8 @@
               ▼                      ▼                      ▼
 ┌──────────────────────┐ ┌─────────────────────┐ ┌──────────────────────────┐
 │ AI 层 (careercrew_ai)│ │  RAG 流水线 (自建)   │ │       存储层              │
-│ 自建 llm_factory     │ │ BGE-M3 + Rerank     │ │  Milvus Lite (KB+记忆)   │
-│ BaseLLM/Embedding    │ │ Hybrid + RRF        │ │  SQLite checkpointer     │
+│ init_chat_model     │ │ BGE-M3 + Rerank     │ │  Milvus Lite (KB+记忆)   │
+│ Embedding/Reranker  │ │ Hybrid + RRF        │ │  SQLite checkpointer     │
 │ agent prompts        │ │ + bge-reranker-v2   │ │  JSONL transcripts       │
 │                      │ │ + Milvus/Chroma     │ │  user_model.json         │
 └──────────────────────┘ └─────────────────────┘ │  traces.jsonl            │
@@ -81,17 +81,18 @@
 ```
 CareerCrew/
 │
-├── careercrew_ai/                       # AI 基础层（自建 llm_factory / embedding / rerank / vector_store）
+├── careercrew_ai/                       # AI 基础层（LLM 适配 / embedding / rerank / vector_store）
 │   ├── __init__.py
-│   ├── llm/                             # 自建 llm_factory（BaseLLM + 工厂 + provider 实现）
+│   ├── llm/                             # LLM 适配（init_chat_model，不自建 BaseLLM）
 │   │   ├── __init__.py
-│   │   └── llm_adapter.py              # llm 工厂入口，按 CareerCrew 配置创建 LLM
+│   │   └── llm_adapter.py              # create_llm(settings) -> init_chat_model(硅基流动)
 │   ├── embedding/                       # BGE-M3 三合一（dense + sparse + colbert）
 │   │   ├── __init__.py
 │   │   └── bge_m3_embedding.py         # BaseEmbedding + BGE-M3 实现
-│   ├── reranker/                        # bge-reranker-v2（cross-encoder 中文重排）
+│   ├── reranker/                        # Rerank（硅基流动 API）
 │   │   ├── __init__.py
-│   │   └── bge_reranker.py             # BaseReranker + bge-reranker-v2 实现
+│   │   ├── base_reranker.py            # BaseReranker 抽象
+│   │   └── siliconflow_reranker.py     # 硅基流动 rerank API（bge-reranker-v2-m3）
 │   ├── vector_store/                    # 向量库可插拔
 │   │   ├── __init__.py
 │   │   ├── base_vector_store.py        # BaseVectorStore 抽象
@@ -249,12 +250,12 @@ CareerCrew/
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `llm/llm_adapter.py` | 自建 `llm_factory` 创建 LLM | 按 CareerCrew `settings.llm` 路由 provider |
+| `llm/llm_adapter.py` | `create_llm(settings)` 适配（`init_chat_model`） | 硅基流动 base_url + model 配置 |
 | `react/react_loop.py` | 手写 ReAct 可见 while 循环 | 解析 tool_calls、轮次上限、异常中断 |
 | `react/context_builder.py` | 每轮上下文组装 | 短期对话 + 按需检索记忆 + 工具结果 |
 | `prompts/*.txt` | 5 个 agent 的 system prompt + contextual_chunking | 角色定义 + 工具使用指引 |
 | `embedding/bge_m3_embedding.py` | BGE-M3 三合一编码 | dense + sparse + colbert 一次前向 |
-| `reranker/bge_reranker.py` | bge-reranker-v2 重排 | Cross-Encoder，None 回退 |
+| `reranker/siliconflow_reranker.py` | 硅基流动 rerank API | bge-reranker-v2-m3，None 回退 |
 | `vector_store/milvus_store.py` | Milvus 向量库后端 | BGE-M3 hybrid，collection 隔离 |
 | `splitter/recursive_splitter.py` | Markdown 感知切分 | RecursiveCharacterTextSplitter |
 
@@ -400,23 +401,25 @@ agent 调 rag_query 工具
 ```yaml
 # config/settings.yaml 示例
 
-# LLM 配置（自建 llm_factory）
+# LLM 配置（硅基流动，OpenAI 兼容；init_chat_model 适配）
 llm:
-  provider: azure            # azure | openai | ollama | deepseek
-  model: gpt-4o
-  azure_endpoint: "..."
-  api_key: "${AZURE_API_KEY}"
+  provider: openai           # 走 init_chat_model 的 openai provider（OpenAI 兼容）
+  model: "Qwen/Qwen2.5-72B-Instruct"   # 硅基流动上的模型，可换 DeepSeek/GLM 等
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
 
-# Embedding 配置（BGE-M3 三合一：dense + sparse + colbert）
+# Embedding 配置（本地 BGE-M3 三合一：dense + sparse + colbert）
 embedding:
-  provider: bge_m3            # bge_m3 | openai | ollama
+  provider: bge_m3_local      # 本地 FlagEmbedding；bge_m3_local | openai | siliconflow_dense
   model: BAAI/bge-m3
-  # BGE-M3 一次前向同时输出 dense + sparse，稀疏路免额外 BM25 索引
+  # 本地跑才能拿 dense+sparse+colbert；API 只给 dense。稀疏路免额外 BM25 索引
 
-# Rerank 配置（bge-reranker-v2）
+# Rerank 配置（硅基流动 rerank API）
 rerank:
-  backend: bge_reranker_v2    # none | bge_reranker_v2 | llm
+  backend: siliconflow        # none | siliconflow | local_bge
   model: BAAI/bge-reranker-v2-m3
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
   top_m: 30                   # 精排候选数
 
 # 向量库配置（Milvus 可插拔）
@@ -493,7 +496,7 @@ dashboard:
 1. **新增 agent**：继承 `base_agent`，加 system prompt，在 `supervisor/router.py` 注册路由。
 2. **新增工具**：实现统一 schema，在 `tools/registry.py` 注册；MCP 工具自动发现。
 3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
-4. **换 LLM**：改 `llm.provider` 配置（自建 llm_factory）。
+4. **换 LLM**：改 `llm` 配置（init_chat_model 适配）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
 
 ---

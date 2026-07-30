@@ -231,7 +231,7 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 | Chunking | RecursiveCharacterTextSplitter + **Contextual Chunking** | `careercrew_core/rag/chunking/` | Markdown 感知切分；每块调 LLM 生成 50-100 token 上下文前置再索引（Anthropic Contextual Retrieval，减 49% 检索失败） |
 | Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 sentence-transformers；稀疏路免额外 BM25 索引 |
 | 检索 | Hybrid（BGE-M3 dense + sparse）+ RRF 融合 | `careercrew_core/rag/retrieval/` | 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索 |
-| Rerank | **bge-reranker-v2**（cross-encoder） | `careercrew_ai/reranker/` | 中文重排，本地可跑；可关（None）回退 |
+| Rerank | **硅基流动 rerank API**（bge-reranker-v2-m3） | `careercrew_ai/reranker/` | cross-encoder 中文重排，低频走 API；可关（None）回退 |
 | 向量库 | Milvus Lite + Chroma 兜底 | `careercrew_ai/vector_store/` | 见 3.5 |
 
 #### 3.7.2 设计亮点

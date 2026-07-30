@@ -31,7 +31,7 @@
 - **Embedding：BGE-M3 三合一**：一个模型同时输出 dense + sparse + ColBERT 多向量，中文 100+ 语言，8192 token，MIT 许可，本地 sentence-transformers 可跑--比"分离的 BM25 + 单独 embedding"更优雅，稀疏路免额外倒排索引。
 - **Chunking：RecursiveCharacterTextSplitter + Contextual Chunking**：Markdown 感知切分 + Anthropic Contextual Retrieval（LLM 给每块生成 50-100 token 上下文前置，再做 embedding/sparse 索引），减少 49% 检索失败，叠加 rerank 降 67%。
 - **检索：Hybrid + RRF**：BGE-M3 dense + BGE-M3 sparse 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索。
-- **Rerank：bge-reranker-v2**：cross-encoder 中文重排，本地可跑。
+- **Rerank：硅基流动 rerank API**（托管 bge-reranker-v2-m3）：cross-encoder 中文重排，低频走 API。
 - **向量库：Milvus Lite**（原生 BGE-M3 hybrid、嵌入式零外部服务）+ Chroma 兜底，配置切换。
 - **知识库**：大模型八股 + 真实面试题、算法岗面经、JD 库（mcp-jobs 沉淀）、公司/薪资公开数据、简历范本。RAG 知识库与记忆向量共用 Milvus（collection 隔离）。
 
@@ -53,10 +53,10 @@
 - **评估**：答案级（简历匹配度 / 面试题质量，集成 Ragas）+ 业务级（投递->面试转化率、面试通过率、拿 offer dogfood）。高级方向补轨迹级评估。
 
 ### 本地优先 (Local-First)
-- LLM 可插拔：自建 `llm_factory` 抽象（Azure/OpenAI/Ollama/DeepSeek），配置切换。
-- Embedding/Rerank 本地可跑：BGE-M3 + bge-reranker-v2（sentence-transformers）。
+- LLM 走硅基流动（OpenAI 兼容 API）：`langchain init_chat_model` + 薄 `create_llm(settings)` 适配，`base_url` 配置切换。
+- Embedding 本地 BGE-M3（dense+sparse+colbert，FlagEmbedding）；Rerank 走硅基流动 rerank API。
 - 向量库 Milvus Lite 嵌入式，Chroma 兜底。
 - checkpointer SQLite，情景记忆 JSONL，User Model JSON。
-- **零外部服务依赖**即可跑通 MVP。
+- 本地服务零依赖（Milvus Lite/SQLite/JSONL）；LLM/Rerank 走 API。
 
 ---

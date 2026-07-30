@@ -85,7 +85,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - **Embedding：BGE-M3 三合一**：一个模型同时输出 dense + sparse + ColBERT 多向量，中文 100+ 语言，8192 token，MIT 许可，本地 sentence-transformers 可跑--比"分离的 BM25 + 单独 embedding"更优雅，稀疏路免额外倒排索引。
 - **Chunking：RecursiveCharacterTextSplitter + Contextual Chunking**：Markdown 感知切分 + Anthropic Contextual Retrieval（LLM 给每块生成 50-100 token 上下文前置，再做 embedding/sparse 索引），减少 49% 检索失败，叠加 rerank 降 67%。
 - **检索：Hybrid + RRF**：BGE-M3 dense + BGE-M3 sparse 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索。
-- **Rerank：bge-reranker-v2**：cross-encoder 中文重排，本地可跑。
+- **Rerank：硅基流动 rerank API**（托管 bge-reranker-v2-m3）：cross-encoder 中文重排，低频走 API。
 - **向量库：Milvus Lite**（原生 BGE-M3 hybrid、嵌入式零外部服务）+ Chroma 兜底，配置切换。
 - **知识库**：大模型八股 + 真实面试题、算法岗面经、JD 库（mcp-jobs 沉淀）、公司/薪资公开数据、简历范本。RAG 知识库与记忆向量共用 Milvus（collection 隔离）。
 
@@ -107,11 +107,11 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - **评估**：答案级（简历匹配度 / 面试题质量，集成 Ragas）+ 业务级（投递->面试转化率、面试通过率、拿 offer dogfood）。高级方向补轨迹级评估。
 
 ### 本地优先 (Local-First)
-- LLM 可插拔：自建 `llm_factory` 抽象（Azure/OpenAI/Ollama/DeepSeek），配置切换。
-- Embedding/Rerank 本地可跑：BGE-M3 + bge-reranker-v2（sentence-transformers）。
+- LLM 走硅基流动（OpenAI 兼容 API）：`langchain init_chat_model` + 薄 `create_llm(settings)` 适配，`base_url` 配置切换。
+- Embedding 本地 BGE-M3（dense+sparse+colbert，FlagEmbedding）；Rerank 走硅基流动 rerank API。
 - 向量库 Milvus Lite 嵌入式，Chroma 兜底。
 - checkpointer SQLite，情景记忆 JSONL，User Model JSON。
-- **零外部服务依赖**即可跑通 MVP。
+- 本地服务零依赖（Milvus Lite/SQLite/JSONL）；LLM/Rerank 走 API。
 
 ---
 
@@ -348,7 +348,7 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 | Chunking | RecursiveCharacterTextSplitter + **Contextual Chunking** | `careercrew_core/rag/chunking/` | Markdown 感知切分；每块调 LLM 生成 50-100 token 上下文前置再索引（Anthropic Contextual Retrieval，减 49% 检索失败） |
 | Embedding | **BGE-M3**（dense + sparse + ColBERT） | `careercrew_ai/embedding/` | 一模型三路输出，中文 100+ 语言，8192 token，本地 sentence-transformers；稀疏路免额外 BM25 索引 |
 | 检索 | Hybrid（BGE-M3 dense + sparse）+ RRF 融合 | `careercrew_core/rag/retrieval/` | 两路 RRF 融合，Milvus 原生支持 BGE-M3 混合检索 |
-| Rerank | **bge-reranker-v2**（cross-encoder） | `careercrew_ai/reranker/` | 中文重排，本地可跑；可关（None）回退 |
+| Rerank | **硅基流动 rerank API**（bge-reranker-v2-m3） | `careercrew_ai/reranker/` | cross-encoder 中文重排，低频走 API；可关（None）回退 |
 | 向量库 | Milvus Lite + Chroma 兜底 | `careercrew_ai/vector_store/` | 见 3.5 |
 
 #### 3.7.2 设计亮点
@@ -650,8 +650,8 @@ HITL 确认投递 (apply) ── interrupt
               ▼                      ▼                      ▼
 ┌──────────────────────┐ ┌─────────────────────┐ ┌──────────────────────────┐
 │ AI 层 (careercrew_ai)│ │  RAG 流水线 (自建)   │ │       存储层              │
-│ 自建 llm_factory     │ │ BGE-M3 + Rerank     │ │  Milvus Lite (KB+记忆)   │
-│ BaseLLM/Embedding    │ │ Hybrid + RRF        │ │  SQLite checkpointer     │
+│ init_chat_model     │ │ BGE-M3 + Rerank     │ │  Milvus Lite (KB+记忆)   │
+│ Embedding/Reranker  │ │ Hybrid + RRF        │ │  SQLite checkpointer     │
 │ agent prompts        │ │ + bge-reranker-v2   │ │  JSONL transcripts       │
 │                      │ │ + Milvus/Chroma     │ │  user_model.json         │
 └──────────────────────┘ └─────────────────────┘ │  traces.jsonl            │
@@ -663,17 +663,18 @@ HITL 确认投递 (apply) ── interrupt
 ```
 CareerCrew/
 │
-├── careercrew_ai/                       # AI 基础层（自建 llm_factory / embedding / rerank / vector_store）
+├── careercrew_ai/                       # AI 基础层（LLM 适配 / embedding / rerank / vector_store）
 │   ├── __init__.py
-│   ├── llm/                             # 自建 llm_factory（BaseLLM + 工厂 + provider 实现）
+│   ├── llm/                             # LLM 适配（init_chat_model，不自建 BaseLLM）
 │   │   ├── __init__.py
-│   │   └── llm_adapter.py              # llm 工厂入口，按 CareerCrew 配置创建 LLM
+│   │   └── llm_adapter.py              # create_llm(settings) -> init_chat_model(硅基流动)
 │   ├── embedding/                       # BGE-M3 三合一（dense + sparse + colbert）
 │   │   ├── __init__.py
 │   │   └── bge_m3_embedding.py         # BaseEmbedding + BGE-M3 实现
-│   ├── reranker/                        # bge-reranker-v2（cross-encoder 中文重排）
+│   ├── reranker/                        # Rerank（硅基流动 API）
 │   │   ├── __init__.py
-│   │   └── bge_reranker.py             # BaseReranker + bge-reranker-v2 实现
+│   │   ├── base_reranker.py            # BaseReranker 抽象
+│   │   └── siliconflow_reranker.py     # 硅基流动 rerank API（bge-reranker-v2-m3）
 │   ├── vector_store/                    # 向量库可插拔
 │   │   ├── __init__.py
 │   │   ├── base_vector_store.py        # BaseVectorStore 抽象
@@ -831,12 +832,12 @@ CareerCrew/
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `llm/llm_adapter.py` | 自建 `llm_factory` 创建 LLM | 按 CareerCrew `settings.llm` 路由 provider |
+| `llm/llm_adapter.py` | `create_llm(settings)` 适配（`init_chat_model`） | 硅基流动 base_url + model 配置 |
 | `react/react_loop.py` | 手写 ReAct 可见 while 循环 | 解析 tool_calls、轮次上限、异常中断 |
 | `react/context_builder.py` | 每轮上下文组装 | 短期对话 + 按需检索记忆 + 工具结果 |
 | `prompts/*.txt` | 5 个 agent 的 system prompt + contextual_chunking | 角色定义 + 工具使用指引 |
 | `embedding/bge_m3_embedding.py` | BGE-M3 三合一编码 | dense + sparse + colbert 一次前向 |
-| `reranker/bge_reranker.py` | bge-reranker-v2 重排 | Cross-Encoder，None 回退 |
+| `reranker/siliconflow_reranker.py` | 硅基流动 rerank API | bge-reranker-v2-m3，None 回退 |
 | `vector_store/milvus_store.py` | Milvus 向量库后端 | BGE-M3 hybrid，collection 隔离 |
 | `splitter/recursive_splitter.py` | Markdown 感知切分 | RecursiveCharacterTextSplitter |
 
@@ -982,23 +983,25 @@ agent 调 rag_query 工具
 ```yaml
 # config/settings.yaml 示例
 
-# LLM 配置（自建 llm_factory）
+# LLM 配置（硅基流动，OpenAI 兼容；init_chat_model 适配）
 llm:
-  provider: azure            # azure | openai | ollama | deepseek
-  model: gpt-4o
-  azure_endpoint: "..."
-  api_key: "${AZURE_API_KEY}"
+  provider: openai           # 走 init_chat_model 的 openai provider（OpenAI 兼容）
+  model: "Qwen/Qwen2.5-72B-Instruct"   # 硅基流动上的模型，可换 DeepSeek/GLM 等
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
 
-# Embedding 配置（BGE-M3 三合一：dense + sparse + colbert）
+# Embedding 配置（本地 BGE-M3 三合一：dense + sparse + colbert）
 embedding:
-  provider: bge_m3            # bge_m3 | openai | ollama
+  provider: bge_m3_local      # 本地 FlagEmbedding；bge_m3_local | openai | siliconflow_dense
   model: BAAI/bge-m3
-  # BGE-M3 一次前向同时输出 dense + sparse，稀疏路免额外 BM25 索引
+  # 本地跑才能拿 dense+sparse+colbert；API 只给 dense。稀疏路免额外 BM25 索引
 
-# Rerank 配置（bge-reranker-v2）
+# Rerank 配置（硅基流动 rerank API）
 rerank:
-  backend: bge_reranker_v2    # none | bge_reranker_v2 | llm
+  backend: siliconflow        # none | siliconflow | local_bge
   model: BAAI/bge-reranker-v2-m3
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
   top_m: 30                   # 精排候选数
 
 # 向量库配置（Milvus 可插拔）
@@ -1075,7 +1078,7 @@ dashboard:
 1. **新增 agent**：继承 `base_agent`，加 system prompt，在 `supervisor/router.py` 注册路由。
 2. **新增工具**：实现统一 schema，在 `tools/registry.py` 注册；MCP 工具自动发现。
 3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
-4. **换 LLM**：改 `llm.provider` 配置（自建 llm_factory）。
+4. **换 LLM**：改 `llm` 配置（init_chat_model 适配）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
 
 ---
@@ -1123,7 +1126,7 @@ dashboard:
 | A1 | 初始化四层目录树与最小可运行入口 | [ ] | | careercrew_ai/core/cli/ui 骨架 + main 入口 |
 | A2 | 引入 pytest 并建立测试目录约定 | [ ] | | tests/unit\|integration\|e2e\|fixtures |
 | A3 | 配置加载与校验（Settings） | [ ] | | settings.yaml + load_settings + fail-fast |
-| A4 | 自建 AI 基础层（llm_factory/embedding/vector_store 抽象+工厂） | [ ] | | BaseLLM/BaseEmbedding/BaseVectorStore+工厂 |
+| A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [ ] | | init_chat_model + Base* 抽象+工厂 |
 
 #### 阶段 B：LangGraph supervisor + 手写 ReAct 骨架
 
@@ -1319,18 +1322,18 @@ dashboard:
 - **验收标准**：启动加载成功；缺失关键字段（如 `vector_store.backend`）时抛可读错误。
 - **测试方法**：`pytest -q tests/unit/test_config_loading.py`。
 
-### A4：自建 AI 基础层（llm/embedding/vector_store/reranker 抽象 + 工厂）
-- **目标**：自建 `BaseLLM`/`BaseEmbedding`/`BaseVectorStore`/`BaseReranker` 抽象基类 + 工厂，为后续 RAG 与 agent 提供可插拔底座（**不依赖外部 RAG 项目**）。
+### A4：AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象）
+- **目标**：LLM 用 `init_chat_model` 薄适配（不自建 BaseLLM）；自建 `BaseEmbedding`/`BaseVectorStore`/`BaseReranker` 抽象 + 工厂，为 RAG 与 agent 提供可插拔底座（**不依赖外部 RAG 项目**）。
 - **修改文件**：
-  - `careercrew_ai/llm/base_llm.py`、`llm_adapter.py`（BaseLLM + 工厂，Azure/OpenAI/Ollama/DeepSeek 适配）
+  - `careercrew_ai/llm/llm_adapter.py`（`create_llm(settings) -> BaseChatModel`，调 `init_chat_model`，base_url 指向硅基流动）
   - `careercrew_ai/embedding/base_embedding.py`（BaseEmbedding 抽象）
   - `careercrew_ai/vector_store/base_vector_store.py`（BaseVectorStore 抽象）
   - `careercrew_ai/reranker/base_reranker.py`（BaseReranker 抽象）
   - `tests/unit/test_ai_base_factories.py`
 - **实现类/函数**：
-  - `BaseLLM` / `LLMFactory.create(settings) -> BaseLLM`
+  - `create_llm(settings) -> BaseChatModel`（`init_chat_model(model, model_provider="openai", base_url=..., api_key=...)`）
   - `BaseEmbedding` / `BaseReranker` / `BaseVectorStore`（契约 + 工厂骨架，Fake 实现验证路由）
-- **验收标准**：四个工厂按配置路由到 Fake 实现；契约测试约束输入输出 shape。
+- **验收标准**：`create_llm` 按配置创建 ChatModel（Mock 验证 base_url 注入）；三个抽象工厂路由到 Fake 实现；契约测试约束 shape。
 - **测试方法**：`pytest -q tests/unit/test_ai_base_factories.py`。
 
 ---
@@ -1469,7 +1472,7 @@ dashboard:
 ## 阶段 D：自建 RAG 流水线（目标：BGE-M3 + Contextual Chunking + Hybrid + Rerank 跑通）
 
 ### D1：BGE-M3 Embedding + 切分/Contextual Chunking
-- **目标**：实现 BGE-M3 embedding（dense+sparse+colbert）+ RecursiveCharacterTextSplitter + Contextual Chunking（LLM 给每块生成上下文前置）。
+- **目标**：本地实现 BGE-M3 embedding（dense+sparse+colbert，FlagEmbedding）+ RecursiveCharacterTextSplitter + Contextual Chunking（LLM 给每块生成上下文前置）。
 - **修改文件**：
   - `careercrew_ai/embedding/bge_m3_embedding.py`（BaseEmbedding + BGE-M3）
   - `careercrew_ai/splitter/recursive_splitter.py`
@@ -1495,16 +1498,16 @@ dashboard:
 - **测试方法**：`pytest -q tests/integration/test_milvus_backend.py`（真实 milvus-lite）。
 
 ### D3：Hybrid Search + RRF + Rerank 编排
-- **目标**：实现 Hybrid 检索（BGE-M3 dense + sparse 并行召回 + RRF 融合）+ Rerank 编排（bge-reranker-v2，None 回退）。
+- **目标**：实现 Hybrid 检索（BGE-M3 dense + sparse 并行召回 + RRF 融合）+ Rerank 编排（硅基流动 rerank API，None 回退）。
 - **修改文件**：
   - `careercrew_core/rag/retrieval/hybrid_search.py`、`fusion.py`
   - `careercrew_core/rag/rerank.py`
-  - `careercrew_ai/reranker/bge_reranker.py`（BaseReranker + bge-reranker-v2）
+  - `careercrew_ai/reranker/siliconflow_reranker.py`（BaseReranker + 硅基流动 rerank API）
   - `tests/unit/test_hybrid_search_rrf.py`
 - **实现类/函数**：
   - `HybridSearch.search(query, top_k) -> list[Chunk]`（dense+sparse 召回 + RRF）
   - `RRFFusion.fuse(dense_results, sparse_results) -> ranked`（`1/(k+rank)` 加权）
-  - `Reranker.rerank(query, candidates) -> ranked`（bge-reranker-v2；超时/失败回退 None）
+  - `Reranker.rerank(query, candidates) -> ranked`（调硅基流动 rerank API；超时/失败回退 None）
 - **验收标准**：RRF 融合分数计算正确且确定性；Rerank 失败回退原排序。
 - **测试方法**：`pytest -q tests/unit/test_hybrid_search_rrf.py`。
 

@@ -41,7 +41,7 @@
 | A1 | 初始化四层目录树与最小可运行入口 | [ ] | | careercrew_ai/core/cli/ui 骨架 + main 入口 |
 | A2 | 引入 pytest 并建立测试目录约定 | [ ] | | tests/unit\|integration\|e2e\|fixtures |
 | A3 | 配置加载与校验（Settings） | [ ] | | settings.yaml + load_settings + fail-fast |
-| A4 | 自建 AI 基础层（llm_factory/embedding/vector_store 抽象+工厂） | [ ] | | BaseLLM/BaseEmbedding/BaseVectorStore+工厂 |
+| A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [ ] | | init_chat_model + Base* 抽象+工厂 |
 
 #### 阶段 B：LangGraph supervisor + 手写 ReAct 骨架
 
@@ -237,18 +237,18 @@
 - **验收标准**：启动加载成功；缺失关键字段（如 `vector_store.backend`）时抛可读错误。
 - **测试方法**：`pytest -q tests/unit/test_config_loading.py`。
 
-### A4：自建 AI 基础层（llm/embedding/vector_store/reranker 抽象 + 工厂）
-- **目标**：自建 `BaseLLM`/`BaseEmbedding`/`BaseVectorStore`/`BaseReranker` 抽象基类 + 工厂，为后续 RAG 与 agent 提供可插拔底座（**不依赖外部 RAG 项目**）。
+### A4：AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象）
+- **目标**：LLM 用 `init_chat_model` 薄适配（不自建 BaseLLM）；自建 `BaseEmbedding`/`BaseVectorStore`/`BaseReranker` 抽象 + 工厂，为 RAG 与 agent 提供可插拔底座（**不依赖外部 RAG 项目**）。
 - **修改文件**：
-  - `careercrew_ai/llm/base_llm.py`、`llm_adapter.py`（BaseLLM + 工厂，Azure/OpenAI/Ollama/DeepSeek 适配）
+  - `careercrew_ai/llm/llm_adapter.py`（`create_llm(settings) -> BaseChatModel`，调 `init_chat_model`，base_url 指向硅基流动）
   - `careercrew_ai/embedding/base_embedding.py`（BaseEmbedding 抽象）
   - `careercrew_ai/vector_store/base_vector_store.py`（BaseVectorStore 抽象）
   - `careercrew_ai/reranker/base_reranker.py`（BaseReranker 抽象）
   - `tests/unit/test_ai_base_factories.py`
 - **实现类/函数**：
-  - `BaseLLM` / `LLMFactory.create(settings) -> BaseLLM`
+  - `create_llm(settings) -> BaseChatModel`（`init_chat_model(model, model_provider="openai", base_url=..., api_key=...)`）
   - `BaseEmbedding` / `BaseReranker` / `BaseVectorStore`（契约 + 工厂骨架，Fake 实现验证路由）
-- **验收标准**：四个工厂按配置路由到 Fake 实现；契约测试约束输入输出 shape。
+- **验收标准**：`create_llm` 按配置创建 ChatModel（Mock 验证 base_url 注入）；三个抽象工厂路由到 Fake 实现；契约测试约束 shape。
 - **测试方法**：`pytest -q tests/unit/test_ai_base_factories.py`。
 
 ---
@@ -387,7 +387,7 @@
 ## 阶段 D：自建 RAG 流水线（目标：BGE-M3 + Contextual Chunking + Hybrid + Rerank 跑通）
 
 ### D1：BGE-M3 Embedding + 切分/Contextual Chunking
-- **目标**：实现 BGE-M3 embedding（dense+sparse+colbert）+ RecursiveCharacterTextSplitter + Contextual Chunking（LLM 给每块生成上下文前置）。
+- **目标**：本地实现 BGE-M3 embedding（dense+sparse+colbert，FlagEmbedding）+ RecursiveCharacterTextSplitter + Contextual Chunking（LLM 给每块生成上下文前置）。
 - **修改文件**：
   - `careercrew_ai/embedding/bge_m3_embedding.py`（BaseEmbedding + BGE-M3）
   - `careercrew_ai/splitter/recursive_splitter.py`
@@ -413,16 +413,16 @@
 - **测试方法**：`pytest -q tests/integration/test_milvus_backend.py`（真实 milvus-lite）。
 
 ### D3：Hybrid Search + RRF + Rerank 编排
-- **目标**：实现 Hybrid 检索（BGE-M3 dense + sparse 并行召回 + RRF 融合）+ Rerank 编排（bge-reranker-v2，None 回退）。
+- **目标**：实现 Hybrid 检索（BGE-M3 dense + sparse 并行召回 + RRF 融合）+ Rerank 编排（硅基流动 rerank API，None 回退）。
 - **修改文件**：
   - `careercrew_core/rag/retrieval/hybrid_search.py`、`fusion.py`
   - `careercrew_core/rag/rerank.py`
-  - `careercrew_ai/reranker/bge_reranker.py`（BaseReranker + bge-reranker-v2）
+  - `careercrew_ai/reranker/siliconflow_reranker.py`（BaseReranker + 硅基流动 rerank API）
   - `tests/unit/test_hybrid_search_rrf.py`
 - **实现类/函数**：
   - `HybridSearch.search(query, top_k) -> list[Chunk]`（dense+sparse 召回 + RRF）
   - `RRFFusion.fuse(dense_results, sparse_results) -> ranked`（`1/(k+rank)` 加权）
-  - `Reranker.rerank(query, candidates) -> ranked`（bge-reranker-v2；超时/失败回退 None）
+  - `Reranker.rerank(query, candidates) -> ranked`（调硅基流动 rerank API；超时/失败回退 None）
 - **验收标准**：RRF 融合分数计算正确且确定性；Rerank 失败回退原排序。
 - **测试方法**：`pytest -q tests/unit/test_hybrid_search_rrf.py`。
 
