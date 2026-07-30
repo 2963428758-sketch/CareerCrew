@@ -834,7 +834,11 @@ CareerCrew/
 | `llm/llm_adapter.py` | 自建 `llm_factory` 创建 LLM | 按 CareerCrew `settings.llm` 路由 provider |
 | `react/react_loop.py` | 手写 ReAct 可见 while 循环 | 解析 tool_calls、轮次上限、异常中断 |
 | `react/context_builder.py` | 每轮上下文组装 | 短期对话 + 按需检索记忆 + 工具结果 |
-| `prompts/*.txt` | 5 个 agent 的 system prompt | 角色定义 + 工具使用指引 |
+| `prompts/*.txt` | 5 个 agent 的 system prompt + contextual_chunking | 角色定义 + 工具使用指引 |
+| `embedding/bge_m3_embedding.py` | BGE-M3 三合一编码 | dense + sparse + colbert 一次前向 |
+| `reranker/bge_reranker.py` | bge-reranker-v2 重排 | Cross-Encoder，None 回退 |
+| `vector_store/milvus_store.py` | Milvus 向量库后端 | BGE-M3 hybrid，collection 隔离 |
+| `splitter/recursive_splitter.py` | Markdown 感知切分 | RecursiveCharacterTextSplitter |
 
 #### 5.3.2 核心层 (`careercrew_core`)
 
@@ -851,6 +855,9 @@ CareerCrew/
 | `memory/user_model.py` | User Model 读写 | 结构化字段约束 |
 | `memory/vector_index.py` | 情景记忆向量索引 | Milvus collection 隔离 |
 | `memory/compaction.py` | compaction 基础版 | token 占比触发 + 保留区 + 压缩区 |
+| `rag/chunking/contextualizer.py` | Contextual Chunking | LLM 给每块生成上下文前置 |
+| `rag/retrieval/hybrid_search.py` | Hybrid 检索编排 | BGE-M3 dense+sparse 召回 + RRF 融合 |
+| `rag/pipeline.py` | Ingestion 编排 | load->split->contextualize->embed->upsert |
 | `tools/registry.py` | 统一工具注册表 | 统一 schema + `requires_confirmation` |
 | `tools/internal/*` | 内部函数工具 | rag_query / memory_search / memory_write / profile_update |
 | `tools/mcp/mcp_client.py` | MCP 工具发现与注册 | mcp-jobs / Google MCP |
