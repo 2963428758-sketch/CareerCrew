@@ -38,7 +38,7 @@
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| A1 | 初始化四层目录树与最小可运行入口 | [ ] | | careercrew_ai/core/cli/ui 骨架 + main 入口 |
+| A1 | 四层目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [ ] | | conda env + 依赖安装进 env |
 | A2 | 引入 pytest 并建立测试目录约定 | [ ] | | tests/unit\|integration\|e2e\|fixtures |
 | A3 | 配置加载与校验（Settings） | [ ] | | settings.yaml + load_settings + fail-fast |
 | A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [ ] | | init_chat_model + Base* 抽象+工厂 |
@@ -199,19 +199,25 @@
 
 ## 阶段 A：工程骨架与配置（目标：先可导入，再可测试）
 
-### A1：初始化四层目录树与最小可运行入口
-- **目标**：创建 5.2 节所述四层目录骨架与空模块文件（可 import）。
+### A1：初始化四层目录树、conda 环境与最小可运行入口
+- **目标**：创建 5.2 节四层目录骨架 + conda env `careercrew` + `pyproject.toml`，`pip install -e .` 装项目依赖。
 - **修改文件**：
   - `careercrew_ai/__init__.py`、`careercrew_core/__init__.py`、`careercrew_cli/__init__.py`、`careercrew_ui/__init__.py`
   - 各子包 `__init__.py`（按目录树补齐）
   - `careercrew_cli/app.py`（最小 CLI 入口占位）
   - `config/settings.yaml`（最小可解析配置）
-  - `pyproject.toml`、`README.md`、`.gitignore`
+  - `pyproject.toml`（依赖：langgraph / pymilvus / sentence-transformers / FlagEmbedding / modelscope / pytest 等）、`README.md`、`.gitignore`
+- **环境与依赖**：
+  - `conda create -n careercrew python=3.12 -y`
+  - `conda activate careercrew` 后 `pip install -e .`（装 pyproject.toml 定义的全部依赖进 conda env）
+  - BGE-M3 模型已下至 `data/ms_cache/`（验证过，无需重下）
 - **实现类/函数**：无（仅骨架）。
 - **验收标准**：
-  - 目录结构与 DEV_SPEC 5.2 一致。
-  - 能导入四层包：`python -c "import careercrew_ai, careercrew_core, careercrew_cli, careercrew_ui"`
-- **测试方法**：`python -m compileall careercrew_ai careercrew_core careercrew_cli careercrew_ui`。
+  - conda env `careercrew` 存在，`pip install -e .` 成功
+  - 目录结构与 DEV_SPEC 5.2 一致
+  - 能导入四层包：`conda run -n careercrew python -c "import careercrew_ai, careercrew_core, careercrew_cli, careercrew_ui"`
+  - 关键依赖可导入：`conda run -n careercrew python -c "import langgraph, pymilvus, FlagEmbedding, sentence_transformers"`
+- **测试方法**：`conda run -n careercrew python -m compileall careercrew_ai careercrew_core careercrew_cli careercrew_ui`
 
 ### A2：引入 pytest 并建立测试目录约定
 - **目标**：建立 `tests/unit|integration|e2e|fixtures` 目录与 pytest 运行基座。

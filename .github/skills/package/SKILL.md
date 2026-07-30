@@ -15,9 +15,7 @@ One command cleans the project for distribution: remove caches, secrets, and art
 Dry-run → Confirm → Execute → Verify
 ```
 
-> **⚠️ Activate `.venv` before running scripts.**
-> - **Windows**: `.\.venv\Scripts\Activate.ps1`
-> - **macOS/Linux**: `source .venv/bin/activate`
+> **⚠️ 用 conda env `careercrew` 跑脚本：`conda activate careercrew` 或 `conda run -n careercrew python ...`**
 
 ---
 

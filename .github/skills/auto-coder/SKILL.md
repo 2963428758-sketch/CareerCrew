@@ -19,10 +19,10 @@ Sync Spec -> Find Task -> Implement -> Test (≤3 fix rounds) -> Persist
 
 Pause only at the end for commit confirmation. Run everything else autonomously.
 
-> **⚠️ CRITICAL: Activate `.venv` before ANY `python`/`pytest` command (idempotent, re-run if unsure).**
-> - **Windows (PowerShell)**: `.\.venv\Scripts\Activate.ps1`
-> - **Windows (Git Bash)**: `source .venv/Scripts/activate`
-> - **macOS/Linux**: `source .venv/bin/activate`
+> **⚠️ CRITICAL: 用 conda env `careercrew` 跑所有 `python`/`pytest` 命令。**
+> - 激活（shell 内生效）：`conda activate careercrew`（Windows PowerShell / Git Bash / macOS/Linux 通用）
+> - 或不激活直接调：`conda run -n careercrew python ...` / `conda run -n careercrew pytest ...`
+> - env 路径（直接调 python 用）：`F:/Python_develop/miniconda3/envs/careercrew/python.exe`
 
 ## Reference Map
 
