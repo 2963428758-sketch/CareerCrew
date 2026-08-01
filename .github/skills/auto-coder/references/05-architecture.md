@@ -414,6 +414,9 @@ llm:
   model: "deepseek-ai/DeepSeek-V4-Flash"   # 默认 Flash（便宜快，工具调用已验证）；可换 V4-Pro/V3.2/GLM 等
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
+  temperature: 0.3           # 默认；按 agent 场景调（见 §3.15.2）
+  max_tokens: 2048           # 单次响应上限
+  max_tokens_per_run: 60000  # 单次运行 token 成本预算（超则停 + 告警，见 §5.7）
 
 # Embedding 配置（本地 BGE-M3 三合一：dense + sparse + colbert）
 embedding:
@@ -516,6 +519,7 @@ dashboard:
 |------|---------|---------|
 | LLM（硅基流动） | 超时 / 限流 / 5xx | 指数退避重试 ≤3 次；仍失败抛可读错误（含 trace_id），不吞异常 |
 | LLM | API key 错 / 余额不足 | 启动时 fail-fast（A3 配置校验 + 首次调用探活） |
+| LLM | 单次运行 token 超 `max_tokens_per_run` 预算 | 停止当前 run + 告警 + trace 记录，防止成本失控 |
 | BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
 | Milvus | 连接失败 / 查询超时 | 切 Chroma 兜底（`backend=chroma`）；无兜底则返回空结果 + 错误日志 |
 | Rerank（硅基流动） | 超时 / 失败 | 回退 NoneReranker（原 RRF 排序），不阻塞检索 |

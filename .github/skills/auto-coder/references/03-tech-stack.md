@@ -420,4 +420,28 @@ HITL 确认投递 (apply) ── interrupt
 | ADR-12 | 模型下载源 | HuggingFace / ModelScope | **ModelScope** | 本机 HF 直连被拦（SSL 断流），ModelScope 可通。 |
 | ADR-13 | 文档加载 | per-format（PyMuPDF/python-docx）/ MarkItDown 统一 | **MarkItDown 统一 + Markdown 直读** | 一个库覆盖 PDF/Word/Excel/HTML 转 Markdown，与 Markdown 感知 Splitter 天然衔接；BaseLoader 抽象可回退 per-format。 |
 
+### 3.15 Prompt 与生成参数约定【MVP 核心】
+
+> 对齐 Agent 搭建基础 6 件套中的 Prompt / Temperature / Few-shot，确保每个 agent 输出稳定可控。
+
+#### 3.15.1 System Prompt 结构
+每个 agent 的 system prompt（`careercrew_ai/prompts/*.txt`）统一四段：
+1. **身份**：你是 CareerCrew 的 XX agent，职责是…
+2. **执行规则**：工具调用顺序、何时 HITL、禁止行为（如"不得未经确认投递"）
+3. **输出格式**：结构化产出（JSON / 固定字段），便于下游 agent 消费
+4. **禁止行为**：不幻觉、不越权、不输出敏感字段
+
+#### 3.15.2 Temperature 按场景
+| Agent | 温度 | 理由 |
+|-------|------|------|
+| 职位匹配官 / 简历顾问 / 谈判师 | 0.1-0.3 | 严谨，匹配/定制/谈薪要准，减少虚构 |
+| 面试官 / 职业规划师 | 0.5-0.7 | 需要发散（出题多样性、规划建议） |
+
+> 默认 `temperature: 0.3`（§5.5），各 agent 按需在 `init_chat_model` 调用时覆盖。
+
+#### 3.15.3 Few-shot 少样本示例
+- **适用**：输出格式经常不规范时，在 prompt 里补 3-5 条标准示例对齐格式。
+- **优先于微调**：轻量化方案，低成本对齐输出规范（对齐框架 #8，微调是最后手段）。
+- **位置**：`careercrew_ai/prompts/*_fewshot.txt`（按需，非每个 agent 都要）。
+
 ---
