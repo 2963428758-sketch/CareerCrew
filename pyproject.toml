@@ -14,7 +14,7 @@ authors = [{ name = "CareerCrew" }]
 # 核心依赖：A1 验收所需（langgraph / langchain / pymilvus / FlagEmbedding 等可 import）
 # 重 ML 栈（FlagEmbedding / modelscope / sentence-transformers / torch）env 中已装，列出仅为可复现
 dependencies = [
-    "langgraph>=0.2.60",
+    "langgraph>=1.2.0",   # 1.x API（interrupt/Command/SqliteSaver），见 DEV_SPEC §3.1.6
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
     "langchain-core>=0.3.0",

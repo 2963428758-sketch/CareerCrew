@@ -28,6 +28,7 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 # 向量库后端合法取值
 _VALID_VECTOR_BACKENDS = {"milvus_lite", "milvus_docker", "chroma"}
+_VALID_LOADER_BACKENDS = {"markitdown", "pymupdf", "python-docx"}
 
 
 class SettingsError(Exception):
@@ -83,9 +84,16 @@ class ChunkingSettings(BaseModel):
     contextual: bool
 
 
+class LoadersSettings(BaseModel):
+    """文档加载器配置（D4 落地，与 DEV_SPEC §5.5 对齐）。"""
+
+    backend: str = "markitdown"  # markitdown | pymupdf | python-docx（per-format 回退）
+
+
 class RagSettings(BaseModel):
     retrieval: RetrievalSettings
     chunking: ChunkingSettings
+    loaders: LoadersSettings = LoadersSettings()
 
 
 class CheckpointerSettings(BaseModel):
@@ -209,6 +217,13 @@ def validate_settings(settings: Settings) -> None:
         problems.append(
             f"vector_store.backend 取值非法: {settings.vector_store.backend}，"
             f"应为 {sorted(_VALID_VECTOR_BACKENDS)} 之一"
+        )
+
+    # 文档加载器后端取值
+    if settings.rag.loaders.backend not in _VALID_LOADER_BACKENDS:
+        problems.append(
+            f"rag.loaders.backend 取值非法: {settings.rag.loaders.backend}，"
+            f"应为 {sorted(_VALID_LOADER_BACKENDS)} 之一"
         )
 
     if problems:

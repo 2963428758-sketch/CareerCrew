@@ -85,7 +85,7 @@ Quick-check predecessor artifacts exist (file-level only). On mismatch, log a wa
    - Use `config/settings.yaml` values, never hardcode
    - Match existing codebase patterns and style
    - Respect 4-layer one-way dependency: `careercrew_ai` -> `careercrew_core` -> `careercrew_cli` -> `careercrew_ui`; core 只发事件不碰渲染, UI 订阅 core 产出
-   - Reuse MODULAR-RAG (`llm_factory`/`trace`/`evaluator`/`BaseVectorStore`) via editable dep, don't reinvent
+   - 自建 RAG 为主（ADR-2：不依赖外部 RAG 项目）；复用本仓已有抽象（careercrew_ai 的 Base* 工厂 / careercrew_core 的 registry 等），不重复造轮子
    - MVP first; 高级方向 only when explicitly tasked (spec 中标注【高级方向】的项不自动实现)
 
 5. **Write tests** alongside code:

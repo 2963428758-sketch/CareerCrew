@@ -1,7 +1,7 @@
 <!-- CareerCrew DEV_SPEC 初稿。基于 prompts/gen_dev_spec.md (v3) 生成，结构参照主流 DEV_SPEC 模板。 -->
 # Developer Specification (DEV_SPEC)
 
-> 版本：0.2 - 初稿（自建 RAG + 硅基流动 + conda env）
+> 版本：0.3 - 修订版（LangGraph 1.x 对齐 + HITL 恢复语义 + 数据源/MCP 落地 + 配置同步）
 
 ## 目录
 
@@ -160,6 +160,17 @@ class CareerCrewState(TypedDict):
 - 同一问题（如"这个 offer 要不要接"）路由给多个 agent（谈判师 + 规划师 + 面试官）并行给意见，supervisor 综合后输出。
 - 实现上用 LangGraph 的并行 fan-out + join。
 
+#### 3.1.6 LangGraph 版本约定（1.x）【MVP 核心】
+
+> 2026-08-01 实测环境（conda env `careercrew`）：langgraph 1.2.10 / langchain 1.3.14 / langchain-core 1.5.2 / langchain-openai 1.4.1 / pymilvus 3.0.1。
+
+- **统一按 LangGraph 1.x API 实现**（pyproject 下限已改为 `langgraph>=1.2.0`）。spec 中所有图 / 中断 / 检查点描述以 1.x 为准，0.2 时代写法不再使用：
+  - `interrupt()` 是节点内函数（`langgraph.types.interrupt`），恢复用 `Command(resume=...)`（`langgraph.types.Command`）；不用"抛 Interrupt 信号给 supervisor"的旧写法。
+  - checkpointer 从 `langgraph.checkpoint.sqlite` 导入（`SqliteSaver`），`StateGraph.compile(checkpointer=...)`。
+  - 不依赖 `create_react_agent`（手写 ReAct 本身就是本项目卖点）。
+- **版本锁定原则**：MVP 阶段 pyproject 用兼容范围安装，但**以本表实测版本为准写代码**；升级/新增依赖前先验证 API 兼容，避免按旧文档 API 落码。
+- **LLM / Rerank 模型名已实测可用**（2026-08-01，硅基流动 `/v1/models`）：`deepseek-ai/DeepSeek-V4-Flash`、`BAAI/bge-m3`、`BAAI/bge-reranker-v2-m3` 均存在。
+
 ---
 
 ### 3.2 Agent 内核（手写 ReAct）【MVP 核心 - 基础版】+【高级方向 - 高级特性】
@@ -257,7 +268,20 @@ class CareerCrewState(TypedDict):
 - **触发**：token 占比达阈值（**优先用模型真实 usage**，不用字符数/4 估算）。
 - **策略（基础版）**：保留区（最近 ~20K tokens 原封不动）+ 压缩区（分块总结 -> 合并 -> 写 JSONL compaction 条目，带 `firstKeptEntryId` 标记保留区起点）。
 
-#### 3.3.6 高级方向【高级方向】
+#### 3.3.6 记忆事件契约【MVP 核心】
+
+情景记忆与 trace 共用的最小事件契约（C1 落地字段，L2 业务级评估 / L3 trace 消费，避免阶段间返工）：
+- **事件类型**（`MemoryEntry.type` 枚举）：`job_match` / `interview_qa` / `application` / `offer` / `salary_talk` / `review` / `profile_update` / `compaction`。
+- **通用字段**：`id` / `parentId` / `type` / `ts` / `content`（摘要文本）/ `metadata`（结构化）。
+- **关键事件 metadata 字段**：
+  - `job_match`：`job_id` / `title` / `company` / `match_score`
+  - `interview_qa`：`company` / `position` / `question` / `answer_summary` / `score` / `feedback`
+  - `application`：`job_id` / `company` / `position` / `status`
+  - `offer`：`company` / `position` / `package_summary` / `decision`
+- **trace 事件**（L3）：`trace_id` / `span_id` / `parent_span_id` / `ts` / `type`（`agent_loop` / `tool_call` / `tool_result` / `hitl` / `memory_op`）/ `payload`。
+- 契约先在 `careercrew_core/memory/types.py` 定死并由单测锁定（C1 验收标准），后续阶段只增不改。
+
+#### 3.3.7 高级方向【高级方向】
 - **Hermes 完整版**：Skill Library（先加载精简描述，命中才加载全文）/ User Model 丰富化 / 反思自进化循环（Skill 自我改进、面经掌握度图谱）/ 记忆双通道检索（系统每轮自动检索 + Agent 主动 `memory_search`）。
 - **compaction 完整策略**：token 占比触发 + 保留区 + 压缩区 + **Pre-compaction Memory Flush**（压缩前先静默跑一轮把重要信息写进长期记忆再压缩，防丢关键信息）。
 - **记忆双通道**：系统级自动注入（before_model hook 每轮检索相关记忆）+ Agent 级主动检索（`memory_search` 工具）。
@@ -289,7 +313,7 @@ class CareerCrewState(TypedDict):
 #### 3.4.2 工具执行
 - **基础并行/串行**：同一轮内 `parallel_safe=true` 的工具并行执行；有依赖的串行。
 - **结果回喂**：工具结果按 function calling 规范回喂给下一轮 LLM。
-- **高风险拦截**：执行前检查 `requires_confirmation`，若为 true 则抛 `Interrupt` 信号给 supervisor，走 HITL。
+- **高风险拦截**：执行前检查 `requires_confirmation`，若为 true 则不执行工具，调用节点内 `interrupt()` 挂起图走 HITL（恢复语义见 §3.8.2）。
 
 #### 3.4.3 RAG 工具化
 自建 RAG 检索能力被封装成 `rag_query` 内部工具暴露给 agent，agent 按需调用检索知识库（见 3.7）。
@@ -308,7 +332,7 @@ class CareerCrewState(TypedDict):
 #### 3.5.2 部署模式
 | 模式 | 适用场景 | 说明 |
 |------|---------|------|
-| **milvus-lite** | 本地开发、MVP | 嵌入式，`pip install pymilvus` 即用，零外部服务 |
+| **milvus-lite** | 本地开发、MVP | 嵌入式，`pip install milvus-lite` 即用，零外部服务；**Windows 需单独装 wheel（见 README），装不上时 D2 默认切 `chroma` 兜底** |
 | **milvus (Docker)** | 演示、规模扩展 | 完整 Milvus 服务，docker-compose 启动 |
 | **chroma** | 兜底 | 自建 ChromaStore 实现，配置切换 |
 
@@ -326,10 +350,16 @@ RAG 知识库与情景记忆向量共用 Milvus 实例，但 collection 隔离�
 
 **目标：** 接入现成 MCP 工具跑通 MVP；自建求职者端 MCP 放后期。
 
-#### 3.6.1 现成 MCP 接入【MVP 核心】
-- **mcp-jobs**：职位检索（JD 库）。
-- **Google MCP**：通用搜索（公司信息、薪资公开数据补充）。
-- 通过 MCP client 连接，工具自动注册进统一工具注册表。
+#### 3.6.1 现成 MCP 接入【MVP 核心 - mock 先行】
+- **策略：mock 先行，真实 MCP 可选**。MVP 阶段先落地 mock（`tools/mcp/mock_jobs.py` 提供样例 JD）保证 E3-E4 不依赖外部 server；真实 server 接入不阻塞任何排期任务，接入后由统一注册表自动发现注册。
+- **外部 MCP server 清单**（本机均未预装，接入参数 E2 阶段确定）：
+
+  | server | 用途 | 接入方式 | MVP 状态 |
+  |--------|------|---------|---------|
+  | mcp-jobs | 职位检索（JD 库） | MCP client（stdio 命令或 SSE URL） | mock 兜底，真实可选 |
+  | Google MCP | 通用搜索（公司信息/薪资公开数据补充） | MCP client | 可选；未接入时用 rag_query + 手动数据替代 |
+
+- 通过 MCP client 连接，工具自动注册进统一工具注册表；连接失败按 §5.7 降级（工具返回错误信息给 agent，不阻塞主流程）。
 
 #### 3.6.2 投递/进度跟踪 Mock【MVP 核心】
 MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保证闭环可跑通。HITL 闸门在 mock 上验证。
@@ -364,11 +394,24 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 自建 Ingestion Pipeline 摄取知识库到 Milvus（collection `careercrew_kb`）：
 - 大模型八股 + 真实面试题
 - 算法岗面经
-- JD 库（mcp-jobs 沉淀）
+- JD 库（MVP 由 `mock_jobs` 生成 + 用户手动收集，真实 mcp-jobs 沉淀为增量）
 - 公司/薪资公开数据
 - 简历范本
 
 流水线：Loader（PDF/Word/Markdown 统一转 Markdown）-> Splitter -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Milvus Upsert。
+
+**MVP 首批知识库（`data/knowledge/`，D4 验收用；先备数据再实现 pipeline）**：
+
+| 类别 | 内容 | 来源 | 许可 / 合规 |
+|------|------|------|------------|
+| 大模型八股 | 1 份 Markdown（100-300 行常见概念问答） | 自写整理（优先）或开源笔记 | 自写无版权问题；引用开源须注明来源 |
+| 真实面试题 | 面试题集 Markdown 1 份 | 自备或开源仓库（标注来源） | 按来源 License |
+| 算法面经 | 可选 1 份 | 同上 | 同上 |
+| JD 库 | 5-10 条样例 JD | `mock_jobs` 生成 + 用户手动收集 | 招聘公开信息 |
+| 简历范本 | 用户自己的简历 1-2 份（脱敏）+ 结构化字段说明 | 用户自备 | 用户自有，勿外传 |
+| 公司/薪资数据 | 公开薪资表（可选） | 开源数据集或自备 | 按来源 License |
+
+> 数据源原则：**dogfood 优先用用户自己的材料**（简历 / 面经 / 目标公司），开源材料只作补充；不抓取受版权保护内容。
 
 #### 3.7.4 文档加载（多格式）【MVP 核心】
 
@@ -402,7 +445,20 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
   - 谈薪话术（`salary_talk_script`）
 - **恢复**：人工可确认 / 拒绝 / 修改后确认，结果写回 state 与情景记忆。
 
-#### 3.8.2 Delegate 三级授权【高级方向】
+#### 3.8.2 interrupt 恢复语义【MVP 核心】
+
+> ReAct 循环内触发 HITL 的实现约束（B2 / K2 落地，langgraph 1.x）：
+
+- **挂起**：ReAct 循环的工具执行器发现 `requires_confirmation=true` 时**不执行工具**，调用节点内 `interrupt()` 挂起整个图，payload = 待确认动作（工具名 + 参数 + 风险说明）。CLI 通过 `stream_mode="updates"` 收到 `__interrupt__` 事件后渲染确认 UI；**等待输入期间图处于挂起状态，不阻塞线程**。
+- **恢复**：用户输入 yes / no / 修改后，以 `Command(resume=decision)` 继续执行，图从 interrupt 点恢复（checkpointer 已保存节点状态）。
+- **决策分支**：
+  - `yes`：执行原工具，结果回喂 ReAct 循环继续。
+  - `no`：工具返回"用户已拒绝"结果，agent 据此调整或终止当前动作。
+  - `修改`：以修改后的参数执行工具，结果回喂。
+- **上下文重建约束（关键）**：ReAct 循环的中间状态（已执行工具结果 / 循环轮次）必须可从 `CareerCrewState`（messages / agent_outputs）重建，**不得只存进程内存**——否则进程重启或图恢复时循环上下文丢失。
+- **进程重启**：中断后进程退出，重新启动后通过 SQLite checkpointer 恢复到上次 interrupt 点继续。
+
+#### 3.8.3 Delegate 三级授权【高级方向】
 | 级别 | 风险 | 行为 | 示例 |
 |------|------|------|------|
 | **只读草稿** | 高 | 必确认 | 投递 / 接 offer / 谈薪话术 |
@@ -599,7 +655,7 @@ HITL 确认投递 (apply) ── interrupt
 | **记忆 - 情景** | append-only、parentId 树、回溯重建 | 写入后 parentId 链正确；从叶子回溯到根拼接上下文完整 |
 | **记忆 - User Model** | 结构化读写、字段约束 | `profile_update` 更新字段；非法字段拒绝 |
 | **记忆 - compaction** | 触发阈值、保留区、压缩条目 | token 占比超阈值触发；保留区原封；compaction 条目带 `firstKeptEntryId` |
-| **工具注册表** | 注册、路由、requires_confirmation | MCP/内部工具统一 schema；高风险工具触发 Interrupt 信号 |
+| **工具注册表** | 注册、路由、requires_confirmation | MCP/内部工具统一 schema；高风险工具触发节点内 `interrupt()` 挂起 |
 | **supervisor 路由** | 阶段->agent 路由 | 意图+阶段 -> 正确 agent；多 agent 会诊 fan-out |
 | **Milvus 后端** | upsert/query 契约 | roundtrip 确定性；Dense+Sparse 混合检索；collection 隔离 |
 
@@ -641,7 +697,8 @@ HITL 确认投递 (apply) ── interrupt
 - **框架**：`pytest`（参数化、Fixture）。
 - **Mock**：`unittest.mock`（LLM / MCP / Milvus）。
 - **Agent 评估**：golden 路由集 + golden 轨迹集（`tests/fixtures/`）。
-- **覆盖率目标**：单元测试核心逻辑 ≥ 80%；关键路径集成测试 100%；E2E 至少 4 个关键流程。
+- **CI**：GitHub Actions（`.github/workflows/ci.yml`），push / PR 触发；CI 跑轻量单测（配置加载 + AI 工厂契约，外部依赖全 mock，**无需 API key**）；重 ML 栈（FlagEmbedding / torch / BGE-M3）由本地 conda env 验证（D 阶段起涉及）。
+- **覆盖率目标**：单元测试核心逻辑 ≥ 80%；E2E 至少 4 个关键流程；**关键集成路径**（§4.2.2 的 5 条：supervisor+agent+ReAct / agent+记忆 / agent+RAG / HITL 流程 / Milvus+RAG）**各至少 1 个用例**（不追求集成层覆盖率数字，以路径清单为准）。
 
 ---
 
@@ -752,7 +809,7 @@ CareerCrew/
 │   │   ├── __init__.py
 │   │   ├── react_loop.py               # 可见 while 循环（组装上下文->调LLM->判tool_call->执行->回喂）
 │   │   └── context_builder.py          # 上下文组装（短期对话+记忆+工具结果）
-│   └── prompts/                         # agent system prompts + RAG prompts
+│   └── prompts/                         # agent system prompts + RAG prompts（运行时 prompts 唯一存放位置；根 prompts/ 仅为开发模板）
 │       ├── job_matcher.txt
 │       ├── resume_advisor.txt
 │       ├── interviewer.txt
@@ -840,8 +897,7 @@ CareerCrew/
 │           └── traces.py               # agent ReAct 轨迹 / HITL 历史
 │
 ├── config/                              # 配置文件
-│   ├── settings.yaml                    # 主配置
-│   └── prompts/                         # （agent prompts 也可能放这，二选一）
+│   └── settings.yaml                    # 主配置（agent prompts 唯一位置：careercrew_ai/prompts/）
 │
 ├── data/                                # 数据目录
 │   ├── db/
@@ -1157,6 +1213,7 @@ dashboard:
 3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
 4. **换 LLM**：改 `llm` 配置（init_chat_model 适配）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
+6. **多用户边界**：MVP 为**单用户**——transcripts 按 `{user_id}/` 组织仅为结构预留，MVP 统一用默认 user_id；checkpointer / User Model / 向量 collection 不做多租户隔离。多用户（Postgres checkpointer + 用户数据分库）见 §7 长期愿景。
 
 ### 5.7 错误处理与降级策略
 
@@ -1165,7 +1222,7 @@ dashboard:
 | 组件 | 失败场景 | 降级策略 |
 |------|---------|---------|
 | LLM（硅基流动） | 超时 / 限流 / 5xx | 指数退避重试 ≤3 次；仍失败抛可读错误（含 trace_id），不吞异常 |
-| LLM | API key 错 / 余额不足 | 启动时 fail-fast（A3 配置校验 + 首次调用探活） |
+| LLM | API key 错 / 余额不足 / 模型名不存在 | A3 配置校验只做 key 非空等静态检查（`create_llm` 构造不触网）；模型名 / 余额 / 连通性探活由 `careercrew config --check` 落地（G 阶段 CLI 完善时补）；首次 invoke 前的运行时错误按"重试 → 可读错误（含 trace_id）"处理 |
 | LLM | 单次运行 token 超 `max_tokens_per_run` 预算 | 停止当前 run + 告警 + trace 记录，防止成本失控 |
 | BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
 | Milvus | 连接失败 / 查询超时 | 切 Chroma 兜底（`backend=chroma`）；无兜底则返回空结果 + 错误日志 |
@@ -1184,7 +1241,7 @@ dashboard:
 - **用户数据**：简历 / 薪资 / 面经属敏感信息，存本地（`data/`），不上传第三方；User Model 结构化存储，不外泄。
 - **投递动作**：必走 HITL 确认，避免误投（求职高 stakes）。
 - **日志脱敏**：trace 日志不记录完整简历正文 / 薪资数字，只记摘要 + 长度 + 来源。
-- **依赖安全**：固定依赖版本（`pyproject.toml`），定期 `pip audit`。
+- **依赖安全**：MVP 阶段 `pyproject.toml` 用兼容范围（`>=`），关键 AI 依赖以 §3.1.6 实测版本为准；后续引入 lockfile（uv / pip-tools）固定完整版本后，再定期 `pip audit`。
 
 ---
 
@@ -1260,7 +1317,7 @@ dashboard:
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
 | D1 | BGE-M3 Embedding + 切分/Contextual Chunking | [ ] | | bge_m3_embedding.py / contextualizer.py |
-| D2 | Milvus 后端（BaseVectorStore 实现） | [ ] | | milvus_store.py（CareerCrew 自有） |
+| D2 | Milvus 后端（BaseVectorStore 实现） | [ ] | | milvus_store.py（CareerCrew 自有）；Windows 装不上 milvus-lite 时改 chroma 兜底 |
 | D3 | Hybrid Search + RRF + Rerank 编排 | [ ] | | hybrid_search.py / fusion.py / rerank.py |
 | D4 | rag_query 工具 + 知识库 ingestion pipeline | [ ] | | rag_query.py / pipeline.py / ingest_knowledge.py |
 | D5 | 配置切换 milvus/chroma 验证 | [ ] | | 工厂路由 roundtrip 测试 |
@@ -1270,7 +1327,7 @@ dashboard:
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
 | E1 | job_matcher system prompt | [ ] | | prompts/job_matcher.txt |
-| E2 | 接 mcp-jobs 工具 | [ ] | | MCP client 发现注册 |
+| E2 | 接 mcp-jobs 工具（mock 先行） | [ ] | | mock_jobs 样例 JD + 真实接入可选 |
 | E3 | JD 检索 + 匹配打分 | [ ] | | JD-画像匹配逻辑 |
 | E4 | 命中写入候选池（情景记忆） | [ ] | | job_match 事件写入 |
 | E5 | 单元/集成测试 | [ ] | | golden 路由集 |
@@ -1523,7 +1580,7 @@ dashboard:
   - `MemoryEntry(id, parentId, type, ts, content)`
   - `TreeNode`（树节点）
   - `UserModel(profile, target_companies, preferences, interview_mastery)`
-- **验收标准**：可序列化；字段稳定。
+- **验收标准**：可序列化；字段稳定；事件类型与 metadata 字段对齐 §3.3.6 事件契约（L2/L3 数据契约，只增不改）。
 - **测试方法**：`pytest -q tests/unit/test_memory_types.py`。
 
 ### C2：情景记忆 append-only JSONL + parentId 树
@@ -1606,7 +1663,7 @@ dashboard:
 - **实现类/函数**：
   - `MilvusStore(BaseVectorStore)`：`upsert` / `query` / `delete_by_metadata` / `get_by_ids`
   - 支持 Dense + Sparse 混合检索（Milvus 原生 BGE-M3 hybrid）
-- **验收标准**：upsert -> query roundtrip 确定性；collection 隔离。
+- **验收标准**：upsert -> query roundtrip 确定性；collection 隔离；**Windows 下 milvus-lite 不可安装时，改 `chroma` 后端跑通同一 roundtrip（与 D5 合并验证）**。
 - **测试方法**：`pytest -q tests/integration/test_milvus_backend.py`（真实 milvus-lite）。
 
 ### D3：Hybrid Search + RRF + Rerank 编排
@@ -1656,13 +1713,14 @@ dashboard:
 - **验收标准**：prompt 明确角色、工具使用指引、产出格式。
 - **测试方法**：人工 review。
 
-### E2：接 mcp-jobs 工具
-- **目标**：MCP client 发现并注册 mcp-jobs。
+### E2：接 mcp-jobs 工具（mock 先行）
+- **目标**：先落地 mock JD 工具（`mock_jobs`）保证 E3/E4 不依赖外部 server；真实 mcp-jobs 接入为可选增量。
 - **修改文件**：
-  - `careercrew_core/tools/mcp/mcp_client.py`
+  - `careercrew_core/tools/mcp/mock_jobs.py`（MVP：样例 JD 提供方）
+  - `careercrew_core/tools/mcp/mcp_client.py`（可选：真实 server 发现注册）
   - `tests/unit/test_mcp_client.py`
-- **实现类/函数**：`McpClient.discover()` / `register(registry)`
-- **验收标准**：mcp-jobs 工具可被发现注册（Mock MCP server）。
+- **实现类/函数**：`MockJobs.search(query) -> list[Job]`；`McpClient.discover()` / `register(registry)`（可选）
+- **验收标准**：E3/E4 用 mock JD 可跑通；真实 mcp-jobs 若接入，工具可被发现注册（Mock MCP server 单测）。
 - **测试方法**：`pytest -q tests/unit/test_mcp_client.py`。
 
 ### E3：JD 检索 + 匹配打分
@@ -2026,5 +2084,5 @@ conda run -n careercrew pytest -q tests/e2e/          # 端到端（求职闭环
 
 ---
 
-> **文档状态**：初稿 v0.2（自建 RAG + 硅基流动 + conda env）。后续按实际开发迭代细化各节（尤其是排期子任务的修改文件列表与验收标准，需在实现中校正）。
+> **文档状态**：v0.3（2026-08-01 修订）——LangGraph 1.x 版本对齐（§3.1.6）、HITL interrupt 恢复语义（§3.8.2）、记忆事件契约（§3.3.6）、知识库数据源与 MCP mock 先行落地（§3.6/§3.7）、配置同步（`rag.loaders`）、CI 与覆盖率口径、Milvus Lite Windows 风险、多用户边界。后续按实际开发迭代细化（排期子任务的修改文件列表与验收标准随实现校正）。
 > **决策记录**：见 `prompts/gen_dev_spec.md` 末尾"决策记录"小节（供参考，不写进 spec）。

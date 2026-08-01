@@ -105,7 +105,7 @@ CareerCrew/
 │   │   ├── __init__.py
 │   │   ├── react_loop.py               # 可见 while 循环（组装上下文->调LLM->判tool_call->执行->回喂）
 │   │   └── context_builder.py          # 上下文组装（短期对话+记忆+工具结果）
-│   └── prompts/                         # agent system prompts + RAG prompts
+│   └── prompts/                         # agent system prompts + RAG prompts（运行时 prompts 唯一存放位置；根 prompts/ 仅为开发模板）
 │       ├── job_matcher.txt
 │       ├── resume_advisor.txt
 │       ├── interviewer.txt
@@ -193,8 +193,7 @@ CareerCrew/
 │           └── traces.py               # agent ReAct 轨迹 / HITL 历史
 │
 ├── config/                              # 配置文件
-│   ├── settings.yaml                    # 主配置
-│   └── prompts/                         # （agent prompts 也可能放这，二选一）
+│   └── settings.yaml                    # 主配置（agent prompts 唯一位置：careercrew_ai/prompts/）
 │
 ├── data/                                # 数据目录
 │   ├── db/
@@ -510,6 +509,7 @@ dashboard:
 3. **换向量库**：改 `vector_store.backend` 配置（milvus_lite / milvus_docker / chroma）。
 4. **换 LLM**：改 `llm` 配置（init_chat_model 适配）。
 5. **加高级记忆能力**：在 `memory/` 下扩展 Skill Library / 反思循环等（高级方向）。
+6. **多用户边界**：MVP 为**单用户**——transcripts 按 `{user_id}/` 组织仅为结构预留，MVP 统一用默认 user_id；checkpointer / User Model / 向量 collection 不做多租户隔离。多用户（Postgres checkpointer + 用户数据分库）见 §7 长期愿景。
 
 ### 5.7 错误处理与降级策略
 
@@ -518,7 +518,7 @@ dashboard:
 | 组件 | 失败场景 | 降级策略 |
 |------|---------|---------|
 | LLM（硅基流动） | 超时 / 限流 / 5xx | 指数退避重试 ≤3 次；仍失败抛可读错误（含 trace_id），不吞异常 |
-| LLM | API key 错 / 余额不足 | 启动时 fail-fast（A3 配置校验 + 首次调用探活） |
+| LLM | API key 错 / 余额不足 / 模型名不存在 | A3 配置校验只做 key 非空等静态检查（`create_llm` 构造不触网）；模型名 / 余额 / 连通性探活由 `careercrew config --check` 落地（G 阶段 CLI 完善时补）；首次 invoke 前的运行时错误按"重试 → 可读错误（含 trace_id）"处理 |
 | LLM | 单次运行 token 超 `max_tokens_per_run` 预算 | 停止当前 run + 告警 + trace 记录，防止成本失控 |
 | BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
 | Milvus | 连接失败 / 查询超时 | 切 Chroma 兜底（`backend=chroma`）；无兜底则返回空结果 + 错误日志 |
@@ -537,6 +537,6 @@ dashboard:
 - **用户数据**：简历 / 薪资 / 面经属敏感信息，存本地（`data/`），不上传第三方；User Model 结构化存储，不外泄。
 - **投递动作**：必走 HITL 确认，避免误投（求职高 stakes）。
 - **日志脱敏**：trace 日志不记录完整简历正文 / 薪资数字，只记摘要 + 长度 + 来源。
-- **依赖安全**：固定依赖版本（`pyproject.toml`），定期 `pip audit`。
+- **依赖安全**：MVP 阶段 `pyproject.toml` 用兼容范围（`>=`），关键 AI 依赖以 §3.1.6 实测版本为准；后续引入 lockfile（uv / pip-tools）固定完整版本后，再定期 `pip audit`。
 
 ---

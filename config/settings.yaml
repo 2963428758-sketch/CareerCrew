@@ -47,6 +47,8 @@ rag:
     chunk_size: 800
     chunk_overlap: 100
     contextual: true             # Contextual Chunking（LLM 加上下文前置）
+  loaders:
+    backend: markitdown          # markitdown | pymupdf | python-docx（per-format 回退）
 
 # ── LangGraph supervisor ──
 supervisor:

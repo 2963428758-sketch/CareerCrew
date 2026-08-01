@@ -1,0 +1,26 @@
+# CareerCrew CI：轻量单测（配置加载 + AI 工厂契约，外部依赖全 mock，无需 API key）。
+# 重 ML 栈（FlagEmbedding / torch / BGE-M3）由本地 conda env 验证（DEV_SPEC §4.4）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-mock pytest-check pydantic PyYAML python-dotenv numpy \
+            "langgraph>=1.2.0" "langchain>=1.0.0" "langchain-core>=1.0.0" "langchain-openai>=1.0.0" "pymilvus>=3.0.0"
+          pip install -e . --no-deps
+      - name: Unit tests (config + AI factories)
+        run: |
+          pytest -q tests/unit/test_config_loading.py tests/unit/test_ai_base_factories.py

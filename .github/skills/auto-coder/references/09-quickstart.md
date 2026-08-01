@@ -50,5 +50,5 @@ conda run -n careercrew pytest -q tests/e2e/          # 端到端（求职闭环
 
 ---
 
-> **文档状态**：初稿 v0.2（自建 RAG + 硅基流动 + conda env）。后续按实际开发迭代细化各节（尤其是排期子任务的修改文件列表与验收标准，需在实现中校正）。
+> **文档状态**：v0.3（2026-08-01 修订）——LangGraph 1.x 版本对齐（§3.1.6）、HITL interrupt 恢复语义（§3.8.2）、记忆事件契约（§3.3.6）、知识库数据源与 MCP mock 先行落地（§3.6/§3.7）、配置同步（`rag.loaders`）、CI 与覆盖率口径、Milvus Lite Windows 风险、多用户边界。后续按实际开发迭代细化（排期子任务的修改文件列表与验收标准随实现校正）。
 > **决策记录**：见 `prompts/gen_dev_spec.md` 末尾"决策记录"小节（供参考，不写进 spec）。

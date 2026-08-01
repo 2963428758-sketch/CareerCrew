@@ -70,7 +70,7 @@
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
 | D1 | BGE-M3 Embedding + 切分/Contextual Chunking | [ ] | | bge_m3_embedding.py / contextualizer.py |
-| D2 | Milvus 后端（BaseVectorStore 实现） | [ ] | | milvus_store.py（CareerCrew 自有） |
+| D2 | Milvus 后端（BaseVectorStore 实现） | [ ] | | milvus_store.py（CareerCrew 自有）；Windows 装不上 milvus-lite 时改 chroma 兜底 |
 | D3 | Hybrid Search + RRF + Rerank 编排 | [ ] | | hybrid_search.py / fusion.py / rerank.py |
 | D4 | rag_query 工具 + 知识库 ingestion pipeline | [ ] | | rag_query.py / pipeline.py / ingest_knowledge.py |
 | D5 | 配置切换 milvus/chroma 验证 | [ ] | | 工厂路由 roundtrip 测试 |
@@ -80,7 +80,7 @@
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
 | E1 | job_matcher system prompt | [ ] | | prompts/job_matcher.txt |
-| E2 | 接 mcp-jobs 工具 | [ ] | | MCP client 发现注册 |
+| E2 | 接 mcp-jobs 工具（mock 先行） | [ ] | | mock_jobs 样例 JD + 真实接入可选 |
 | E3 | JD 检索 + 匹配打分 | [ ] | | JD-画像匹配逻辑 |
 | E4 | 命中写入候选池（情景记忆） | [ ] | | job_match 事件写入 |
 | E5 | 单元/集成测试 | [ ] | | golden 路由集 |
@@ -333,7 +333,7 @@
   - `MemoryEntry(id, parentId, type, ts, content)`
   - `TreeNode`（树节点）
   - `UserModel(profile, target_companies, preferences, interview_mastery)`
-- **验收标准**：可序列化；字段稳定。
+- **验收标准**：可序列化；字段稳定；事件类型与 metadata 字段对齐 §3.3.6 事件契约（L2/L3 数据契约，只增不改）。
 - **测试方法**：`pytest -q tests/unit/test_memory_types.py`。
 
 ### C2：情景记忆 append-only JSONL + parentId 树
@@ -416,7 +416,7 @@
 - **实现类/函数**：
   - `MilvusStore(BaseVectorStore)`：`upsert` / `query` / `delete_by_metadata` / `get_by_ids`
   - 支持 Dense + Sparse 混合检索（Milvus 原生 BGE-M3 hybrid）
-- **验收标准**：upsert -> query roundtrip 确定性；collection 隔离。
+- **验收标准**：upsert -> query roundtrip 确定性；collection 隔离；**Windows 下 milvus-lite 不可安装时，改 `chroma` 后端跑通同一 roundtrip（与 D5 合并验证）**。
 - **测试方法**：`pytest -q tests/integration/test_milvus_backend.py`（真实 milvus-lite）。
 
 ### D3：Hybrid Search + RRF + Rerank 编排
@@ -466,13 +466,14 @@
 - **验收标准**：prompt 明确角色、工具使用指引、产出格式。
 - **测试方法**：人工 review。
 
-### E2：接 mcp-jobs 工具
-- **目标**：MCP client 发现并注册 mcp-jobs。
+### E2：接 mcp-jobs 工具（mock 先行）
+- **目标**：先落地 mock JD 工具（`mock_jobs`）保证 E3/E4 不依赖外部 server；真实 mcp-jobs 接入为可选增量。
 - **修改文件**：
-  - `careercrew_core/tools/mcp/mcp_client.py`
+  - `careercrew_core/tools/mcp/mock_jobs.py`（MVP：样例 JD 提供方）
+  - `careercrew_core/tools/mcp/mcp_client.py`（可选：真实 server 发现注册）
   - `tests/unit/test_mcp_client.py`
-- **实现类/函数**：`McpClient.discover()` / `register(registry)`
-- **验收标准**：mcp-jobs 工具可被发现注册（Mock MCP server）。
+- **实现类/函数**：`MockJobs.search(query) -> list[Job]`；`McpClient.discover()` / `register(registry)`（可选）
+- **验收标准**：E3/E4 用 mock JD 可跑通；真实 mcp-jobs 若接入，工具可被发现注册（Mock MCP server 单测）。
 - **测试方法**：`pytest -q tests/unit/test_mcp_client.py`。
 
 ### E3：JD 检索 + 匹配打分

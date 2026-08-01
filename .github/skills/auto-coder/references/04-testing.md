@@ -31,7 +31,7 @@
 | **记忆 - 情景** | append-only、parentId 树、回溯重建 | 写入后 parentId 链正确；从叶子回溯到根拼接上下文完整 |
 | **记忆 - User Model** | 结构化读写、字段约束 | `profile_update` 更新字段；非法字段拒绝 |
 | **记忆 - compaction** | 触发阈值、保留区、压缩条目 | token 占比超阈值触发；保留区原封；compaction 条目带 `firstKeptEntryId` |
-| **工具注册表** | 注册、路由、requires_confirmation | MCP/内部工具统一 schema；高风险工具触发 Interrupt 信号 |
+| **工具注册表** | 注册、路由、requires_confirmation | MCP/内部工具统一 schema；高风险工具触发节点内 `interrupt()` 挂起 |
 | **supervisor 路由** | 阶段->agent 路由 | 意图+阶段 -> 正确 agent；多 agent 会诊 fan-out |
 | **Milvus 后端** | upsert/query 契约 | roundtrip 确定性；Dense+Sparse 混合检索；collection 隔离 |
 
@@ -73,6 +73,7 @@
 - **框架**：`pytest`（参数化、Fixture）。
 - **Mock**：`unittest.mock`（LLM / MCP / Milvus）。
 - **Agent 评估**：golden 路由集 + golden 轨迹集（`tests/fixtures/`）。
-- **覆盖率目标**：单元测试核心逻辑 ≥ 80%；关键路径集成测试 100%；E2E 至少 4 个关键流程。
+- **CI**：GitHub Actions（`.github/workflows/ci.yml`），push / PR 触发；CI 跑轻量单测（配置加载 + AI 工厂契约，外部依赖全 mock，**无需 API key**）；重 ML 栈（FlagEmbedding / torch / BGE-M3）由本地 conda env 验证（D 阶段起涉及）。
+- **覆盖率目标**：单元测试核心逻辑 ≥ 80%；E2E 至少 4 个关键流程；**关键集成路径**（§4.2.2 的 5 条：supervisor+agent+ReAct / agent+记忆 / agent+RAG / HITL 流程 / Milvus+RAG）**各至少 1 个用例**（不追求集成层覆盖率数字，以路径清单为准）。
 
 ---

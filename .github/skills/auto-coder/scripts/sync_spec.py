@@ -89,7 +89,7 @@ def sync(force: bool = False):
 
     # Write chapters
     for ch in chapters:
-        (specs_dir / ch.filename).write_text('\n'.join(lines[ch.start_line:ch.end_line]), encoding='utf-8')
+        (specs_dir / ch.filename).write_text('\n'.join(lines[ch.start_line:ch.end_line]), encoding='utf-8', newline='')
 
     hash_file.write_text(current_hash)
     print(f"synced {len(chapters)} chapters")

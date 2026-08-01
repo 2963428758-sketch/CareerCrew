@@ -37,6 +37,7 @@ def test_load_settings_ok(tmp_path: Path, valid_config_data: dict) -> None:
     assert settings.vector_store.collections["knowledge"] == "careercrew_kb"
     assert settings.rag.retrieval.mode == "hybrid"
     assert settings.rag.chunking.contextual is True
+    assert settings.rag.loaders.backend == "markitdown"
     assert settings.tools.hitl.requires_confirmation == ["submit_application", "accept_offer"]
 
 
@@ -90,3 +91,9 @@ def test_rerank_none_backend_skips_api_key(tmp_path: Path, valid_config_data: di
     valid_config_data["rerank"]["api_key"] = ""
     settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert settings.rerank.backend == "none"
+
+def test_invalid_loader_backend(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["rag"]["loaders"] = {"backend": "weird"}
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    assert "rag.loaders.backend" in str(exc.value)

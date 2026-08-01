@@ -40,6 +40,17 @@ class CareerCrewState(TypedDict):
 - 同一问题（如"这个 offer 要不要接"）路由给多个 agent（谈判师 + 规划师 + 面试官）并行给意见，supervisor 综合后输出。
 - 实现上用 LangGraph 的并行 fan-out + join。
 
+#### 3.1.6 LangGraph 版本约定（1.x）【MVP 核心】
+
+> 2026-08-01 实测环境（conda env `careercrew`）：langgraph 1.2.10 / langchain 1.3.14 / langchain-core 1.5.2 / langchain-openai 1.4.1 / pymilvus 3.0.1。
+
+- **统一按 LangGraph 1.x API 实现**（pyproject 下限已改为 `langgraph>=1.2.0`）。spec 中所有图 / 中断 / 检查点描述以 1.x 为准，0.2 时代写法不再使用：
+  - `interrupt()` 是节点内函数（`langgraph.types.interrupt`），恢复用 `Command(resume=...)`（`langgraph.types.Command`）；不用"抛 Interrupt 信号给 supervisor"的旧写法。
+  - checkpointer 从 `langgraph.checkpoint.sqlite` 导入（`SqliteSaver`），`StateGraph.compile(checkpointer=...)`。
+  - 不依赖 `create_react_agent`（手写 ReAct 本身就是本项目卖点）。
+- **版本锁定原则**：MVP 阶段 pyproject 用兼容范围安装，但**以本表实测版本为准写代码**；升级/新增依赖前先验证 API 兼容，避免按旧文档 API 落码。
+- **LLM / Rerank 模型名已实测可用**（2026-08-01，硅基流动 `/v1/models`）：`deepseek-ai/DeepSeek-V4-Flash`、`BAAI/bge-m3`、`BAAI/bge-reranker-v2-m3` 均存在。
+
 ---
 
 ### 3.2 Agent 内核（手写 ReAct）【MVP 核心 - 基础版】+【高级方向 - 高级特性】
@@ -137,7 +148,20 @@ class CareerCrewState(TypedDict):
 - **触发**：token 占比达阈值（**优先用模型真实 usage**，不用字符数/4 估算）。
 - **策略（基础版）**：保留区（最近 ~20K tokens 原封不动）+ 压缩区（分块总结 -> 合并 -> 写 JSONL compaction 条目，带 `firstKeptEntryId` 标记保留区起点）。
 
-#### 3.3.6 高级方向【高级方向】
+#### 3.3.6 记忆事件契约【MVP 核心】
+
+情景记忆与 trace 共用的最小事件契约（C1 落地字段，L2 业务级评估 / L3 trace 消费，避免阶段间返工）：
+- **事件类型**（`MemoryEntry.type` 枚举）：`job_match` / `interview_qa` / `application` / `offer` / `salary_talk` / `review` / `profile_update` / `compaction`。
+- **通用字段**：`id` / `parentId` / `type` / `ts` / `content`（摘要文本）/ `metadata`（结构化）。
+- **关键事件 metadata 字段**：
+  - `job_match`：`job_id` / `title` / `company` / `match_score`
+  - `interview_qa`：`company` / `position` / `question` / `answer_summary` / `score` / `feedback`
+  - `application`：`job_id` / `company` / `position` / `status`
+  - `offer`：`company` / `position` / `package_summary` / `decision`
+- **trace 事件**（L3）：`trace_id` / `span_id` / `parent_span_id` / `ts` / `type`（`agent_loop` / `tool_call` / `tool_result` / `hitl` / `memory_op`）/ `payload`。
+- 契约先在 `careercrew_core/memory/types.py` 定死并由单测锁定（C1 验收标准），后续阶段只增不改。
+
+#### 3.3.7 高级方向【高级方向】
 - **Hermes 完整版**：Skill Library（先加载精简描述，命中才加载全文）/ User Model 丰富化 / 反思自进化循环（Skill 自我改进、面经掌握度图谱）/ 记忆双通道检索（系统每轮自动检索 + Agent 主动 `memory_search`）。
 - **compaction 完整策略**：token 占比触发 + 保留区 + 压缩区 + **Pre-compaction Memory Flush**（压缩前先静默跑一轮把重要信息写进长期记忆再压缩，防丢关键信息）。
 - **记忆双通道**：系统级自动注入（before_model hook 每轮检索相关记忆）+ Agent 级主动检索（`memory_search` 工具）。
@@ -169,7 +193,7 @@ class CareerCrewState(TypedDict):
 #### 3.4.2 工具执行
 - **基础并行/串行**：同一轮内 `parallel_safe=true` 的工具并行执行；有依赖的串行。
 - **结果回喂**：工具结果按 function calling 规范回喂给下一轮 LLM。
-- **高风险拦截**：执行前检查 `requires_confirmation`，若为 true 则抛 `Interrupt` 信号给 supervisor，走 HITL。
+- **高风险拦截**：执行前检查 `requires_confirmation`，若为 true 则不执行工具，调用节点内 `interrupt()` 挂起图走 HITL（恢复语义见 §3.8.2）。
 
 #### 3.4.3 RAG 工具化
 自建 RAG 检索能力被封装成 `rag_query` 内部工具暴露给 agent，agent 按需调用检索知识库（见 3.7）。
@@ -188,7 +212,7 @@ class CareerCrewState(TypedDict):
 #### 3.5.2 部署模式
 | 模式 | 适用场景 | 说明 |
 |------|---------|------|
-| **milvus-lite** | 本地开发、MVP | 嵌入式，`pip install pymilvus` 即用，零外部服务 |
+| **milvus-lite** | 本地开发、MVP | 嵌入式，`pip install milvus-lite` 即用，零外部服务；**Windows 需单独装 wheel（见 README），装不上时 D2 默认切 `chroma` 兜底** |
 | **milvus (Docker)** | 演示、规模扩展 | 完整 Milvus 服务，docker-compose 启动 |
 | **chroma** | 兜底 | 自建 ChromaStore 实现，配置切换 |
 
@@ -206,10 +230,16 @@ RAG 知识库与情景记忆向量共用 Milvus 实例，但 collection 隔离�
 
 **目标：** 接入现成 MCP 工具跑通 MVP；自建求职者端 MCP 放后期。
 
-#### 3.6.1 现成 MCP 接入【MVP 核心】
-- **mcp-jobs**：职位检索（JD 库）。
-- **Google MCP**：通用搜索（公司信息、薪资公开数据补充）。
-- 通过 MCP client 连接，工具自动注册进统一工具注册表。
+#### 3.6.1 现成 MCP 接入【MVP 核心 - mock 先行】
+- **策略：mock 先行，真实 MCP 可选**。MVP 阶段先落地 mock（`tools/mcp/mock_jobs.py` 提供样例 JD）保证 E3-E4 不依赖外部 server；真实 server 接入不阻塞任何排期任务，接入后由统一注册表自动发现注册。
+- **外部 MCP server 清单**（本机均未预装，接入参数 E2 阶段确定）：
+
+  | server | 用途 | 接入方式 | MVP 状态 |
+  |--------|------|---------|---------|
+  | mcp-jobs | 职位检索（JD 库） | MCP client（stdio 命令或 SSE URL） | mock 兜底，真实可选 |
+  | Google MCP | 通用搜索（公司信息/薪资公开数据补充） | MCP client | 可选；未接入时用 rag_query + 手动数据替代 |
+
+- 通过 MCP client 连接，工具自动注册进统一工具注册表；连接失败按 §5.7 降级（工具返回错误信息给 agent，不阻塞主流程）。
 
 #### 3.6.2 投递/进度跟踪 Mock【MVP 核心】
 MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保证闭环可跑通。HITL 闸门在 mock 上验证。
@@ -244,11 +274,24 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 自建 Ingestion Pipeline 摄取知识库到 Milvus（collection `careercrew_kb`）：
 - 大模型八股 + 真实面试题
 - 算法岗面经
-- JD 库（mcp-jobs 沉淀）
+- JD 库（MVP 由 `mock_jobs` 生成 + 用户手动收集，真实 mcp-jobs 沉淀为增量）
 - 公司/薪资公开数据
 - 简历范本
 
 流水线：Loader（PDF/Word/Markdown 统一转 Markdown）-> Splitter -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Milvus Upsert。
+
+**MVP 首批知识库（`data/knowledge/`，D4 验收用；先备数据再实现 pipeline）**：
+
+| 类别 | 内容 | 来源 | 许可 / 合规 |
+|------|------|------|------------|
+| 大模型八股 | 1 份 Markdown（100-300 行常见概念问答） | 自写整理（优先）或开源笔记 | 自写无版权问题；引用开源须注明来源 |
+| 真实面试题 | 面试题集 Markdown 1 份 | 自备或开源仓库（标注来源） | 按来源 License |
+| 算法面经 | 可选 1 份 | 同上 | 同上 |
+| JD 库 | 5-10 条样例 JD | `mock_jobs` 生成 + 用户手动收集 | 招聘公开信息 |
+| 简历范本 | 用户自己的简历 1-2 份（脱敏）+ 结构化字段说明 | 用户自备 | 用户自有，勿外传 |
+| 公司/薪资数据 | 公开薪资表（可选） | 开源数据集或自备 | 按来源 License |
+
+> 数据源原则：**dogfood 优先用用户自己的材料**（简历 / 面经 / 目标公司），开源材料只作补充；不抓取受版权保护内容。
 
 #### 3.7.4 文档加载（多格式）【MVP 核心】
 
@@ -282,7 +325,20 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
   - 谈薪话术（`salary_talk_script`）
 - **恢复**：人工可确认 / 拒绝 / 修改后确认，结果写回 state 与情景记忆。
 
-#### 3.8.2 Delegate 三级授权【高级方向】
+#### 3.8.2 interrupt 恢复语义【MVP 核心】
+
+> ReAct 循环内触发 HITL 的实现约束（B2 / K2 落地，langgraph 1.x）：
+
+- **挂起**：ReAct 循环的工具执行器发现 `requires_confirmation=true` 时**不执行工具**，调用节点内 `interrupt()` 挂起整个图，payload = 待确认动作（工具名 + 参数 + 风险说明）。CLI 通过 `stream_mode="updates"` 收到 `__interrupt__` 事件后渲染确认 UI；**等待输入期间图处于挂起状态，不阻塞线程**。
+- **恢复**：用户输入 yes / no / 修改后，以 `Command(resume=decision)` 继续执行，图从 interrupt 点恢复（checkpointer 已保存节点状态）。
+- **决策分支**：
+  - `yes`：执行原工具，结果回喂 ReAct 循环继续。
+  - `no`：工具返回"用户已拒绝"结果，agent 据此调整或终止当前动作。
+  - `修改`：以修改后的参数执行工具，结果回喂。
+- **上下文重建约束（关键）**：ReAct 循环的中间状态（已执行工具结果 / 循环轮次）必须可从 `CareerCrewState`（messages / agent_outputs）重建，**不得只存进程内存**——否则进程重启或图恢复时循环上下文丢失。
+- **进程重启**：中断后进程退出，重新启动后通过 SQLite checkpointer 恢复到上次 interrupt 点继续。
+
+#### 3.8.3 Delegate 三级授权【高级方向】
 | 级别 | 风险 | 行为 | 示例 |
 |------|------|------|------|
 | **只读草稿** | 高 | 必确认 | 投递 / 接 offer / 谈薪话术 |
