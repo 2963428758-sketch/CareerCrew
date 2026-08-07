@@ -44,6 +44,11 @@ data/user_model_demo.json
 logs/
 cache/
 
+# 已删除的手写 seed 文档（用 Exa 抓取的 exa_*.md 代替）
+data/knowledge/rag.md
+data/knowledge/agent.md
+data/knowledge/interview.md
+
 # Skill caches (derived from DEV_SPEC)
 .github/skills/auto-coder/.spec_hash
 
