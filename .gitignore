@@ -34,8 +34,13 @@ secrets.yaml
 htmlcov/
 coverage.xml
 
-# CareerCrew runtime data
-data/
+# CareerCrew runtime data（向量库/模型/记忆不进 git；知识库文档进 git）
+data/db/
+data/ms_cache/
+data/transcripts/
+data/demo_c/
+data/user_model.json
+data/user_model_demo.json
 logs/
 cache/
 
