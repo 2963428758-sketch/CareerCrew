@@ -51,8 +51,9 @@ def test_create_embedding_routes_to_fake(valid_config_data: dict) -> None:
     assert out.dense.shape == (2, 8)  # n_texts=2, dim=8
 
 
-def test_create_embedding_bge_m3_not_yet_implemented(valid_config_data: dict) -> None:
-    settings = Settings.model_validate(valid_config_data)  # provider=bge_m3_local
+def test_create_embedding_unknown_provider_raises(valid_config_data: dict) -> None:
+    valid_config_data["embedding"]["provider"] = "openai"  # 未实现的 provider
+    settings = Settings.model_validate(valid_config_data)
     with pytest.raises(NotImplementedError):
         create_embedding(settings)
 
@@ -86,8 +87,9 @@ def test_create_vector_store_routes_to_fake(valid_config_data: dict) -> None:
     assert vs.get_by_ids(["a"]) == []
 
 
-def test_create_vector_store_milvus_not_yet_implemented(valid_config_data: dict) -> None:
-    settings = Settings.model_validate(valid_config_data)  # backend=milvus_lite
+def test_create_vector_store_unknown_backend_raises(valid_config_data: dict) -> None:
+    valid_config_data["vector_store"]["backend"] = "qdrant"  # 未实现
+    settings = Settings.model_validate(valid_config_data)
     with pytest.raises(NotImplementedError):
         create_vector_store(settings)
 
@@ -123,7 +125,8 @@ def test_create_reranker_fake(valid_config_data: dict) -> None:
     assert [c.id for c in out] == ["a", "b"]  # 按 id 字典序
 
 
-def test_create_reranker_siliconflow_not_yet_implemented(valid_config_data: dict) -> None:
-    settings = Settings.model_validate(valid_config_data)  # backend=siliconflow
+def test_create_reranker_local_bge_not_yet_implemented(valid_config_data: dict) -> None:
+    valid_config_data["rerank"]["backend"] = "local_bge"
+    settings = Settings.model_validate(valid_config_data)
     with pytest.raises(NotImplementedError):
         create_reranker(settings)

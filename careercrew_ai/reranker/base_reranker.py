@@ -61,12 +61,17 @@ _RERANKER_REGISTRY: dict[str, type[BaseReranker]] = {
 def create_reranker(settings: Settings) -> BaseReranker:
     """按 settings.rerank.backend 路由到具体实现。"""
     backend = settings.rerank.backend
-    cls = _RERANKER_REGISTRY.get(backend)
-    if cls is None:
-        raise NotImplementedError(
-            f"rerank backend '{backend}' 尚未实现（D3 将实现 siliconflow / local_bge）"
-        )
-    return cls(settings)
+    if backend == "none":
+        return NoneReranker(settings)
+    if backend == "fake":
+        return FakeReranker(settings)
+    if backend == "siliconflow":
+        from careercrew_ai.reranker.siliconflow_reranker import SiliconFlowReranker
+
+        return SiliconFlowReranker(settings)
+    raise NotImplementedError(
+        f"rerank backend '{backend}' 尚未实现（已实现: none, fake, siliconflow）"
+    )
 
 
 def register_reranker(backend: str, cls: type[BaseReranker]) -> None:

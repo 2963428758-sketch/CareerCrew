@@ -105,12 +105,20 @@ _VECTOR_STORE_REGISTRY: dict[str, type[BaseVectorStore]] = {"fake": FakeVectorSt
 def create_vector_store(settings: Settings) -> BaseVectorStore:
     """按 settings.vector_store.backend 路由到具体实现。"""
     backend = settings.vector_store.backend
-    cls = _VECTOR_STORE_REGISTRY.get(backend)
-    if cls is None:
-        raise NotImplementedError(
-            f"vector_store backend '{backend}' 尚未实现（D2 将实现 milvus_lite，D5 实现 chroma）"
-        )
-    return cls(settings)
+    if backend == "fake":
+        return FakeVectorStore(settings)
+    if backend in ("milvus_lite", "milvus_docker"):
+        # lazy import：避免 import 本模块就拉 pymilvus
+        from careercrew_ai.vector_store.milvus_store import MilvusStore
+
+        return MilvusStore(settings)
+    if backend == "chroma":
+        from careercrew_ai.vector_store.chroma_store import ChromaStore
+
+        return ChromaStore(settings)
+    raise NotImplementedError(
+        f"vector_store backend '{backend}' 尚未实现（已实现: fake, milvus_lite, chroma）"
+    )
 
 
 def register_vector_store(backend: str, cls: type[BaseVectorStore]) -> None:

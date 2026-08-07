@@ -56,12 +56,16 @@ _EMBEDDING_REGISTRY: dict[str, type[BaseEmbedding]] = {"fake": FakeEmbedding}
 def create_embedding(settings: Settings) -> BaseEmbedding:
     """按 settings.embedding.provider 路由到具体实现。"""
     provider = settings.embedding.provider
-    cls = _EMBEDDING_REGISTRY.get(provider)
-    if cls is None:
-        raise NotImplementedError(
-            f"embedding provider '{provider}' 尚未实现（D1 将实现 bge_m3_local）"
-        )
-    return cls(settings)
+    if provider == "fake":
+        return FakeEmbedding(settings)
+    if provider == "bge_m3_local":
+        # lazy import：避免 import 本模块就加载 2GB FlagEmbedding 模型
+        from careercrew_ai.embedding.bge_m3_embedding import BGEM3Embedding
+
+        return BGEM3Embedding(settings)
+    raise NotImplementedError(
+        f"embedding provider '{provider}' 尚未实现（已实现: fake, bge_m3_local）"
+    )
 
 
 def register_embedding(provider: str, cls: type[BaseEmbedding]) -> None:

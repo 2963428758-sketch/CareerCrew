@@ -1316,11 +1316,11 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| D1 | BGE-M3 Embedding + 切分/Contextual Chunking | [ ] | | bge_m3_embedding.py / contextualizer.py |
-| D2 | Milvus 后端（BaseVectorStore 实现） | [ ] | | milvus_store.py（CareerCrew 自有）；Windows 装不上 milvus-lite 时改 chroma 兜底 |
-| D3 | Hybrid Search + RRF + Rerank 编排 | [ ] | | hybrid_search.py / fusion.py / rerank.py |
-| D4 | rag_query 工具 + 知识库 ingestion pipeline | [ ] | | rag_query.py / pipeline.py / ingest_knowledge.py |
-| D5 | 配置切换 milvus/chroma 验证 | [ ] | | 工厂路由 roundtrip 测试 |
+| D1 | BGE-M3 Embedding + 切分/Contextual Chunking | [x] | 2026-07-30 | bge_m3_embedding.py / contextualizer.py |
+| D2 | Milvus 后端（BaseVectorStore 实现） | [x] | 2026-07-30 | milvus_store.py（CareerCrew 自有）；Windows 装不上 milvus-lite 时改 chroma 兜底 |
+| D3 | Hybrid Search + RRF + Rerank 编排 | [x] | 2026-07-30 | hybrid_search.py / fusion.py / rerank.py |
+| D4 | rag_query 工具 + 知识库 ingestion pipeline | [x] | 2026-07-30 | rag_query.py / pipeline.py / ingest_knowledge.py |
+| D5 | 配置切换 milvus/chroma 验证 | [x] | 2026-07-30 | 工厂路由 roundtrip 测试 |
 
 #### 阶段 E：职位匹配官
 
@@ -1430,7 +1430,7 @@ dashboard:
 | 阶段 A | 4 | 4 | 100% |
 | 阶段 B | 5 | 5 | 100% |
 | 阶段 C | 6 | 6 | 100% |
-| 阶段 D | 5 | 0 | 0% |
+| 阶段 D | 5 | 5 | 100% |
 | 阶段 E | 5 | 0 | 0% |
 | 阶段 F | 5 | 0 | 0% |
 | 阶段 G | 4 | 0 | 0% |
@@ -1441,7 +1441,7 @@ dashboard:
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **15** | **23%** |
+| **总计** | **65** | **20** | **31%** |
 
 ---
 

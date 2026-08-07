@@ -1,0 +1,68 @@
+"""知识库 Ingestion Pipeline（D4）：load -> split -> contextualize -> embed -> upsert。
+
+Contextual Chunking 的上下文前缀只用于 embedding（提升检索），存原始块文本（agent 看干净文本）。
+doc_id 取自 source 文件名 stem，chunk id = f"{doc_id}_{i:04d}"（跨文件唯一）。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from careercrew_ai.embedding.base_embedding import BaseEmbedding
+from careercrew_ai.vector_store.base_vector_store import BaseVectorStore, VectorRecord
+from careercrew_core.rag.chunking.document_chunker import DocumentChunker
+
+if TYPE_CHECKING:
+    from careercrew_core.rag.chunking.contextualizer import Contextualizer
+
+
+class IngestionPipeline:
+    def __init__(
+        self,
+        embedding: BaseEmbedding,
+        store: BaseVectorStore,
+        contextualizer: Contextualizer | None = None,
+        contextual: bool = True,
+        chunk_size: int = 800,
+        chunk_overlap: int = 100,
+    ) -> None:
+        self._embedding = embedding
+        self._store = store
+        self._contextualizer = contextualizer
+        self._contextual = contextual and contextualizer is not None
+        self._chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    def ingest_text(self, text: str, source: str = "", metadata: dict | None = None) -> int:
+        """摄取一段文本：切分 -> contextualize -> embed -> upsert。返回 chunk 数。"""
+        chunks = self._chunker.chunk(text, source=source, metadata=metadata)
+        doc_id = Path(source).stem if source else "doc"
+
+        # contextualize（上下文前缀只用于 embedding）
+        texts_to_embed: list[str] = []
+        for c in chunks:
+            if self._contextual and self._contextualizer:
+                c = self._contextualizer.contextualize(c, text)
+            texts_to_embed.append(c.contextualized_text or c.text)
+
+        # 批量 encode
+        emb_out = self._embedding.encode(texts_to_embed)
+
+        # upsert（存原始块文本）
+        records = [
+            VectorRecord(
+                id=f"{doc_id}_{i:04d}",
+                dense=emb_out.dense[i],
+                sparse=emb_out.sparse[i] if emb_out.sparse else None,
+                text=c.text,
+                metadata={**c.metadata, "doc": doc_id},
+            )
+            for i, c in enumerate(chunks)
+        ]
+        self._store.upsert(records)
+        return len(records)
+
+    def ingest_file(self, path: str | Path, metadata: dict | None = None) -> int:
+        p = Path(path)
+        text = p.read_text(encoding="utf-8")
+        meta = {"source": str(p), **(metadata or {})}
+        return self.ingest_text(text, source=str(p), metadata=meta)
