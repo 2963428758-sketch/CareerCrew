@@ -430,6 +430,22 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 
 **Document 契约**：`{id, text(markdown), metadata:{source_path, doc_type, title}}`，与下游 Splitter 衔接。
 
+#### 3.7.5 已知检索质量局限与优化方向【已知问题 - 后期优化】
+
+> D 阶段验收用 11 文档 ~319 chunks 知识库做 12 问命中率测试，**9/12 强命中**（rerank score≥0.5）。3 个弱命中（"rerank 重排解决什么问题" / "为什么手写 ReAct 而不用 create_react_agent" / "大模型量化有哪些方法"）**内容在 KB 中存在但未被排到 top**，是检索质量问题，非内容缺口。
+
+**根因**：
+- 纯字符递归切分（chunk_size=800）会把"最佳答案"混在较大上下文块里，hybrid + rerank 未能精确切中。
+- query 表述与内容表述不完全匹配（如"量化有哪些方法" vs 内容里的"量化方法对比"）。
+
+**优化方向（后期，按性价比排序）**：
+1. **更细 / 语义化 chunking**：按 Q&A 对、按主题段落切（SemanticChunker），或减小 chunk_size；让"答案"成独立 chunk。
+2. **Agentic RAG（M4 阶段）**：query 改写 / 多查询分解 + `rrf_fuse`（已就绪）融合；Self-RAG / CRAG 检索自纠正（M5）。
+3. **Late Chunking / ColBERT 多向量（M7 阶段）**：BGE-M3 colbert 模式 token 级 late interaction，提升细粒度匹配。
+4. **参数调优**：rerank `top_m`、`chunk_size/overlap`、RRF `k`。
+
+> 验收基线：12 问 9/12 强命中（75%）；优化目标 ≥ 11/12。优化在 M 阶段做，不阻塞 MVP 主流程。
+
 ---
 
 ### 3.8 HITL 闸门【MVP 核心 - 基础】+【高级方向 - Delegate 三级授权】
