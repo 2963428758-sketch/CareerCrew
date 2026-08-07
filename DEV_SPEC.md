@@ -1305,12 +1305,12 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| C1 | 记忆核心数据类型（MemoryEntry/TreeNode/UserModel） | [ ] | | memory/types.py |
-| C2 | 情景记忆 append-only JSONL + parentId 树 | [ ] | | episodic.py |
-| C3 | 从叶子回溯到根重建上下文 | [ ] | | episodic.rebuild_context |
-| C4 | 短期 Context Window 管理 | [ ] | | short_term.py |
-| C5 | 长期 User Model 结构化读写 | [ ] | | user_model.py + profile_update |
-| C6 | 基础写入触发点（面试/投递/offer 后写） | [ ] | | memory_write 工具 |
+| C1 | 记忆核心数据类型（MemoryEntry/TreeNode/UserModel） | [x] | 2026-07-30 | memory/types.py |
+| C2 | 情景记忆 append-only JSONL + parentId 树 | [x] | 2026-07-30 | episodic.py |
+| C3 | 从叶子回溯到根重建上下文 | [x] | 2026-07-30 | episodic.rebuild_context |
+| C4 | 短期 Context Window 管理 | [x] | 2026-07-30 | short_term.py |
+| C5 | 长期 User Model 结构化读写 | [x] | 2026-07-30 | user_model.py + profile_update |
+| C6 | 基础写入触发点（面试/投递/offer 后写） | [x] | 2026-07-30 | memory_write 工具 |
 
 #### 阶段 D：自建 RAG 流水线
 
@@ -1429,7 +1429,7 @@ dashboard:
 |------|---------|--------|------|
 | 阶段 A | 4 | 4 | 100% |
 | 阶段 B | 5 | 5 | 100% |
-| 阶段 C | 6 | 0 | 0% |
+| 阶段 C | 6 | 6 | 100% |
 | 阶段 D | 5 | 0 | 0% |
 | 阶段 E | 5 | 0 | 0% |
 | 阶段 F | 5 | 0 | 0% |
@@ -1441,7 +1441,7 @@ dashboard:
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **9** | **14%** |
+| **总计** | **65** | **15** | **23%** |
 
 ---
 
