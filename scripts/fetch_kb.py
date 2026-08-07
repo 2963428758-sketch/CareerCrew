@@ -55,6 +55,12 @@ def main() -> None:
         ("exa_interview_experience.md", "大模型算法岗 面经 字节 阿里 美团 面试经历 大厂"),
         ("exa_jd.md", "大模型应用工程师 招聘 JD 岗位职责 任职要求 LLM Agent RAG"),
         ("exa_resume.md", "大模型应用工程师 简历范本 项目经验 RAG Agent 简历模板 求职"),
+        # 第二批：补薄弱主题（checkpointer/谈薪/职业规划/Java+大模型/chunking）
+        ("exa_langgraph.md", "LangGraph checkpointer 状态持久化 SQLite interrupt HITL 人工干预 状态机 编排"),
+        ("exa_negotiation.md", "薪资谈判 谈薪策略 offer 薪资期望 HR 求职 报价 技巧"),
+        ("exa_career_planning.md", "大模型应用 求职职业规划 方向选择 学习路线 Agent 工程师 成长路径"),
+        ("exa_java_llm.md", "Java 大模型 Spring AI LangChain4j 后端接入 LLM 应用集成 智能体"),
+        ("exa_chunking.md", "RAG chunking 分块策略 Contextual Chunking 递归切分 文档切分 策略 选型"),
     ]
     total_results = 0
     total_chars = 0
