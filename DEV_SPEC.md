@@ -1295,11 +1295,11 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| B1 | Thread State 定义 + SQLite checkpointer | [ ] | | CareerCrewState + checkpointer |
-| B2 | 手写 ReAct 循环内核（可见 while） | [ ] | | react_loop.py + 轮次上限 |
-| B3 | LangGraph supervisor 骨架（路由） | [ ] | | graph.py + router.py |
-| B4 | agent 节点基类（套 ReAct） | [ ] | | base_agent.py |
-| B5 | 基础工具注册表 + 1 个内部工具 stub | [ ] | | registry.py + memory_search stub |
+| B1 | Thread State 定义 + SQLite checkpointer | [x] | 2026-07-30 | CareerCrewState + checkpointer |
+| B2 | 手写 ReAct 循环内核（可见 while） | [x] | 2026-07-30 | react_loop.py + 轮次上限 |
+| B3 | LangGraph supervisor 骨架（路由） | [x] | 2026-07-30 | graph.py + router.py |
+| B4 | agent 节点基类（套 ReAct） | [x] | 2026-07-30 | base_agent.py |
+| B5 | 基础工具注册表 + 1 个内部工具 stub | [x] | 2026-07-30 | registry.py + memory_search stub |
 
 #### 阶段 C：3 层记忆 + append-only 树
 
@@ -1428,7 +1428,7 @@ dashboard:
 | 阶段 | 总任务数 | 已完成 | 进度 |
 |------|---------|--------|------|
 | 阶段 A | 4 | 4 | 100% |
-| 阶段 B | 5 | 0 | 0% |
+| 阶段 B | 5 | 5 | 100% |
 | 阶段 C | 6 | 0 | 0% |
 | 阶段 D | 5 | 0 | 0% |
 | 阶段 E | 5 | 0 | 0% |
@@ -1441,7 +1441,7 @@ dashboard:
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **4** | **6%** |
+| **总计** | **65** | **9** | **14%** |
 
 ---
 

@@ -1,4 +1,15 @@
 {
-  "_comment": "golden 路由集占位 - B3 阶段（supervisor router）填充真实用例。结构：[{stage, user_intent, expected_agent}]",
-  "routes": []
+  "_comment": "golden 路由集 - supervisor router 的 stage->agent 映射断言（B3）",
+  "routes": [
+    {"stage": "intent", "expected_agent": "career_planner"},
+    {"stage": "planning", "expected_agent": "career_planner"},
+    {"stage": "match", "expected_agent": "job_matcher"},
+    {"stage": "resume", "expected_agent": "resume_advisor"},
+    {"stage": "interview", "expected_agent": "interviewer"},
+    {"stage": "negotiate", "expected_agent": "salary_negotiator"},
+    {"stage": "apply", "expected_agent": "__end__"},
+    {"stage": "track", "expected_agent": "job_matcher"},
+    {"stage": "review", "expected_agent": "career_planner"},
+    {"stage": "unknown_stage", "expected_agent": "__end__"}
+  ]
 }

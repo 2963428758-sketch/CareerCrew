@@ -18,6 +18,7 @@ dependencies = [
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
     "langchain-core>=0.3.0",
+    "langgraph-checkpoint-sqlite>=3.1.0",
     "pymilvus>=2.4.0",
     "FlagEmbedding>=1.4.0",
     "modelscope>=1.39.0",
