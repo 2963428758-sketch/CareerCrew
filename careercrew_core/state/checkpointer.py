@@ -4,28 +4,32 @@ LangGraph thread 级短期状态持久化：进程重启可恢复。默认 SQLit
 memory 后端供单测/快速运行。可替换为 Postgres（分布式，后期）。
 
 实现要点：
-- check_same_thread=False：LangGraph Pregel 循环跨线程访问同一连接，默认 sqlite 禁止跨线程。
+- check_same_thread=False：LangGraph Pregel 循环跨线程访问连接，默认 sqlite 禁止跨线程。
 - WAL：并发读不阻塞写。
-- setup()：建 checkpoints/writes 表（直接构造 SqliteSaver 需手动调，from_conn_string 上下文管理器会自动调）。
+- setup()：建 checkpoints/writes 表。
+- lazy import langgraph_checkpoint_sqlite：仅在调用时导入，避免不需 checkpointer 的测试/CI 强行依赖该包。
 """
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
-
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.sqlite import SqliteSaver
+from typing import TYPE_CHECKING
 
 from careercrew_core.state.settings import Settings
+
+if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
 
 _VALID_CHECKPOINT_BACKENDS = {"sqlite", "memory"}
 
 
-def get_checkpointer(settings: Settings) -> BaseCheckpointSaver:
-    """按 settings.supervisor.checkpointer.backend 创建 checkpointer。"""
+def get_checkpointer(settings: Settings) -> "BaseCheckpointSaver":
+    """按 settings.supervisor.checkpointer.backend 创建 checkpointer（lazy import）。"""
     cfg = settings.supervisor.checkpointer
     backend = cfg.backend
     if backend == "sqlite":
+        from langgraph_checkpoint_sqlite import SqliteSaver
+        import sqlite3
+
         path = Path(cfg.path)
         path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False：Pregel 循环跨线程访问连接
