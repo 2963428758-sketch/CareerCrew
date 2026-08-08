@@ -92,6 +92,21 @@ def test_rerank_none_backend_skips_api_key(tmp_path: Path, valid_config_data: di
     settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert settings.rerank.backend == "none"
 
+
+def test_relative_paths_resolved_to_project_root() -> None:
+    """相对路径字段解析为基于项目根的绝对路径（任意 CWD 都能跑）。"""
+    import os
+
+    from careercrew_core.state.settings import PROJECT_ROOT
+
+    settings = load_settings()  # 读 config/settings.yaml（相对路径）
+    assert os.path.isabs(settings.embedding.model_path)
+    assert settings.embedding.model_path == str(
+        PROJECT_ROOT / "data/ms_cache/models/BAAI--bge-m3/snapshots/master"
+    )
+    assert os.path.isabs(settings.vector_store.persist_path)
+    assert os.path.isabs(settings.supervisor.checkpointer.path)
+
 def test_invalid_loader_backend(tmp_path: Path, valid_config_data: dict) -> None:
     valid_config_data["rag"]["loaders"] = {"backend": "weird"}
     with pytest.raises(SettingsError) as exc:

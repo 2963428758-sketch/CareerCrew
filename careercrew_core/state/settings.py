@@ -21,7 +21,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 # ── 默认配置路径：careercrew_core/state/settings.py -> parents[2] = 项目根 ──
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "settings.yaml"
 
 # ${VAR} 环境变量占位（仅 A-Za-z_ 开头的标识符）
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -194,6 +195,28 @@ def _format_validation_errors(err: ValidationError) -> str:
     return "\n".join(lines)
 
 
+def _resolve_path(value: str | None) -> str | None:
+    """相对路径解析为基于项目根的绝对路径（否则按 CWD 解析，换目录跑就挂）。"""
+    if not value:
+        return value
+    p = Path(value)
+    if p.is_absolute():
+        return str(p)
+    return str(PROJECT_ROOT / p)
+
+
+def _resolve_paths(settings: Settings) -> Settings:
+    """把所有相对路径字段解析为基于项目根的绝对路径。"""
+    settings.embedding.model_path = _resolve_path(settings.embedding.model_path)
+    settings.vector_store.persist_path = _resolve_path(settings.vector_store.persist_path)
+    settings.supervisor.checkpointer.path = _resolve_path(settings.supervisor.checkpointer.path)
+    settings.memory.episodic.transcript_dir = _resolve_path(settings.memory.episodic.transcript_dir)
+    settings.memory.user_model.path = _resolve_path(settings.memory.user_model.path)
+    settings.observability.log_file = _resolve_path(settings.observability.log_file)
+    settings.dashboard.traces_dir = _resolve_path(settings.dashboard.traces_dir)
+    return settings
+
+
 def validate_settings(settings: Settings) -> None:
     """语义校验（构造后的跨字段约束），失败抛 SettingsError。
 
@@ -249,4 +272,4 @@ def load_settings(path: str | Path | None = None) -> Settings:
         raise SettingsError(_format_validation_errors(err)) from None
 
     validate_settings(settings)
-    return settings
+    return _resolve_paths(settings)
