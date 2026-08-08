@@ -1391,10 +1391,10 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| J1 | salary_negotiator prompt + 策略 | [ ] | | prompts/salary_negotiator.txt |
-| J2 | 公司/薪资公开数据检索 | [ ] | | rag_query + Google MCP |
-| J3 | career_planner prompt + 画像 + 目标公司池 | [ ] | | prompts/career_planner.txt |
-| J4 | 测试 | [ ] | | |
+| J1 | salary_negotiator prompt + 策略 | [x] | 2026-07-30 | prompts/salary_negotiator.txt |
+| J2 | 公司/薪资公开数据检索 | [x] | 2026-07-30 | rag_query + Google MCP |
+| J3 | career_planner prompt + 画像 + 目标公司池 | [x] | 2026-07-30 | prompts/career_planner.txt |
+| J4 | 测试 | [x] | 2026-07-30 | |
 
 #### 阶段 K：HITL 接工具层
 
@@ -1452,12 +1452,12 @@ dashboard:
 | 阶段 G | 4 | 4 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| 阶段 J | 4 | 0 | 0% |
+| 阶段 J | 4 | 4 | 100% |
 | 阶段 K | 4 | 0 | 0% |
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **44** | **68%** |
+| **总计** | **65** | **48** | **74%** |
 
 ---
 
