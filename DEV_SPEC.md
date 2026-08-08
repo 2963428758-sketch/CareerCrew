@@ -1421,7 +1421,7 @@ dashboard:
 |---------|---------|------|---------|------|
 | M1 | Loop Engineering 七步闭环 + 三角色（选） | [ ] | | Goal->...->Govern |
 | M2 | Pre-compaction Memory Flush（选） | [x] | 2026-07-30 | 压缩前 flush 长期记忆 |
-| M3 | 多 agent 会诊（选） | [ ] | | fan-out + join |
+| M3 | 多 agent 会诊（选） | [x] | 2026-07-30 | fan-out + join |
 | M4 | Agentic RAG（query router + decomposition）（选） | [x] | 2026-07-30 | rag/agent_router.py |
 | M5 | 检索自纠正 Self-RAG / CRAG（选） | [ ] | | rag/retrieval_assessor.py |
 | M6 | 层级/图 RAG（RAPTOR 或 LightRAG）（选） | [ ] | | rag/hierarchical/ |
@@ -1455,9 +1455,9 @@ dashboard:
 | 阶段 J | 4 | 4 | 100% |
 | 阶段 K | 4 | 4 | 100% |
 | 阶段 L | 5 | 5 | 100% |
-| 阶段 M | 7 | 2 | 29% |
+| 阶段 M | 7 | 3 | 43% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **59** | **91%** |
+| **总计** | **65** | **60** | **92%** |
 
 ---
 

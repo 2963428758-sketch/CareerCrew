@@ -45,3 +45,4 @@ class CareerCrewState(TypedDict):
     pending_action: dict | None  # 待确认动作（HITL）
     agent_outputs: Annotated[dict, merge_dicts]  # 各 agent 产出（merge_dicts 聚合多 agent）
     target_companies: list[str]  # 目标公司池
+    synthesis: str = ""  # 多 agent 会诊综合意见（M3 join 节点产出）
