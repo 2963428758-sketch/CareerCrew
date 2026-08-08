@@ -63,6 +63,9 @@ class IngestionPipeline:
 
     def ingest_file(self, path: str | Path, metadata: dict | None = None) -> int:
         p = Path(path)
-        text = p.read_text(encoding="utf-8")
-        meta = {"source": str(p), **(metadata or {})}
-        return self.ingest_text(text, source=str(p), metadata=meta)
+        # 统一加载：Markdown 直读；PDF/Word/Excel/PPT/HTML 用 MarkItDown（§3.7.4）
+        from careercrew_core.rag.loaders.loader_factory import create_loader
+
+        doc = create_loader(str(p)).load(str(p))
+        meta = {"source": str(p), **(doc.metadata or {}), **(metadata or {})}
+        return self.ingest_text(doc.text, source=str(p), metadata=meta)
