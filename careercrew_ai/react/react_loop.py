@@ -42,9 +42,15 @@ class AgentResult:
 class ReactLoop:
     """手写 ReAct 循环（可见 while）。"""
 
-    def __init__(self, max_iterations: int = 10, context_builder: ContextBuilder | None = None) -> None:
+    def __init__(
+        self,
+        max_iterations: int = 10,
+        context_builder: ContextBuilder | None = None,
+        tracer=None,
+    ) -> None:
         self.max_iterations = max_iterations
         self._context_builder = context_builder or ContextBuilder()
+        self._tracer = tracer  # 可选 TraceRecorder（L3）
 
     def run(
         self,
@@ -66,6 +72,12 @@ class ReactLoop:
             tool_calls = list(resp.tool_calls or [])
             it = ReactIteration(iteration=i, content=content, tool_calls=tool_calls)
             iterations.append(it)
+            if self._tracer:
+                self._tracer.agent_loop(
+                    agent="react", iteration=i, content=content,
+                    tool_calls=[tc.get("name") for tc in tool_calls],
+                    tool_calls_total=tool_calls_total,
+                )
 
             # 无 tool_call -> 最终答案
             if not tool_calls:

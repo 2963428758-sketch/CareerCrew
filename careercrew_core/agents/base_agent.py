@@ -29,12 +29,13 @@ class BaseAgent:
         llm: BaseChatModel,
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 10,
+        tracer=None,  # 可选 TraceRecorder（L3 全链路打点）
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
         self.llm = llm
         self.tools = tools or []
-        self.loop = ReactLoop(max_iterations=max_iterations)
+        self.loop = ReactLoop(max_iterations=max_iterations, tracer=tracer)
         self.last_result: AgentResult | None = None  # 供 trace/调试取完整迭代记录
 
     def run(self, state: CareerCrewState) -> dict:
