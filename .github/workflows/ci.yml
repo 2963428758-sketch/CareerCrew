@@ -22,5 +22,8 @@ jobs:
             "langgraph>=1.2.0" "langchain>=1.0.0" "langchain-core>=1.0.0" "langchain-openai>=1.0.0" "pymilvus>=3.0.0"
           pip install -e . --no-deps
       - name: Unit tests (config + AI factories)
+        # 测试不调真实 API；只需让 validate_settings 通过（api_key 非空）
+        env:
+          SILICONFLOW_API_KEY: "sk-test-ci-dummy"
         run: |
           pytest -q tests/unit/test_config_loading.py tests/unit/test_ai_base_factories.py
