@@ -47,10 +47,12 @@ class ReactLoop:
         max_iterations: int = 10,
         context_builder: ContextBuilder | None = None,
         tracer=None,
+        stream_callback=None,
     ) -> None:
         self.max_iterations = max_iterations
         self._context_builder = context_builder or ContextBuilder()
         self._tracer = tracer  # 可选 TraceRecorder（L3）
+        self._stream_callback = stream_callback  # 可选：逐 token 流式输出回调(text)->None
 
     def run(
         self,
@@ -67,9 +69,7 @@ class ReactLoop:
         content = ""
 
         for i in range(self.max_iterations):
-            resp = bound_llm.invoke(convo)
-            content = resp.content if isinstance(resp.content, str) else str(resp.content)
-            tool_calls = list(resp.tool_calls or [])
+            content, tool_calls, resp = self._invoke(bound_llm, convo)
             it = ReactIteration(iteration=i, content=content, tool_calls=tool_calls)
             iterations.append(it)
             if self._tracer:
@@ -103,6 +103,29 @@ class ReactLoop:
             tool_calls_total=tool_calls_total,
             stopped_reason="max_iterations",
         )
+
+    def _invoke(self, bound_llm, convo):
+        """调 LLM。有 stream_callback 则流式(逐 token 回调, 用户不等)；否则一次 invoke。
+
+        Returns: (content, tool_calls, resp)  resp 为完整 AIMessage(带 tool_calls 用于回喂)。
+        """
+        if self._stream_callback is None:
+            resp = bound_llm.invoke(convo)
+            content = resp.content if isinstance(resp.content, str) else str(resp.content)
+            return content, list(resp.tool_calls or []), resp
+
+        # 流式：accumulate chunks（内容 + tool_call_chunks），逐 token 回调
+        from langchain_core.messages import AIMessage
+
+        msg = None
+        for chunk in bound_llm.stream(convo):
+            msg = chunk if msg is None else msg + chunk
+            if chunk.content:
+                self._stream_callback(chunk.content)
+        if msg is None:
+            msg = AIMessage(content="")
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        return content, list(getattr(msg, "tool_calls", None) or []), msg
 
     @staticmethod
     def _execute_tool(tool_map: dict[str, BaseTool], tool_call: dict) -> Any:

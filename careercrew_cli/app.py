@@ -94,10 +94,13 @@ def _build_job_cycle():
     resume_tools.register(ToolSpec(tool=make_profile_update_tool(um)))
 
     tracer = TraceRecorder()  # L3 全链路 trace（Dashboard 追踪页）
+    renderer = Renderer()
     return JobCycle(
-        JobMatcher(llm=llm, tools=matcher_tools, max_iterations=8, tracer=tracer),
-        ResumeAdvisor(llm=llm, tools=resume_tools, max_iterations=8, tracer=tracer),
-        renderer=Renderer(),
+        JobMatcher(llm=llm, tools=matcher_tools, max_iterations=8, tracer=tracer,
+                   stream_callback=renderer.stream),  # 流式输出, 用户不等
+        ResumeAdvisor(llm=llm, tools=resume_tools, max_iterations=8, tracer=tracer,
+                      stream_callback=renderer.stream),
+        renderer=renderer,
         user_model_store=um,
     )
 

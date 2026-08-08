@@ -34,5 +34,13 @@ class Renderer:
     def show_error(self, text: str) -> None:
         print(f"{_RED}✗ {text}{_RESET}")
 
+    def stream(self, text: str) -> None:
+        """流式输出 token（不换行, 实时刷新, 用户不等）。"""
+        print(text, end="", flush=True)
+
+    def stream_end(self) -> None:
+        """流式结束换行。"""
+        print()
+
     def prompt_choice(self, prompt: str) -> str:
         return input(prompt)

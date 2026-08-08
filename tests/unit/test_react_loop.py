@@ -103,3 +103,55 @@ def test_context_builder_prepends_system() -> None:
     assert convo[0].content == "你是助手"
     assert "[相关记忆]" in convo[1].content
     assert convo[2].content == "hi"
+
+
+def test_react_loop_streaming() -> None:
+    """流式: stream_callback 收到逐 token, 结果正确, 用户不等。"""
+    tokens: list[str] = []
+
+    class FakeStreamLLM:
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def stream(self, messages):
+            from langchain_core.messages import AIMessageChunk
+            for part in ["流式", "输出", "测试"]:
+                yield AIMessageChunk(content=part)
+
+    loop = ReactLoop(max_iterations=3, stream_callback=lambda t: tokens.append(t))
+    result = loop.run("sys", [HumanMessage(content="hi")], [], FakeStreamLLM())
+    assert "".join(tokens) == "流式输出测试"
+    assert result.content == "流式输出测试"
+    assert result.stopped_reason == "final_answer"
+
+
+def test_react_loop_streaming_with_tool_call() -> None:
+    """流式 + 工具调用: 第一轮流式出 tool_call, 执行后第二轮流式出最终答案。"""
+    tokens: list[str] = []
+
+    class FakeStreamLLM:
+        def __init__(self):
+            self._n = 0
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def stream(self, messages):
+            from langchain_core.messages import AIMessageChunk
+            if self._n == 0:
+                self._n += 1
+                yield AIMessageChunk(
+                    content="", tool_call_chunks=[
+                        {"name": "add", "args": '{"a": 1, "b": 2}', "id": "c1", "index": 0, "type": "tool_call_chunk"},
+                    ],
+                )
+            else:
+                for part in ["结果", "是", "3"]:
+                    yield AIMessageChunk(content=part)
+
+    loop = ReactLoop(max_iterations=3, stream_callback=lambda t: tokens.append(t))
+    result = loop.run("sys", [HumanMessage(content="算 1+2")], [add], FakeStreamLLM())
+    assert result.stopped_reason == "final_answer"
+    assert result.content == "结果是3"
+    assert result.tool_calls_total == 1
+    assert "".join(tokens) == "结果是3"

@@ -30,12 +30,15 @@ class BaseAgent:
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 10,
         tracer=None,  # 可选 TraceRecorder（L3 全链路打点）
+        stream_callback=None,  # 可选: 流式输出回调(text)->None, 用户不等
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
         self.llm = llm
         self.tools = tools or []
-        self.loop = ReactLoop(max_iterations=max_iterations, tracer=tracer)
+        self.loop = ReactLoop(
+            max_iterations=max_iterations, tracer=tracer, stream_callback=stream_callback
+        )
         self.last_result: AgentResult | None = None  # 供 trace/调试取完整迭代记录
 
     def run(self, state: CareerCrewState) -> dict:
