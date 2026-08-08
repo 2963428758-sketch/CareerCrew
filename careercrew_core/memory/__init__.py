@@ -1,4 +1,5 @@
-"""careercrew_core.memory - 3 层记忆系统（短期 / 情景 / 长期）。"""
+"""careercrew_core.memory - 3 层记忆系统（短期 / 情景 / 长期）+ 检索 + compaction。"""
+from careercrew_core.memory.compaction import Compactor
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.memory.short_term import ShortTermMemory, estimate_tokens
 from careercrew_core.memory.types import (
@@ -9,6 +10,7 @@ from careercrew_core.memory.types import (
     UserModel,
 )
 from careercrew_core.memory.user_model import UserModelStore
+from careercrew_core.memory.vector_index import VectorIndex
 
 __all__ = [
     "EpisodicMemory",
@@ -20,4 +22,6 @@ __all__ = [
     "UserPreferences",
     "UserModel",
     "UserModelStore",
+    "VectorIndex",
+    "Compactor",
 ]

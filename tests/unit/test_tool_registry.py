@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.tools import BaseTool, tool
 
-from careercrew_core.tools.internal.memory_search import memory_search
+from careercrew_core.tools.internal.memory_search import make_memory_search_tool
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
 
@@ -56,7 +56,7 @@ def test_execute_internal_tool() -> None:
 
 def test_bindable_tools_are_basetool() -> None:
     reg = ToolRegistry()
-    reg.register(ToolSpec(tool=memory_search))
+    reg.register(ToolSpec(tool=make_memory_search_tool()))
     bindable = reg.bindable_tools()
     assert len(bindable) == 1
     assert isinstance(bindable[0], BaseTool)
@@ -64,7 +64,7 @@ def test_bindable_tools_are_basetool() -> None:
 
 def test_memory_search_stub_runs() -> None:
     reg = ToolRegistry()
-    reg.register(ToolSpec(tool=memory_search))
+    reg.register(ToolSpec(tool=make_memory_search_tool()))
     out = reg.execute("memory_search", query="RAG 面试题", top_k=3)
     assert "stub" in out
     assert "RAG 面试题" in out
