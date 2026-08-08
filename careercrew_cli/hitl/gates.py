@@ -27,3 +27,21 @@ class HitlGates:
             if ans in ("n", "no", ""):
                 return False
             print("  请输入 y/n")
+
+    # ── 四类高风险闸门（K3） ──
+
+    def gate_apply(self, company: str, title: str) -> bool:
+        """投递简历闸门。"""
+        return self.confirm("投递简历", f"{company} {title}")
+
+    def gate_greeting(self, company: str) -> bool:
+        """打招呼闸门。"""
+        return self.confirm("打招呼", company)
+
+    def gate_offer(self, company: str, salary: str) -> bool:
+        """接 offer 闸门。"""
+        return self.confirm("接受 offer", f"{company} {salary}")
+
+    def gate_salary_talk(self, company: str) -> bool:
+        """谈薪话术闸门。"""
+        return self.confirm("发送谈薪话术", company)

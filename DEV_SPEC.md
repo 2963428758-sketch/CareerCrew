@@ -1400,10 +1400,10 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| K1 | 工具 requires_confirmation 标记 | [ ] | | 注册表字段 |
-| K2 | LangGraph interrupt 集成 | [ ] | | supervisor/hitl.py |
-| K3 | 投递/打招呼/接 offer 闸门 | [ ] | | gates.py |
-| K4 | 测试 | [ ] | | HITL 触发正确性 |
+| K1 | 工具 requires_confirmation 标记 | [x] | 2026-07-30 | 注册表字段（mock_apply 四类高风险） |
+| K2 | LangGraph interrupt 集成 | [x] | 2026-07-30 | supervisor/hitl.py |
+| K3 | 投递/打招呼/接 offer 闸门 | [x] | 2026-07-30 | gates.py（gate_apply/gate_offer/gate_greeting/gate_salary_talk） |
+| K4 | 测试 | [x] | 2026-07-30 | HITL 触发正确性 |
 
 #### 阶段 L：评估 + Dashboard
 
@@ -1453,11 +1453,11 @@ dashboard:
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
 | 阶段 J | 4 | 4 | 100% |
-| 阶段 K | 4 | 0 | 0% |
+| 阶段 K | 4 | 4 | 100% |
 | 阶段 L | 5 | 0 | 0% |
 | 阶段 M | 7 | 0 | 0% |
 | 阶段 N | 5 | 0 | 0% |
-| **总计** | **65** | **48** | **74%** |
+| **总计** | **65** | **52** | **80%** |
 
 ---
 
