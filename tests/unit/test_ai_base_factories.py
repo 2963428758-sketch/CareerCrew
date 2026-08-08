@@ -27,8 +27,15 @@ from careercrew_core.state.settings import Settings
 def test_create_llm_injects_base_url(valid_config_data: dict) -> None:
     settings = Settings.model_validate(valid_config_data)
     llm = create_llm(settings)
-    # langchain-openai 1.x 把 base_url 存为 openai_api_base
-    assert getattr(llm, "openai_api_base", None) == settings.llm.base_url
+    # langchain-openai 不同版本 base_url 存放位置不同(1.4.x: openai_api_base;
+    # 1.5+/1.6+: 移到 client.base_url / openai_client.base_url), 兼容多版本检查
+    base_url = (
+        getattr(llm, "openai_api_base", None)
+        or getattr(getattr(llm, "client", None), "base_url", None)
+        or getattr(getattr(llm, "openai_client", None), "base_url", None)
+        or getattr(getattr(llm, "root_client", None), "base_url", None)
+    )
+    assert base_url == settings.llm.base_url
     assert llm.model_name == settings.llm.model
 
 
