@@ -136,6 +136,11 @@ class MilvusStore(BaseVectorStore):
             for r in res
         ]
 
+    def count(self) -> int:
+        """当前 collection 实体数（demo / 工具判断是否已入库）。"""
+        stats = self._client.get_collection_stats(self._collection)
+        return int(stats.get("row_count", 0))
+
     @staticmethod
     def _filter_expr(filters: dict | None) -> str | None:
         if not filters:
