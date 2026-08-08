@@ -5,6 +5,7 @@ metadata 用 dynamic field（可过滤）。pymilvus 在 __init__ 内 lazy impor
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,9 @@ class MilvusStore(BaseVectorStore):
         dim: int = 1024,
     ) -> None:
         from pymilvus import DataType, MilvusClient
+
+        # 压掉 Milvus Lite 内部 gRPC 的 keepalive 噪音（GOAWAY too_many_pings，无害）
+        os.environ.setdefault("GRPC_VERBOSITY", "NONE")
 
         cfg = settings.vector_store
         path = Path(cfg.persist_path)

@@ -87,6 +87,7 @@ def _build_job_cycle():
     matcher_tools.register(ToolSpec(tool=search_jobs))
     matcher_tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
     matcher_tools.register(ToolSpec(tool=make_memory_write_tool(episodic)))
+    matcher_tools.register(ToolSpec(tool=make_profile_update_tool(um)))  # 持久化用户画像, 避免重复问
 
     resume_tools = ToolRegistry()
     resume_tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
@@ -97,6 +98,7 @@ def _build_job_cycle():
         JobMatcher(llm=llm, tools=matcher_tools, max_iterations=8, tracer=tracer),
         ResumeAdvisor(llm=llm, tools=resume_tools, max_iterations=8, tracer=tracer),
         renderer=Renderer(),
+        user_model_store=um,
     )
 
 
