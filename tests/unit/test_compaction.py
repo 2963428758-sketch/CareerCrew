@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from careercrew_core.memory.compaction import Compactor
 from careercrew_core.memory.episodic import EpisodicMemory
+from careercrew_core.memory.user_model import UserModelStore
 
 
 class FakeLLM:
@@ -50,3 +51,38 @@ def test_compact_under_threshold_noop(tmp_path) -> None:
     new_msgs, entry = c.compact(msgs, em)
     assert new_msgs == msgs
     assert entry is None
+
+
+def test_compact_flushes_to_user_model(tmp_path) -> None:
+    """M2: 压缩前 flush 关键信息到 User Model。"""
+    class FlushLLM:
+        def invoke(self, prompt):
+            from langchain_core.messages import AIMessage
+            return AIMessage(content='{"skills": ["Python", "RAG"], "target_companies": ["字节"], "preferences": {"salary_min": 30, "city": ["北京"]}}')
+
+    um = UserModelStore(tmp_path / "um.json")
+    c = Compactor(FlushLLM(), token_threshold_ratio=0.5, retention_tokens=30,
+                  user_model_store=um, user_id="u1")
+    em = EpisodicMemory(tmp_path / "t.jsonl")
+    c.compact(_long_messages(20), em)
+    model = um.load("u1")
+    assert "Python" in model.profile.skills
+    assert model.target_companies == ["字节"]
+    assert model.preferences.salary_min == 30
+    assert "北京" in model.preferences.city
+
+
+def test_compact_flush_failure_does_not_block(tmp_path) -> None:
+    """M2: flush LLM 输出非法 JSON 时不阻塞压缩。"""
+    class BadLLM:
+        def invoke(self, prompt):
+            from langchain_core.messages import AIMessage
+            return AIMessage(content="不是 JSON，随便说")
+
+    um = UserModelStore(tmp_path / "um.json")
+    c = Compactor(BadLLM(), token_threshold_ratio=0.5, retention_tokens=30,
+                  user_model_store=um, user_id="u1")
+    em = EpisodicMemory(tmp_path / "t.jsonl")
+    new_msgs, entry = c.compact(_long_messages(20), em)
+    assert entry is not None  # 压缩仍完成
+    assert um.load("u1").profile.skills == []  # User Model 未写坏
