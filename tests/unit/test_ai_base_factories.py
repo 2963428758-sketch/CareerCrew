@@ -36,7 +36,9 @@ def test_create_llm_injects_base_url(valid_config_data: dict) -> None:
         or getattr(getattr(llm, "root_client", None), "base_url", None)
     )
     assert base_url == settings.llm.base_url
-    assert llm.model_name == settings.llm.model
+    # langchain-openai 不同版本 model 字段名不同(1.4.x: model_name; 1.5+: model)
+    model = getattr(llm, "model_name", None) or getattr(llm, "model", None)
+    assert model == settings.llm.model
 
 
 def test_create_llm_override_temperature(valid_config_data: dict) -> None:
