@@ -92,3 +92,52 @@ def test_job_cycle_injects_profile_preamble(tmp_path) -> None:
     cycle.run_match("帮我找工作")
     msgs = seen[0]
     assert any("[用户画像]" in str(m.content) and "Java" in str(m.content) for m in msgs)
+
+
+def test_run_match_syncs_profile_from_intent(tmp_path) -> None:
+    """用户最新消息的明确字段刷新画像：旧方向被新方向覆盖，避免历史画像带偏。"""
+    from careercrew_core.memory.user_model import UserModelStore
+
+    um = UserModelStore(tmp_path / "um.json")
+    um.update("u1", {"profile.direction": "Java 后端", "profile.skills": ["Java"]})
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            return type("R", (), {"content": '{"profile.direction": "大模型应用"}'})()
+
+    class AgentWithLLM:
+        def __init__(self):
+            self.llm = FakeLLM()
+            self.last_result = type("R", (), {"content": "匹配完成"})()
+            self.run_calls = 0
+
+        def run(self, state):
+            self.run_calls += 1
+
+    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), renderer=Renderer(), user_model_store=um, user_id="u1")
+    cycle.run_match("我是大模型应用方向")
+    m = um.load("u1")
+    assert m.profile.direction == "大模型应用"  # 新方向覆盖旧 Java 方向
+
+
+def test_run_match_keeps_profile_when_no_new_field(tmp_path) -> None:
+    """消息里没给新字段时画像保持原样（不误清）。"""
+    from careercrew_core.memory.user_model import UserModelStore
+
+    um = UserModelStore(tmp_path / "um.json")
+    um.update("u1", {"profile.direction": "大模型应用"})
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            return type("R", (), {"content": "{}"})()
+
+    class AgentWithLLM:
+        def __init__(self):
+            self.llm = FakeLLM()
+            self.last_result = type("R", (), {"content": "ok"})()
+        def run(self, state):
+            pass
+
+    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), renderer=Renderer(), user_model_store=um, user_id="u1")
+    cycle.run_match("帮我找工作")
+    assert um.load("u1").profile.direction == "大模型应用"

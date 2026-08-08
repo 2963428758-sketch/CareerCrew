@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
@@ -42,6 +43,47 @@ def score_jd_match(jd_text: str, profile: dict) -> float:
     if direction and direction in jd_lower:
         hit += 1
     return round(hit / total, 3)
+
+
+def extract_profile_from_intent(llm, intent: str) -> dict:
+    """从用户最新消息提取【明确提供】的画像字段（direction/skills/level/city/target/salary）。
+
+    只提取用户亲口说的，不推测、不从历史画像补充；解析失败返回空 dict（不阻塞）。
+    返回 key 是 profile_update 白名单字段。用于匹配前刷新画像：用户本次说什么就是什么，
+    避免 demo/历史画像（如旧 Java 技能）带偏方向。
+    """
+    if llm is None or not intent:
+        return {}
+    prompt = (
+        "从用户这条求职需求里，提取用户【明确提供】的画像字段。"
+        "只提取用户自己说的信息，不要推测，不要从历史画像补充；没提到的字段一律 null。\n"
+        '输出 JSON：{"profile.direction": str 或 null, "profile.skills": [str] 或 null, '
+        '"profile.level": str 或 null, "preferences.city": [str] 或 null, '
+        '"target_companies": [str] 或 null, "preferences.salary_min": 数字 或 null}。'
+        "只输出 JSON，不要解释。\n用户消息："
+        f"{intent}"
+    )
+    try:
+        resp = llm.invoke(prompt)
+        content = resp.content if isinstance(resp.content, str) else str(resp.content)
+        data = json.loads(content[content.find("{") : content.rfind("}") + 1])
+    except Exception:
+        return {}
+    fields: dict = {}
+    for key, t in (
+        ("profile.direction", str),
+        ("profile.level", str),
+        ("profile.skills", list),
+        ("preferences.city", list),
+        ("target_companies", list),
+    ):
+        v = data.get(key)
+        if isinstance(v, t) and v:
+            fields[key] = v
+    sal = data.get("preferences.salary_min")
+    if isinstance(sal, (int, float)) and not isinstance(sal, bool):
+        fields["preferences.salary_min"] = int(sal)
+    return fields
 
 
 class JobMatcher(BaseAgent):

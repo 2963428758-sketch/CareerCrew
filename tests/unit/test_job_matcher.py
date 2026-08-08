@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from careercrew_core.agents.job_matcher import JobMatcher, score_jd_match
+from careercrew_core.agents.job_matcher import JobMatcher, extract_profile_from_intent, score_jd_match
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.tools.internal.memory_write import make_memory_write_tool
 from careercrew_core.tools.internal.search_jobs import search_jobs
@@ -26,6 +26,39 @@ def test_score_jd_match_partial() -> None:
 def test_score_jd_match_empty() -> None:
     assert score_jd_match("", {"skills": ["Python"]}) == 0.0
     assert score_jd_match("Java", {}) == 0.0
+
+
+def _fake_llm(content: str):
+    class _FakeLLM:
+        def invoke(self, messages, config=None):
+            return type("R", (), {"content": content})()
+    return _FakeLLM()
+
+
+def test_extract_profile_from_intent() -> None:
+    """从用户最新消息提取明确字段（方向/技能），只信用户亲口说的。"""
+    fields = extract_profile_from_intent(
+        _fake_llm('{"profile.direction": "大模型应用", "profile.skills": ["Java"]}'),
+        "我是大模型应用方向，有 Java 背景",
+    )
+    assert fields["profile.direction"] == "大模型应用"
+    assert fields["profile.skills"] == ["Java"]
+
+
+def test_extract_profile_from_intent_no_json() -> None:
+    """LLM 没输出 JSON → 返回空 dict，不阻塞。"""
+    assert extract_profile_from_intent(_fake_llm("抱歉，我无法解析"), "找岗位") == {}
+    assert extract_profile_from_intent(None, "找岗位") == {}
+    assert extract_profile_from_intent(_fake_llm("{}"), "") == {}
+
+
+def test_extract_profile_from_intent_type_guard() -> None:
+    """类型不符的字段丢弃：skills 应为 list，字符串拒绝（避免写坏 User Model）。"""
+    fields = extract_profile_from_intent(
+        _fake_llm('{"profile.skills": "Java", "preferences.salary_min": "很多"}'),
+        "找岗位",
+    )
+    assert fields == {}
 
 
 class FakeChatModel:
