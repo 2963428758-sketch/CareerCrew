@@ -9,10 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from careercrew_ai.embedding import create_embedding
-from careercrew_ai.llm import create_llm
 from careercrew_ai.reranker import create_reranker
 from careercrew_ai.vector_store import create_vector_store
-from careercrew_core.rag.chunking.contextualizer import Contextualizer
 from careercrew_core.rag.pipeline import IngestionPipeline
 from careercrew_core.rag.retrieval.hybrid_search import HybridSearch
 from careercrew_core.state.settings import load_settings
@@ -29,22 +27,24 @@ def main() -> None:
 
     embedding = create_embedding(settings)
     store = create_vector_store(settings)
-    llm = create_llm(settings, max_tokens=256)
-    contextualizer = Contextualizer(llm)
     reranker = create_reranker(settings)
 
-    # 1. ingest
-    print(f"\n--- 1) Ingest {len(files)} 知识库文档（含 Contextual Chunking）---")
-    pipe = IngestionPipeline(
-        embedding, store, contextualizer=contextualizer, contextual=True,
-        chunk_size=400, chunk_overlap=50,
-    )
-    total = 0
-    for f in files:
-        n = pipe.ingest_file(f)
-        print(f"  {f.name}: {n} chunks")
-        total += n
-    print(f"  共 {total} chunks 入库（collection={settings.vector_store.collections['knowledge']}）")
+    # 1. ingest（KB 已入库则跳过，避免每次 contextual=True 重 ingest 全库过慢）
+    if store.count() > 0:
+        print(f"知识库已入库（{store.count()} chunks），跳过 ingest\n")
+    else:
+        print(f"\n--- 1) Ingest {len(files)} 知识库文档 ---")
+        pipe = IngestionPipeline(
+            embedding, store, contextual=False,
+            chunk_size=settings.rag.chunking.chunk_size,
+            chunk_overlap=settings.rag.chunking.chunk_overlap,
+        )
+        total = 0
+        for f in files:
+            n = pipe.ingest_file(f)
+            print(f"  {f.name}: {n} chunks")
+            total += n
+        print(f"  共 {total} chunks 入库（collection={settings.vector_store.collections['knowledge']}）")
 
     # 2. 检索
     hs = HybridSearch(embedding, store, reranker=reranker, top_m=20)

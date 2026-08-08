@@ -46,6 +46,21 @@ def _tc(name, args, id_="1"):
     return {"name": name, "args": args, "id": id_, "type": "tool_call"}
 
 
+def test_job_matcher_accepts_tracer(tmp_path) -> None:
+    """回归：所有 agent 子类必须透传 tracer（CLI chat 传 tracer 会失败）。"""
+    from careercrew_core.tracing.trace import TraceRecorder
+
+    llm = FakeChatModel([AIMessage(content="匹配结果")])
+    agent = JobMatcher(llm=llm, tools=ToolRegistry(), tracer=TraceRecorder(tmp_path / "t.jsonl"))
+    state = {
+        "thread_id": "t1", "user_id": "u1", "stage": "match", "user_intent": "找岗位",
+        "messages": [HumanMessage(content="找岗位")],
+        "pending_action": None, "agent_outputs": {}, "target_companies": [],
+    }
+    agent.run(state)
+    assert agent.last_result.content == "匹配结果"
+
+
 def test_job_matcher_writes_job_match(tmp_path) -> None:
     llm = FakeChatModel([
         AIMessage(content="", tool_calls=[_tc("search_jobs", {"direction": "大模型应用", "top_k": 3}, "c1")]),

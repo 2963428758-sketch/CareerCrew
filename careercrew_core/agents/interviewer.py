@@ -33,6 +33,7 @@ class Interviewer(BaseAgent):
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 8,
         prompt_path: Path | None = None,
+        tracer=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
@@ -42,6 +43,7 @@ class Interviewer(BaseAgent):
             llm=llm,
             tools=tools,
             max_iterations=max_iterations,
+            tracer=tracer,
         )
 
 

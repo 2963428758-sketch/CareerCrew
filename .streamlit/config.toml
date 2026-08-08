@@ -1,0 +1,4 @@
+# CareerCrew Streamlit 配置
+# 隐藏 Streamlit 1.36+ 自动发现的 pages/ 多页导航（本应用用 st.sidebar.radio 手动导航）
+[client]
+showSidebarNavigation = false
