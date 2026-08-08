@@ -25,12 +25,14 @@ class JobCycle:
         renderer: Renderer | None = None,
         user_model_store=None,  # UserModelStore（画像注入 + 持久化）
         user_id: str = "u_001",
+        streaming: bool = False,  # agent 输出已流式打出, 不重复完整打印
     ) -> None:
         self.job_matcher = job_matcher
         self.resume_advisor = resume_advisor
         self.renderer = renderer or Renderer()
         self._user_model_store = user_model_store
         self._user_id = user_id
+        self._streaming = streaming  # 流式模式: agent 内容已逐 token 打出, 不再重复 show_agent
         self._messages: list = []  # 跨步骤对话历史
 
     def _profile_preamble(self) -> str | None:
@@ -54,7 +56,10 @@ class JobCycle:
             parts.append(f"城市: {', '.join(m.preferences.city)}")
         if m.preferences.salary_min is not None:
             parts.append(f"薪资预期≥{m.preferences.salary_min}K")
-        return "[用户画像]\n" + "\n".join(parts) if parts else None
+        if not parts:
+            return None
+        # 标注为历史画像：与用户最新消息冲突时以最新消息为准（避免旧画像带偏方向）
+        return "[用户画像]（历史存档；若与用户最新消息冲突，一律以用户最新消息为准）\n" + "\n".join(parts)
 
     def _state(self, stage: str, text: str) -> dict:
         msgs = list(self._messages)
@@ -101,16 +106,27 @@ class JobCycle:
         self.renderer.banner()
         self.renderer.show_user(intent)
         self.renderer.show_status("匹配官正在检索岗位并评估匹配度...")
-        match_out = self.run_match(intent)
-        self.renderer.show_agent("job_matcher", match_out)
+        if self._streaming:
+            # 流式模式: 先打 agent 标签, 内容由 stream_callback 逐 token 打出, 结束收尾换行
+            self.renderer.show_agent_label("job_matcher")
+            match_out = self.run_match(intent)
+            self.renderer.stream_end()
+        else:
+            match_out = self.run_match(intent)
+            self.renderer.show_agent("job_matcher", match_out)
 
         jd = select_jd(match_out) if select_jd else self._prompt_jd()
         if not jd:
             return match_out
 
         self.renderer.show_status("简历顾问正在按所选 JD 定制简历...")
-        resume_out = self.run_resume(jd)
-        self.renderer.show_agent("resume_advisor", resume_out)
+        if self._streaming:
+            self.renderer.show_agent_label("resume_advisor")
+            resume_out = self.run_resume(jd)
+            self.renderer.stream_end()
+        else:
+            resume_out = self.run_resume(jd)
+            self.renderer.show_agent("resume_advisor", resume_out)
         return resume_out
 
     def _prompt_jd(self) -> str | None:

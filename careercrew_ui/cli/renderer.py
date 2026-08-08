@@ -25,6 +25,10 @@ class Renderer:
         print(f"\n{_GREEN}[{agent_name}]{_RESET}")
         print(text)
 
+    def show_agent_label(self, agent_name: str) -> None:
+        """流式模式下只打 agent 标签（内容由 stream 逐 token 打出）。"""
+        print(f"\n{_GREEN}[{agent_name}]{_RESET}", flush=True)
+
     def show_status(self, text: str) -> None:
         print(f"  {_YELLOW}{text}{_RESET}")
 

@@ -102,6 +102,7 @@ def _build_job_cycle():
                       stream_callback=renderer.stream),
         renderer=renderer,
         user_model_store=um,
+        streaming=True,  # 流式已打全文, 不重复 show_agent
     )
 
 
@@ -113,6 +114,7 @@ def _run_chat() -> int:
     print("\n[chat] M1 求职闭环：输入求职需求 -> 匹配官找岗位 -> 选 JD -> 简历顾问定制简历")
     print('  例："我是大模型应用方向，有 Java 背景，帮我找工作并定制简历"')
     print('  输入 "退出" 结束。\n')
+    print("  正在加载本地模型与向量库（首次约 10-30 秒, 请稍候）...", flush=True)
     try:
         cycle = _build_job_cycle()
     except Exception as e:
