@@ -27,7 +27,7 @@ def get_checkpointer(settings: Settings) -> "BaseCheckpointSaver":
     cfg = settings.supervisor.checkpointer
     backend = cfg.backend
     if backend == "sqlite":
-        from langgraph_checkpoint_sqlite import SqliteSaver
+        from langgraph.checkpoint.sqlite import SqliteSaver
         import sqlite3
 
         path = Path(cfg.path)
