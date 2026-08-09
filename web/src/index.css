@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 暖纸色内容区 + 深色侧边栏 */
+    --background: 40 33% 98%;          /* #FBFAF7 暖纸 */
+    --foreground: 12 6% 10%;           /* #1C1917 暖近黑 */
+    --card: 0 0% 100%;                 /* #FFFFFF 纯白卡片 */
+    --card-foreground: 12 6% 10%;
+    --primary: 173 80% 32%;            /* #0D9488 深青 */
+    --primary-foreground: 40 33% 98%;
+    --secondary: 30 10% 95%;           /* #F0EEE9 暖灰 */
+    --secondary-foreground: 12 6% 15%;
+    --muted: 30 10% 95%;
+    --muted-foreground: 30 6% 43%;     /* #78716C 石灰 */
+    --accent: 32 95% 44%;              /* #D97706 琥珀 */
+    --accent-foreground: 40 33% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 30 6% 89%;               /* #E7E5E4 暖浅灰 */
+    --input: 30 6% 89%;
+    --ring: 173 80% 32%;
+
+    /* 侧边栏（始终深色） */
+    --sidebar: 213 21% 8%;             /* #0F1419 深墨 */
+    --sidebar-hover: 215 22% 15%;      /* #1E242E */
+    --sidebar-border: 215 20% 20%;     /* #2D3340 */
+    --sidebar-text: 210 13% 65%;       /* 静默文字 */
+    --sidebar-text-active: 173 80% 45%; /* 青色高亮 */
+
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  /* Space Grotesk for display/headings */
+  .font-display {
+    font-family: "Space Grotesk", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    letter-spacing: -0.02em;
+  }
+}
+
+/* 打字机光标 - 琥珀色脉冲 */
+.typing-cursor::after {
+  content: "▋";
+  color: hsl(var(--accent));
+  animation: blink 0.8s steps(2) infinite;
+  margin-left: 1px;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* 流式消息淡入 */
+.stream-fade-in {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-cursor::after { animation: none; }
+  .stream-fade-in { animation: none; }
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(30 6% 80%); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(30 6% 70%); }

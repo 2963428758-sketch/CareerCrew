@@ -40,6 +40,8 @@ ingestion = ["markitdown>=0.0.1"]
 eval = ["ragas>=0.2.0"]
 # Streamlit Dashboard（L4 阶段用）
 ui = ["streamlit>=1.30.0"]
+# Web 前端后端：FastAPI + SSE 流式（uvicorn/multipart 已在 env，实际只补 fastapi）
+web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9", "markitdown[pdf]>=0.0.1"]
 # 测试工具链（A2 起用）
 dev = [
     "pytest>=8.0.0",
@@ -51,7 +53,7 @@ dev = [
 careercrew = "careercrew_cli.app:main"
 
 [tool.setuptools.packages.find]
-include = ["careercrew_ai", "careercrew_ai.*", "careercrew_core", "careercrew_core.*", "careercrew_cli", "careercrew_cli.*", "careercrew_ui", "careercrew_ui.*"]
+include = ["careercrew_ai", "careercrew_ai.*", "careercrew_core", "careercrew_core.*", "careercrew_cli", "careercrew_cli.*", "careercrew_ui", "careercrew_ui.*", "careercrew_api", "careercrew_api.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -61,4 +63,5 @@ markers = [
     "integration: 多组件协作集成测试",
     "e2e: 求职闭环端到端测试",
     "slow: 慢测试（真实后端 / 大模型加载）",
+    "web: Web API 测试（FastAPI + FakeRuntime，CI 默认不跑）",
 ]

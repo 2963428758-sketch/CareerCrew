@@ -38,6 +38,7 @@ coverage.xml
 data/db/
 data/ms_cache/
 data/transcripts/
+data/uploads/
 data/demo_c/
 data/user_model.json
 data/user_model_demo.json

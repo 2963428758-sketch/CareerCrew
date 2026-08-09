@@ -1,0 +1,78 @@
+"""chat 路由：M1 对话闭环（match 流式 + resume 流式）。
+
+状态由 thread_id -> JobCycle 缓存承接：match 流结束 -> 前端展示结果 ->
+用户选 JD -> resume 流。
+"""
+from __future__ import annotations
+
+import json
+from collections.abc import Generator
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+
+from careercrew_api.deps import get_runtime_dep
+from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.schemas import MatchRequest, ResumeRequest
+from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
+
+router = APIRouter()
+
+
+def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
+    """统一 NDJSON 响应头。"""
+    return StreamingResponse(
+        gen,
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/match")
+def match(req: MatchRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+    """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
+
+    def run_fn(cb):
+        rt.run_match_stream(req.thread_id, req.user_id, req.intent, cb)
+
+    def gen() -> Generator[str, None, None]:
+        try:
+            yield stage_event("match")
+            content_parts: list[str] = []
+            for line in stream_agent(run_fn, timeout=120.0):
+                evt = json.loads(line)
+                if evt["type"] == "chunk":
+                    content_parts.append(evt["text"])
+                yield line
+            yield done_event("".join(content_parts))
+        except RuntimeInitError as e:
+            yield error_event(str(e))
+        except Exception as e:
+            yield error_event(str(e))
+
+    return _ndjson_response(gen())
+
+
+@router.post("/resume")
+def resume(req: ResumeRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+    """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
+
+    def run_fn(cb):
+        rt.run_resume_stream(req.thread_id, req.user_id, req.jd_text, cb)
+
+    def gen() -> Generator[str, None, None]:
+        try:
+            yield stage_event("resume")
+            content_parts: list[str] = []
+            for line in stream_agent(run_fn, timeout=120.0):
+                evt = json.loads(line)
+                if evt["type"] == "chunk":
+                    content_parts.append(evt["text"])
+                yield line
+            yield done_event("".join(content_parts))
+        except RuntimeInitError as e:
+            yield error_event(str(e))
+        except Exception as e:
+            yield error_event(str(e))
+
+    return _ndjson_response(gen())
