@@ -154,6 +154,15 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 - `mcp-servers/`: mcp-jobs Node 服务器;node_modules gitignore
 - agent prompt 更新: 搜索约 1-2 分钟,一次给足方向;限制搜 2-3 轮
 
+## 知识库整理(只留最新/非通用)
+
+按"LLM 已知道的知识不算知识库"原则裁剪 8 个文件:
+- **删除**: exa_jd(J D 已实时化)/ exa_llm_fundamentals / exa_langgraph / exa_chunking / exa_negotiation / exa_agent_interview / exa_resume / exa_java_llm(均为 LLM 已知通用知识)
+- **保留 3 个**: exa_rag_interview(2026 最新 RAG 面试题)/ exa_career_planning(2026 职业路线图)/ exa_interview_experience(真实大厂面经)
+
+> ⚠️ **重建索引**: 删除文件后需清空 `data/db/milvus` 让运行时重新入库(仅 3 个保留文件)。
+> 运行时 `_ensure_heavy` 只在 `store.count()==0` 时入库,不清空则旧 chunk 仍在。
+
 ## 前端相对 spec 的增强(基于用户反馈)
 
 - 对话历史管理: 侧边栏线程列表 + LLM 标题生成 + 删除确认

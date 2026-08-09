@@ -1,4 +1,4 @@
-"""search_jobs 工具（真实数据版）：调用 mcp-jobs 实时搜索 Boss直聘/猎聘/拉勾/智联/51job。
+"""search_jobs 工具（真实数据版）：调用 mcp-jobs 实时搜索猎聘平台岗位。
 
 替代原 MVP mock 数据。函数签名不变（direction, top_k），agent 无需改动。
 mcp-jobs 返回真实岗位（Playwright 爬取，约 1-2 分钟/次）。
@@ -14,7 +14,7 @@ from careercrew_core.tools.jobs.mcp_jobs import search_jobs_mcp
 
 @tool
 def search_jobs(direction: str, top_k: int = 8) -> str:
-    """按求职方向搜索真实职位 JD（mcp-jobs 实时抓取 Boss直聘/猎聘/智联等）。
+    """按求职方向搜索真实职位 JD（mcp-jobs 实时抓取猎聘平台）。
 
     Args:
         direction: 求职方向关键词（如"Java"、"数据分析"、"大模型应用"）。
