@@ -1,8 +1,14 @@
-"""mcp-jobs MCP 客户端封装：Python 侧调用 mcp-jobs 搜索真实岗位。
+"""mcp-jobs MCP 客户端封装：Python 侧调用 mcp-jobs 搜索猎聘真实岗位。
 
-mcp-jobs 是 Node MCP server（Playwright 爬 Boss直聘/猎聘/拉勾/智联/51job），
-启动方式：node mcp-servers/run-mcp-jobs.js（包装器屏蔽 stdout 日志）。
-每次调用现连现调（spawn 进程 + 浏览器，较慢但返回真实数据）。
+mcp-jobs 是 Node MCP server（Playwright 爬招聘平台），
+启动方式：node mcp-servers/run-mcp-jobs.js（包装器屏蔽 stdout 日志 + 只启用猎聘）。
+
+方案演进（已弃用）：
+- Boss直聘：headless 浏览器被反爬挡（0 岗），bb-browser 登录态 tab 不稳定
+- 牛客网直接抓取：连续请求后被 IP 限流
+- 最终只保留猎聘（liepin）——一次搜索稳定返回 40+ 条真实岗位
+
+每次调用现连现调（spawn 进程 + 浏览器，约 1-2 分钟但返回真实数据）。
 """
 from __future__ import annotations
 
