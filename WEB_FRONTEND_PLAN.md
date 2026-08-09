@@ -137,6 +137,21 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 6. **初始化 10-30s 无提示**: BGE-M3+Milvus 懒加载 → InitIndicator + stream_agent timeout 30s→120s
 7. **NDJSON 换行缺失**: 事件间无 `\n` 前端按行解析错乱 → 所有事件末尾加换行
 8. **画像空值字段不保存**: 前端 `if(field)` 跳过空字段,后端白名单约束 → 前端始终发送全字段(""/[]/null 对应清空)
+9. **max_iterations=8 超限截断**: agent 反复搜索找不到完美匹配,8 轮耗尽返回半截话 → 提到 15 + prompt 限制最多搜 2-3 轮 + 超轮次兜底补结论
+
+## 真实岗位数据源(mcp-jobs,替代 mock)
+
+**方案演进**: 最初用 mock 数据(search_jobs 硬编码 8 岗)。验证了 3 个真实方案:
+- **mcp-jobs**(Playwright 爬 Boss直聘/猎聘/拉勾/智联/51job): 需 Chromium(卡死 `__dirlock` 阻塞安装,删锁后成功) + stdout 包装器(屏蔽 console.log 污染 MCP 协议)。Boss直聘单平台被反爬挡(0 岗),但猎聘等聚合成功 → **采用**
+- **牛客网直接抓取**(requests 解析 `__INITIAL_STATE__`): 能抓 20 岗,但连续请求后被 IP 限流 → 备选
+- **Exa 语义搜索**(已有 exa_jd.md): 可靠但非实时 → 知识库补充用
+
+**现状**:
+- `careercrew_core/tools/jobs/mcp_jobs.py`: Python 封装调用 mcp-jobs(每次现连现调,约 1-2 分钟/次,返回真实岗位)
+- `careercrew_core/tools/jobs/nowcoder.py`: 牛客网直接抓取(限流问题,备选)
+- `search_jobs` 工具: 改调 mcp_jobs 实时搜索真实平台,**mock 数据(_MOCK_JOBS)已删除**
+- `mcp-servers/`: mcp-jobs Node 服务器 + `run-mcp-jobs.js` 包装器(屏蔽 stdout);node_modules gitignore
+- agent prompt 更新: 搜索约 1-2 分钟,一次给足方向;限制搜 2-3 轮
 
 ## 前端相对 spec 的增强(基于用户反馈)
 

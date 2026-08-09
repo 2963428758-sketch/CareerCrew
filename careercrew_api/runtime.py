@@ -196,6 +196,13 @@ class CareerCrewRuntime:
         ep = self._get_episodic(thread_id, user_id)
         cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
         result = cycle.run_match(intent)
+        # 超轮次兜底：agent 搜索轮次耗尽时补一段结论，避免以"我再搜一下"截断
+        lr = getattr(cycle.job_matcher, "last_result", None)
+        if lr is not None and getattr(lr, "stopped_reason", "") == "max_iterations":
+            result = result + (
+                "\n\n---\n*（搜索轮次已达上限，以上为已找到的匹配岗位。"
+                "如需更精准结果，可补充城市/薪资/方向等条件后继续对话。）*"
+            )
         # 存对话消息（user_message + agent_response）
         from careercrew_core.memory.types import MemoryEntry
         existing = ep._read_all()
@@ -261,7 +268,7 @@ class CareerCrewRuntime:
 
         return JobMatcher(
             llm=self.llm, tools=self._make_tools("matcher", episodic=episodic),
-            max_iterations=8, tracer=self.tracer, stream_callback=cb,
+            max_iterations=15, tracer=self.tracer, stream_callback=cb,
         )
 
     def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -270,7 +277,7 @@ class CareerCrewRuntime:
 
         return ResumeAdvisor(
             llm=self.llm, tools=self._make_tools("resume", episodic=episodic),
-            max_iterations=8, tracer=self.tracer, stream_callback=cb,
+            max_iterations=15, tracer=self.tracer, stream_callback=cb,
         )
 
     def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -279,7 +286,7 @@ class CareerCrewRuntime:
 
         return Interviewer(
             llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic),
-            max_iterations=8, tracer=self.tracer, stream_callback=cb,
+            max_iterations=15, tracer=self.tracer, stream_callback=cb,
         )
 
     def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
@@ -290,14 +297,14 @@ class CareerCrewRuntime:
 
             return SalaryNegotiator(
                 llm=self.llm, tools=self._make_tools("salary", episodic=episodic),
-                max_iterations=8, tracer=self.tracer, stream_callback=cb,
+                max_iterations=15, tracer=self.tracer, stream_callback=cb,
             )
         if name == "career_planner":
             from careercrew_core.agents.career_planner import CareerPlanner
 
             return CareerPlanner(
                 llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
-                max_iterations=8, tracer=self.tracer, stream_callback=cb,
+                max_iterations=15, tracer=self.tracer, stream_callback=cb,
             )
         raise ValueError(f"未知会诊 agent: {name}")
 

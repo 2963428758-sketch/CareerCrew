@@ -1,52 +1,48 @@
-"""search_jobs mock 工具（E2）：职位 JD 搜索（MVP 用 mock 数据，N 阶段接真实 MCP）。"""
+"""search_jobs 工具（真实数据版）：调用 mcp-jobs 实时搜索 Boss直聘/猎聘/拉勾/智联/51job。
+
+替代原 MVP mock 数据。函数签名不变（direction, top_k），agent 无需改动。
+mcp-jobs 返回真实岗位（Playwright 爬取，约 1-2 分钟/次）。
+"""
 from __future__ import annotations
 
 import json
 
 from langchain_core.tools import tool
 
-# mock JD 库：大模型应用 / Agent / RAG / Java 方向
-_MOCK_JOBS = [
-    {"company": "字节跳动", "title": "大模型应用工程师", "city": "北京", "salary": "30-50K",
-     "skills": ["Python", "LangChain", "LangGraph", "RAG", "Agent", "向量数据库"],
-     "jd": "负责大模型 Agent 应用开发：RAG 系统、Function Calling、多智能体编排。要求 Python/LangChain/LangGraph，熟悉向量检索。"},
-    {"company": "阿里", "title": "算法工程师-大模型", "city": "杭州", "salary": "35-60K",
-     "skills": ["Python", "PyTorch", "微调", "RAG", "多模态"],
-     "jd": "大模型微调与 RAG 系统开发，多模态理解。要求 Python/PyTorch，有 LLM 训练或应用经验。"},
-    {"company": "美团", "title": "后端开发工程师-Java+大模型", "city": "北京", "salary": "30-45K",
-     "skills": ["Java", "Spring", "LLM", "Agent", "微服务"],
-     "jd": "Java 后端 + 大模型应用集成：LLM 接口封装、Agent 编排、Spring Boot 微服务。"},
-    {"company": "腾讯", "title": "大模型应用开发", "city": "深圳", "salary": "30-50K",
-     "skills": ["Python", "RAG", "Agent", "Prompt Engineering"],
-     "jd": "LLM 应用开发：Prompt 工程、RAG、Function Calling、多智能体协同。"},
-    {"company": "百度", "title": "资深大模型应用工程师", "city": "北京", "salary": "40-60K",
-     "skills": ["Python", "LangGraph", "Agent", "RAG", "MCP"],
-     "jd": "多智能体系统架构，Agentic RAG，MCP 工具生态。要求熟悉 LangGraph/Agent 编排。"},
-    {"company": "蚂蚁集团", "title": "AI 应用开发工程师", "city": "杭州", "salary": "30-45K",
-     "skills": ["Java", "Python", "LLM", "RAG", "Spring AI"],
-     "jd": "Java/Spring AI 接入大模型，AI 应用落地，RAG 检索系统。"},
-    {"company": "小红书", "title": "大模型算法工程师", "city": "上海", "salary": "35-55K",
-     "skills": ["Python", "PyTorch", "SFT", "RLHF", "RAG"],
-     "jd": "LLM 对齐与 RAG，内容理解。要求熟悉 SFT/RLHF，有 LLM 经验。"},
-    {"company": "理想汽车", "title": "AI 平台后端工程师", "city": "北京", "salary": "30-45K",
-     "skills": ["Java", "Go", "LLM", "推理服务", "vLLM"],
-     "jd": "大模型推理服务与 AI 平台后端，vLLM/推理优化，Java/Go。"},
-]
+from careercrew_core.tools.jobs.mcp_jobs import search_jobs_mcp
 
 
 @tool
-def search_jobs(direction: str, top_k: int = 5) -> str:
-    """按求职方向搜索职位 JD（MVP 用 mock 数据，N 阶段接真实 MCP）。
+def search_jobs(direction: str, top_k: int = 8) -> str:
+    """按求职方向搜索真实职位 JD（mcp-jobs 实时抓取 Boss直聘/猎聘/智联等）。
 
     Args:
-        direction: 求职方向（如"大模型应用"、"Java 后端"、"算法"）。
+        direction: 求职方向关键词（如"Java"、"数据分析"、"大模型应用"）。
         top_k: 返回条数。
     """
-    kw = direction.lower()
-    matches = [
-        j for j in _MOCK_JOBS
-        if kw in (j["jd"] + " " + j["title"] + " " + " ".join(j["skills"])).lower()
+    try:
+        jobs = search_jobs_mcp(direction, top_k=top_k)
+    except Exception as e:
+        return json.dumps(
+            [{"error": f"暂时无法获取职位（{type(e).__name__}: {e}），请稍后重试"}],
+            ensure_ascii=False,
+        )
+
+    if not jobs:
+        return json.dumps(
+            [{"error": f"未找到与「{direction}」相关的岗位，可换个关键词试试"}],
+            ensure_ascii=False,
+        )
+
+    # 精简输出字段，给 agent 看关键信息
+    slim = [
+        {
+            "title": j["title"],
+            "city": j["city"],
+            "salary": j["salary"],
+            "experience": j["experience"],
+            "jd": j["raw"][:500],
+        }
+        for j in jobs
     ]
-    if not matches:
-        matches = _MOCK_JOBS  # 方向无精确匹配则全量返回，由 agent 自己评估
-    return json.dumps(matches[:top_k], ensure_ascii=False)
+    return json.dumps(slim, ensure_ascii=False)
