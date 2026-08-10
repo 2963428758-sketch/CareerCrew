@@ -65,7 +65,13 @@ def _run_cases(client, settings, cases: list[dict]) -> int:
     print(f"[eval] dataset: {ds.name} ({getattr(ds, 'id', '?')})")
     if cases:
         try:
-            client.create_examples(dataset_id=ds.id, examples=cases)
+            client.create_examples(
+                dataset_id=ds.id,
+                examples=[
+                    {"inputs": {k: v for k, v in c.items() if k != "id"}}
+                    for c in cases
+                ],
+            )
         except Exception as e:  # noqa: BLE001 - 已存在/重复时忽略
             print(f"[eval] create_examples 跳过: {e}")
 
