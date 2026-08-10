@@ -131,10 +131,14 @@ class CareerCrewRuntime:
         return self._thread_episodics[key]
 
     def get_threads(self, user_id: str = "u_001") -> list[dict]:
-        """列出用户的所有对话线程（按修改时间倒序）。"""
-        self._ensure_heavy()
+        """列出用户的所有对话线程（按修改时间倒序）。
+
+        只读文件系统，不需要初始化重栈（BGE-M3/Milvus）。
+        """
+        from careercrew_core.state.settings import load_settings
+        settings = self.settings or load_settings()
         import os
-        transcript_dir = Path(self.settings.memory.episodic.transcript_dir) / user_id
+        transcript_dir = Path(settings.memory.episodic.transcript_dir) / user_id
         if not transcript_dir.exists():
             return []
         threads = []
