@@ -23,7 +23,7 @@ interface ChatState {
 
 export const useChatStore = create<ChatState>((set) => ({
   messages: [],
-  threadId: "m1",
+  threadId: `t-${Date.now()}`,
   selectedJd: "",
   lastMatchResult: "",
   selectedThreadId: null,
