@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from "react"
 import { Send, Square, CornerDownLeft, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { MultilineInput } from "@/components/MultilineInput"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
@@ -14,12 +14,15 @@ import type { ChatMessage } from "@/types"
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
 
+/** 判断用户输入是否像 JD（长文本 + 岗位关键词） */
+function looksLikeJd(text: string): boolean {
+  return text.length > 80 && /职责|要求|职位|JD|岗位|学历|经验|技能|薪资|本科|硕士|工作内容/i.test(text)
+}
+
 export default function ChatPage() {
   const [input, setInput] = useState("")
   const {
     messages, addMessage, updateLastAssistant,
-    selectedJd, setSelectedJd,
-    lastMatchResult, setLastMatchResult,
     newConversation,
     selectedThreadId, setSelectedThreadId, threadId,
     bumpProfileNonce, bumpThreadNonce,
@@ -34,18 +37,18 @@ export default function ChatPage() {
   useEffect(() => {
     if (stream.status === "done" && stream.doneContent) {
       updateLastAssistant(stream.doneContent)
-      if (stream.stage === "match") setLastMatchResult(stream.doneContent)
+      if (stream.stage === "match") useChatStore.getState().setLastMatchResult(stream.doneContent)
       bumpProfileNonce()
       bumpThreadNonce()
     }
-  }, [stream.status, stream.doneContent, updateLastAssistant, setLastMatchResult, stream.stage, bumpProfileNonce, bumpThreadNonce])
+  }, [stream.status, stream.doneContent, updateLastAssistant, stream.stage, bumpProfileNonce, bumpThreadNonce])
 
   // 侧边栏选中历史对话时，加载该 thread 的对话消息
   useEffect(() => {
     if (!selectedThreadId) return
     setSelectedThreadId(null)
     stream.reset()
-    useChatStore.setState({ messages: [], selectedJd: "", lastMatchResult: "", threadId: selectedThreadId })
+    useChatStore.setState({ messages: [], threadId: selectedThreadId })
     fetch(`/api/memory?thread_id=${selectedThreadId}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
@@ -57,7 +60,6 @@ export default function ChatPage() {
           } else if (type === "agent_response" && content) {
             addMessage({ id: nextId(), role: "assistant", content, agent: "job_matcher" })
           }
-          // 跳过 job_match / interview_qa 等结构化记忆条目
         }
       })
       .catch(() => {})
@@ -70,17 +72,21 @@ export default function ChatPage() {
     await stream.start("/chat/match", { intent, thread_id: threadId })
   }
 
-  const handleResume = async () => {
-    if (!selectedJd.trim()) return
-    addMessage({ id: nextId(), role: "user", content: `[选择 JD] ${selectedJd.slice(0, 80)}…` })
+  const handleResume = async (jdText: string) => {
+    addMessage({ id: nextId(), role: "user", content: jdText.slice(0, 100) + (jdText.length > 100 ? "…" : "") })
     addMessage({ id: nextId(), role: "assistant", content: "", agent: "resume_advisor", streaming: true })
-    await stream.start("/chat/resume", { jd_text: selectedJd, thread_id: threadId })
-    setSelectedJd("")
+    setInput("")
+    await stream.start("/chat/resume", { jd_text: jdText, thread_id: threadId })
   }
 
   const handleSend = () => {
     if (!input.trim() || stream.status === "streaming") return
-    handleMatch(input)
+    // 用户粘贴的 JD（长文本+岗位关键词）-> 走简历顾问
+    if (looksLikeJd(input)) {
+      handleResume(input)
+    } else {
+      handleMatch(input)
+    }
   }
 
   const handleNew = () => {
@@ -89,19 +95,13 @@ export default function ChatPage() {
   }
 
   const lastIsStreaming = stream.status === "streaming"
-  // JD 选择器：仅在 agent 真正返回匹配结果（含"匹配度"或"匹配分"关键词）时显示
-  // 追问类回复（如"你的方向是什么？"）不弹 JD 选择器
-  const matchContent = stream.doneContent || lastMatchResult
-  const isMatchResult = matchContent && /匹配[度分]|0\.\d|岗位.*列表|公司.*title/i.test(matchContent)
-  const showJdSelector = !selectedJd && !lastIsStreaming && isMatchResult
-  const jdTarget = matchContent
 
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-16 shrink-0 items-center justify-between border-b px-6">
         <div>
           <h1 className="font-display text-xl font-semibold">求职对话</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">匹配岗位、选择 JD、定制简历</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">匹配岗位、定制简历</p>
         </div>
         <Button variant="outline" size="sm" onClick={handleNew}>
           <Plus className="mr-1 h-3.5 w-3.5" />新对话
@@ -122,22 +122,6 @@ export default function ChatPage() {
             />
           ))}
 
-          {showJdSelector && jdTarget && (
-            <JDSelector onSelect={(jd) => setSelectedJd(jd)} onCustomize={handleResume} />
-          )}
-
-          {selectedJd && !lastIsStreaming && (
-            <Card className="bg-accent/5">
-              <CardContent className="flex items-start gap-3 p-4">
-                <div className="flex-1">
-                  <p className="mb-1 text-xs font-semibold text-accent">已选目标 JD</p>
-                  <p className="text-sm whitespace-pre-wrap">{selectedJd}</p>
-                </div>
-                <Button size="sm" onClick={handleResume} className="shrink-0">定制简历</Button>
-              </CardContent>
-            </Card>
-          )}
-
           {stream.errorMsg && (
             <Card className="border-destructive">
               <CardContent className="p-4 text-sm text-destructive">{stream.errorMsg}</CardContent>
@@ -153,7 +137,7 @@ export default function ChatPage() {
             onChange={setInput}
             onSend={handleSend}
             disabled={stream.status === "streaming"}
-            placeholder="输入求职需求…"
+            placeholder="输入求职需求或粘贴目标 JD…"
           />
           {stream.status === "streaming" ? (
             <Button variant="destructive" size="icon" onClick={stream.stop} className="shrink-0">
@@ -168,7 +152,7 @@ export default function ChatPage() {
         <p className="mx-auto mt-2 flex max-w-3xl items-center gap-1 text-[11px] text-muted-foreground">
           <CornerDownLeft className="h-3 w-3" /> 发送
           <span className="mx-1">·</span>
-          Shift + Enter 换行 · 支持多行粘贴
+          Shift + Enter 换行 · 粘贴 JD 自动定制简历
         </p>
       </div>
     </div>
@@ -236,32 +220,5 @@ function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing
         )}
       </div>
     </div>
-  )
-}
-
-function JDSelector({ onSelect, onCustomize }: {
-  onSelect: (jd: string) => void
-  onCustomize: () => void
-}) {
-  const [jd, setJd] = useState("")
-  return (
-    <Card className="stream-fade-in">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-semibold">选择目标 JD，简历顾问来定制</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-xs text-muted-foreground">从上方匹配结果中复制你感兴趣的岗位 JD，粘贴到下方</p>
-        <MultilineInput
-          value={jd}
-          onChange={setJd}
-          onSend={() => { onSelect(jd); onCustomize() }}
-          placeholder="粘贴目标岗位的 JD 内容…"
-          className="text-sm"
-        />
-        <Button size="sm" disabled={!jd.trim()} onClick={() => { onSelect(jd); onCustomize() }} className="shrink-0">
-          定制简历
-        </Button>
-      </CardContent>
-    </Card>
   )
 }
