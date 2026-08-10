@@ -1,4 +1,4 @@
-"""D4 rag_query 工具测试（mock HybridSearch）。"""
+"""rag_query 工具测试（mock MultimodalSearch）。"""
 from __future__ import annotations
 
 from careercrew_ai.vector_store import QueryResult
@@ -26,3 +26,16 @@ def test_rag_query_empty() -> None:
     t = make_rag_query_tool(FakeHS([]))
     out = t.invoke({"query": "x", "top_k": 3})
     assert "无检索结果" in out
+
+
+def test_rag_query_includes_image_line() -> None:
+    hs = FakeHS([
+        QueryResult(
+            id="a", score=0.9, text="简历第一页",
+            metadata={}, image_path="F:/x/page1.png", type="page", page=1,
+        )
+    ])
+    t = make_rag_query_tool(hs)
+    out = t.invoke({"query": "简历", "top_k": 3})
+    assert "简历第一页" in out
+    assert "[image: F:/x/page1.png]" in out

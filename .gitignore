@@ -37,6 +37,7 @@ coverage.xml
 # CareerCrew runtime data（向量库/模型/记忆不进 git；知识库文档进 git）
 data/db/
 data/ms_cache/
+data/parsed/
 data/transcripts/
 data/uploads/
 data/demo_c/

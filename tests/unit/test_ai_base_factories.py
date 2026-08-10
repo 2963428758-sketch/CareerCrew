@@ -97,7 +97,7 @@ def test_create_vector_store_routes_to_fake(valid_config_data: dict) -> None:
 
 
 def test_create_vector_store_unknown_backend_raises(valid_config_data: dict) -> None:
-    valid_config_data["vector_store"]["backend"] = "qdrant"  # 未实现
+    valid_config_data["vector_store"]["backend"] = "weird_db"
     settings = Settings.model_validate(valid_config_data)
     with pytest.raises(NotImplementedError):
         create_vector_store(settings)

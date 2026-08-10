@@ -27,9 +27,21 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "settings.yaml"
 # ${VAR} 环境变量占位（仅 A-Za-z_ 开头的标识符）
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-# 向量库后端合法取值
-_VALID_VECTOR_BACKENDS = {"milvus_lite", "milvus_docker", "chroma"}
-_VALID_LOADER_BACKENDS = {"markitdown", "pymupdf", "python-docx"}
+# 向量库后端合法取值（多模态 RAG 全面替换后仅剩 Qdrant）
+_VALID_VECTOR_BACKENDS = {"qdrant"}
+_VALID_LOADER_BACKENDS = {"mineru"}
+
+# 旧值 -> 迁移指引（fail-fast 时提示，不静默替换）
+_VECTOR_BACKEND_MIGRATION = {
+    "milvus_lite": "qdrant",
+    "milvus_docker": "qdrant",
+    "chroma": "qdrant",
+}
+_LOADER_BACKEND_MIGRATION = {
+    "markitdown": "mineru",
+    "pymupdf": "mineru",
+    "python-docx": "mineru",
+}
 
 
 class SettingsError(Exception):
@@ -66,7 +78,8 @@ class RerankSettings(BaseModel):
 
 class VectorStoreSettings(BaseModel):
     backend: str
-    persist_path: str
+    url: str = "http://localhost:6333"
+    api_key: str = ""
     collections: dict[str, str]
 
 
@@ -86,15 +99,25 @@ class ChunkingSettings(BaseModel):
 
 
 class LoadersSettings(BaseModel):
-    """文档加载器配置（D4 落地，与 DEV_SPEC §5.5 对齐）。"""
+    """文档加载器配置（多模态 RAG：MinerU 子进程解析）。"""
 
-    backend: str = "markitdown"  # markitdown | pymupdf | python-docx（per-format 回退）
+    backend: str = "mineru"
+    output_dir: str = "./data/parsed"  # MinerU 产物落盘（页面图/对象裁剪图/Markdown）
 
 
 class RagSettings(BaseModel):
     retrieval: RetrievalSettings
     chunking: ChunkingSettings
     loaders: LoadersSettings = LoadersSettings()
+
+
+class VLMSettings(BaseModel):
+    """多模态生成/精排（硅基流动 API）。"""
+
+    model: str
+    rerank_model: str
+    base_url: str = "https://api.siliconflow.cn/v1"
+    api_key: str = ""
 
 
 class CheckpointerSettings(BaseModel):
@@ -165,6 +188,7 @@ class Settings(BaseModel):
     rerank: RerankSettings
     vector_store: VectorStoreSettings
     rag: RagSettings
+    vlm: VLMSettings
     supervisor: SupervisorSettings
     memory: MemorySettings
     tools: ToolsSettings
@@ -208,7 +232,7 @@ def _resolve_path(value: str | None) -> str | None:
 def _resolve_paths(settings: Settings) -> Settings:
     """把所有相对路径字段解析为基于项目根的绝对路径。"""
     settings.embedding.model_path = _resolve_path(settings.embedding.model_path)
-    settings.vector_store.persist_path = _resolve_path(settings.vector_store.persist_path)
+    settings.rag.loaders.output_dir = _resolve_path(settings.rag.loaders.output_dir)
     settings.supervisor.checkpointer.path = _resolve_path(settings.supervisor.checkpointer.path)
     settings.memory.episodic.transcript_dir = _resolve_path(settings.memory.episodic.transcript_dir)
     settings.memory.user_model.path = _resolve_path(settings.memory.user_model.path)
@@ -235,18 +259,26 @@ def validate_settings(settings: Settings) -> None:
     ):
         problems.append("rerank.api_key 未设置（backend=siliconflow 时需 SILICONFLOW_API_KEY）")
 
+    # VLM api_key（多模态生成/精排）
+    if not settings.vlm.api_key or "${" in settings.vlm.api_key:
+        problems.append("vlm.api_key 未设置（需 SILICONFLOW_API_KEY）")
+
     # 向量库后端取值
     if settings.vector_store.backend not in _VALID_VECTOR_BACKENDS:
+        hint = _VECTOR_BACKEND_MIGRATION.get(settings.vector_store.backend)
+        migration = f"，已迁移，请改为 {hint}" if hint else ""
         problems.append(
             f"vector_store.backend 取值非法: {settings.vector_store.backend}，"
-            f"应为 {sorted(_VALID_VECTOR_BACKENDS)} 之一"
+            f"应为 {sorted(_VALID_VECTOR_BACKENDS)} 之一{migration}"
         )
 
     # 文档加载器后端取值
     if settings.rag.loaders.backend not in _VALID_LOADER_BACKENDS:
+        hint = _LOADER_BACKEND_MIGRATION.get(settings.rag.loaders.backend)
+        migration = f"，已迁移，请改为 {hint}" if hint else ""
         problems.append(
             f"rag.loaders.backend 取值非法: {settings.rag.loaders.backend}，"
-            f"应为 {sorted(_VALID_LOADER_BACKENDS)} 之一"
+            f"应为 {sorted(_VALID_LOADER_BACKENDS)} 之一{migration}"
         )
 
     if problems:

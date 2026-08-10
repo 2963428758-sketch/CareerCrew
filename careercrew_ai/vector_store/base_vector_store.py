@@ -37,6 +37,9 @@ class QueryResult:
     score: float
     text: str
     metadata: dict
+    image_path: str = ""  # 多模态：命中页面/对象图（绝对路径）
+    type: str = ""        # page | object
+    page: int | None = None
 
 
 class BaseVectorStore(ABC):
@@ -98,6 +101,24 @@ class FakeVectorStore(BaseVectorStore):
     def get_by_ids(self, ids: list[str]) -> list[VectorRecord]:
         return [self._records[i] for i in ids if i in self._records]
 
+    def count(self) -> int:
+        return len(self._records)
+
+    def query_routes(
+        self,
+        dense=None,
+        sparse: dict[int, float] | None = None,
+        top_m: int = 10,
+        filters: dict | None = None,
+    ) -> dict[str, list[QueryResult]]:
+        """测试占位：仅 dense 路近似（sparse 复用 dense 结果）。"""
+        out: dict[str, list[QueryResult]] = {}
+        if dense is not None:
+            out["text_dense"] = self.query(dense, top_k=top_m, filters=filters)
+            if sparse is not None:
+                out["text_sparse"] = out["text_dense"]
+        return out
+
 
 _VECTOR_STORE_REGISTRY: dict[str, type[BaseVectorStore]] = {"fake": FakeVectorStore}
 
@@ -107,17 +128,12 @@ def create_vector_store(settings: Settings) -> BaseVectorStore:
     backend = settings.vector_store.backend
     if backend == "fake":
         return FakeVectorStore(settings)
-    if backend in ("milvus_lite", "milvus_docker"):
-        # lazy import：避免 import 本模块就拉 pymilvus
-        from careercrew_ai.vector_store.milvus_store import MilvusStore
+    if backend == "qdrant":
+        from careercrew_ai.vector_store.qdrant_store import QdrantStore
 
-        return MilvusStore(settings)
-    if backend == "chroma":
-        from careercrew_ai.vector_store.chroma_store import ChromaStore
-
-        return ChromaStore(settings)
+        return QdrantStore(settings)
     raise NotImplementedError(
-        f"vector_store backend '{backend}' 尚未实现（已实现: fake, milvus_lite, chroma）"
+        f"vector_store backend '{backend}' 尚未实现（已实现: fake, qdrant）"
     )
 
 

@@ -27,6 +27,9 @@ class FakeRuntime:
         self.match_chunks: list[str] = []
         self.resume_chunks: list[str] = []
         self.upload_content = "解析出的简历文本内容"
+        self.knowledge_docs: list[dict] = [
+            {"doc": "note", "source": "data/uploads/note.md", "points": 3}
+        ]
 
     def health_info(self) -> dict:
         return {
@@ -130,6 +133,17 @@ class FakeRuntime:
 
     def load_document(self, path: str) -> str:
         return self.upload_content
+
+    def ingest_document(self, path: str, metadata: dict | None = None) -> dict:
+        from pathlib import Path
+
+        return {"doc_id": Path(path).stem, "points": 2, "path": path}
+
+    def delete_document(self, doc_id: str) -> int:
+        return 3
+
+    def knowledge_status(self) -> dict:
+        return {"points": sum(d["points"] for d in self.knowledge_docs), "docs": self.knowledge_docs}
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):

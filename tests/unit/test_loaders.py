@@ -1,9 +1,10 @@
-"""多格式 loader 测试（§3.7.4）。"""
+"""loader 测试（文本直读 + 工厂路由；MinerU 见 test_mineru_loader）。"""
 from __future__ import annotations
+
+import pytest
 
 from careercrew_core.rag.loaders.loader_factory import create_loader
 from careercrew_core.rag.loaders.markdown_loader import MarkdownLoader
-from careercrew_core.rag.loaders.markitdown_loader import MarkItDownLoader
 
 
 def test_markdown_loader(tmp_path) -> None:
@@ -17,5 +18,5 @@ def test_markdown_loader(tmp_path) -> None:
 def test_loader_factory_routing() -> None:
     assert isinstance(create_loader("x.md"), MarkdownLoader)
     assert isinstance(create_loader("x.txt"), MarkdownLoader)
-    assert isinstance(create_loader("x.pdf"), MarkItDownLoader)
-    assert isinstance(create_loader("x.docx"), MarkItDownLoader)
+    with pytest.raises(ValueError):
+        create_loader("x.pdf")

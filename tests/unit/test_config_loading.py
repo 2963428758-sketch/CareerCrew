@@ -33,11 +33,12 @@ def test_load_settings_ok(tmp_path: Path, valid_config_data: dict) -> None:
     settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert isinstance(settings, Settings)
     assert settings.llm.model == "deepseek-ai/DeepSeek-V4-Flash"
-    assert settings.vector_store.backend == "milvus_lite"
-    assert settings.vector_store.collections["knowledge"] == "careercrew_kb"
+    assert settings.vector_store.backend == "qdrant"
+    assert settings.vector_store.collections["knowledge"] == "careercrew_mm"
     assert settings.rag.retrieval.mode == "hybrid"
     assert settings.rag.chunking.contextual is True
-    assert settings.rag.loaders.backend == "markitdown"
+    assert settings.rag.loaders.backend == "mineru"
+    assert settings.vlm.model == "Qwen/Qwen3-VL-8B-Instruct"
     assert settings.tools.hitl.requires_confirmation == ["submit_application", "accept_offer"]
 
 
@@ -86,6 +87,30 @@ def test_validate_settings_standalone(valid_config_data: dict) -> None:
     validate_settings(settings)  # 不抛即通过
 
 
+def test_old_vector_backend_migration_hint(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["vector_store"]["backend"] = "milvus_lite"
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    msg = str(exc.value)
+    assert "vector_store.backend" in msg
+    assert "请改为 qdrant" in msg
+
+
+def test_old_loader_backend_migration_hint(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["rag"]["loaders"] = {"backend": "markitdown"}
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    assert "rag.loaders.backend" in str(exc.value)
+    assert "请改为 mineru" in str(exc.value)
+
+
+def test_vlm_api_key_missing_fail_fast(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["vlm"]["api_key"] = "${DEFINITELY_UNSET_VAR}"
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    assert "vlm.api_key" in str(exc.value)
+
+
 def test_rerank_none_backend_skips_api_key(tmp_path: Path, valid_config_data: dict) -> None:
     valid_config_data["rerank"]["backend"] = "none"
     valid_config_data["rerank"]["api_key"] = ""
@@ -102,9 +127,9 @@ def test_relative_paths_resolved_to_project_root() -> None:
     settings = load_settings()  # 读 config/settings.yaml（相对路径）
     assert os.path.isabs(settings.embedding.model_path)
     assert settings.embedding.model_path == str(
-        PROJECT_ROOT / "data/ms_cache/models/BAAI--bge-m3/snapshots/master"
+        Path("F:/AI_models/BAAI--bge-m3/snapshots/master")
     )
-    assert os.path.isabs(settings.vector_store.persist_path)
+    assert os.path.isabs(settings.rag.loaders.output_dir)
     assert os.path.isabs(settings.supervisor.checkpointer.path)
 
 def test_invalid_loader_backend(tmp_path: Path, valid_config_data: dict) -> None:

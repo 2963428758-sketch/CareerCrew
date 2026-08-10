@@ -66,7 +66,10 @@ class McpClient:
             func=_call,
             name=name,
             description=mcp_tool.description or mcp_tool.name,
-            args_schema=_schema_to_model(name, mcp_tool.input_schema),
+            args_schema=_schema_to_model(
+                name,
+                getattr(mcp_tool, "inputSchema", getattr(mcp_tool, "input_schema", None)),
+            ),
         )
 
 

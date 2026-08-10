@@ -9,7 +9,11 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 
-async def on_list_tools(ctx, params) -> ListToolsResult:
+app = Server("mock-jobs")
+
+
+@app.list_tools()
+async def list_tools() -> ListToolsResult:
     return ListToolsResult(tools=[
         Tool(
             name="search_jobs_mcp",
@@ -26,9 +30,10 @@ async def on_list_tools(ctx, params) -> ListToolsResult:
     ])
 
 
-async def on_call_tool(ctx, params) -> CallToolResult:
-    if params.name == "search_jobs_mcp":
-        args = params.arguments or {}
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> CallToolResult:
+    if name == "search_jobs_mcp":
+        args = arguments or {}
         top_k = args.get("top_k") or 5
         data = [
             {"company": "TestCorp", "title": "大模型应用工程师", "skills": ["Python", "RAG"], "score": 0.9},
@@ -36,11 +41,6 @@ async def on_call_tool(ctx, params) -> CallToolResult:
         ][:top_k]
         return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))])
     raise ValueError(f"Unknown tool: {params.name}")
-
-
-app = Server("mock-jobs", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
-
-
 async def main() -> None:
     async with stdio_server() as (read, write):
         await app.run(read, write, initialization_options=app.create_initialization_options())

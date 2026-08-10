@@ -1,6 +1,6 @@
 """D1 BGE-M3 集成测试：真实模型三路输出。
 
-模型未下载时 skip（data/ms_cache 被 gitignore，fresh clone 无模型）。
+模型未下载时 skip（共享目录 F:/AI_models，fresh clone 无模型）。
 """
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ import pytest
 from careercrew_ai.embedding import create_embedding
 from careercrew_core.state.settings import Settings
 
-MODEL_PATH = Path("data/ms_cache/models/BAAI--bge-m3/snapshots/master")
+MODEL_PATH = Path("F:/AI_models/BAAI--bge-m3/snapshots/master")
 
 
-@pytest.mark.skipif(not MODEL_PATH.exists(), reason="BGE-M3 模型未下载到 data/ms_cache")
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="BGE-M3 模型未下载到 F:/AI_models")
 @pytest.mark.integration
 def test_bge_m3_encode_three_outputs(valid_config_data: dict) -> None:
     settings = Settings.model_validate(valid_config_data)  # provider=bge_m3_local

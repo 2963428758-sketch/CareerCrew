@@ -1,7 +1,7 @@
 """运行时单例（§2）：重组件进程级单例 + 会话级 agent/JobCycle。
 
 核心决策：
-- 重组件（llm/embedding/store/reranker/HybridSearch/episodic/user_model）进程级单例
+- 重组件（llm/embedding/store/reranker/MultimodalSearch/episodic/user_model）进程级单例
 - agent 与 JobCycle 按会话(thread_id)新建（``BaseAgent.last_result`` 是可变属性，并发共享会串写）
 - embedding.encode 加锁；user_model 写操作 per-user lock
 - 初始化放首请求惰性触发（非 lifespan），uvicorn 秒起
@@ -47,7 +47,8 @@ class CareerCrewRuntime:
         self.embedding = None
         self.store = None
         self.reranker = None
-        self.hybrid_search = None
+        self.multimodal_search = None
+        self.ingest_pipeline = None
         self.episodic = None
         self.user_model = None
         self.tracer = None
@@ -65,12 +66,12 @@ class CareerCrewRuntime:
 
             from careercrew_ai.embedding import create_embedding
             from careercrew_ai.llm import create_llm
-            from careercrew_ai.reranker import create_reranker
+            from careercrew_ai.reranker.siliconflow_vl_reranker import SiliconFlowVLReranker
             from careercrew_ai.vector_store import create_vector_store
             from careercrew_core.memory.episodic import EpisodicMemory
             from careercrew_core.memory.user_model import UserModelStore
-            from careercrew_core.rag.pipeline import IngestionPipeline
-            from careercrew_core.rag.retrieval.hybrid_search import HybridSearch
+            from careercrew_core.rag.pipeline_multimodal import MultimodalIngestionPipeline
+            from careercrew_core.rag.retrieval.multimodal_search import MultimodalSearch
             from careercrew_core.state.settings import load_settings
             from careercrew_core.tracing.trace import TraceRecorder
 
@@ -89,18 +90,30 @@ class CareerCrewRuntime:
                 raise
 
             llm = create_llm(settings, max_tokens=1024)
-            rr = create_reranker(settings)
-            hs = HybridSearch(embedding, store, reranker=rr, top_m=20)
+            rr = SiliconFlowVLReranker(settings)
+            hs = MultimodalSearch(
+                embedding, store, reranker=rr, top_m=30, image_reader=self.read_image
+            )
 
-            # 知识库入库（首次）
+            pipe = MultimodalIngestionPipeline(
+                embedding, store, contextual=False,
+                output_dir=settings.rag.loaders.output_dir,
+                chunk_size=settings.rag.chunking.chunk_size,
+                chunk_overlap=settings.rag.chunking.chunk_overlap,
+            )
+            self.ingest_pipeline = pipe
+
+            # 知识库入库（首次：data/uploads 下的 PDF/图片/docx；data/knowledge 不参与）
             if store.count() == 0:
-                pipe = IngestionPipeline(
-                    embedding, store, contextual=False,
-                    chunk_size=settings.rag.chunking.chunk_size,
-                    chunk_overlap=settings.rag.chunking.chunk_overlap,
+                ingest_files = sorted(
+                    p for p in Path("data/uploads").glob("*")
+                    if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
                 )
-                for f in sorted(Path("data/knowledge").glob("*.md")):
-                    pipe.ingest_file(f)
+                for f in ingest_files:
+                    try:
+                        pipe.ingest_file(f)
+                    except Exception as e:
+                        print(f"[runtime] ingest 跳过 {f}: {e}")
 
             episodic = EpisodicMemory(
                 Path(settings.memory.episodic.transcript_dir) / "u_001" / "m1.jsonl"
@@ -112,7 +125,7 @@ class CareerCrewRuntime:
             self.store = store
             self.llm = llm
             self.reranker = rr
-            self.hybrid_search = hs
+            self.multimodal_search = hs
             self.episodic = episodic
             self.user_model = um
             self.tracer = tracer
@@ -248,7 +261,7 @@ class CareerCrewRuntime:
         from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
         ep = episodic or self.episodic
-        hs = self.hybrid_search
+        hs = self.multimodal_search
         tools = ToolRegistry()
         if kind == "matcher":
             tools.register(ToolSpec(tool=search_jobs))
@@ -335,10 +348,30 @@ class CareerCrewRuntime:
         return tool.invoke({"image_path": path, "prompt": "请描述图片内容并提取其中的文字。"})
 
     def load_document(self, path: str) -> str:
-        """按扩展名路由加载文档为文本。"""
-        from careercrew_core.rag.loaders.loader_factory import create_loader
+        """MinerU 子进程解析为文本（resume 上传 pdf/docx 等）。"""
+        from careercrew_core.rag.loaders.mineru_loader import MinerULoader
 
-        return create_loader(path).load(path).text
+        parsed = MinerULoader(self.settings.rag.loaders.output_dir).parse(path)
+        return parsed.to_text()
+
+    def ingest_document(self, path: str, metadata: dict | None = None) -> dict:
+        """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。"""
+        self._ensure_heavy()
+        from pathlib import Path
+
+        p = Path(path)
+        n = self.ingest_pipeline.ingest_file(p, metadata=metadata)
+        return {"doc_id": p.stem, "points": n, "path": str(p)}
+
+    def delete_document(self, doc_id: str) -> int:
+        """按 doc_id 删除知识库文档的全部向量点。"""
+        self._ensure_heavy()
+        return self.store.delete_by_metadata({"doc": doc_id})
+
+    def knowledge_status(self) -> dict:
+        """知识库状态：总点数 + 文档列表。"""
+        self._ensure_heavy()
+        return {"points": self.store.count(), "docs": self.store.list_docs()}
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):

@@ -3,7 +3,7 @@
 上传类型识别：
 - 图片（png/jpg/...）-> read_image 视觉描述
 - txt/md/markdown -> MarkdownLoader
-- pdf/doc/docx/... -> MarkItDownLoader
+- pdf/doc/docx/... -> MinerU 解析（runtime.load_document）
 - >200k 字符截断标记 truncated:true
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ async def upload(
 
     - 图片 -> read_image 视觉描述
     - txt/md -> 直接读文本
-    - pdf/doc/... -> MarkItDown 转换
+    - pdf/doc/... -> MinerU 解析
     - >200k 字符截断
     """
     content_bytes = await file.read()
@@ -88,7 +88,7 @@ async def upload(
         text = text[:_MAX_CONTENT_CHARS]
         truncated = True
 
-    # 清理 markitdown 产生的表格碎片（Word 排版 -> markdown 表格）
+    # 清理解析产生的表格碎片（Word 排版 -> markdown 表格）
     # 逐行处理：有内容的单元格保留，空单元格和分隔行删除
     cleaned_lines = []
     for line in text.split("\n"):

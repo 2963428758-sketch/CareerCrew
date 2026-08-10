@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from careercrew_api.routers import chat, consult, data, interview, resume
+from careercrew_api.routers import chat, consult, data, interview, knowledge, resume
 
 DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
 
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(interview.router, prefix="/api/interview", tags=["interview"])
     app.include_router(resume.router, prefix="/api/resume", tags=["resume"])
     app.include_router(consult.router, prefix="/api/consult", tags=["consult"])
+    app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
 
     # 生产模式：托管 web/dist（SPA fallback）
     if DIST.exists():

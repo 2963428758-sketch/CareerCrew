@@ -14,7 +14,7 @@ llm:
 embedding:
   provider: bge_m3_local         # bge_m3_local | openai | siliconflow_dense
   model: BAAI/bge-m3
-  model_path: ./data/ms_cache/models/BAAI--bge-m3/snapshots/master
+  model_path: F:/AI_models/BAAI--bge-m3/snapshots/master
   use_fp16: false                # CPU 跑关闭 fp16
   batch_size: 12
 
@@ -26,12 +26,13 @@ rerank:
   api_key: "${SILICONFLOW_API_KEY}"
   top_m: 30                      # 精排候选数
 
-# ── 向量库（Milvus 可插拔） ──
+# ── 向量库（Qdrant 唯一后端） ──
 vector_store:
-  backend: milvus_lite           # milvus_lite | milvus_docker | chroma
-  persist_path: ./data/db/milvus
+  backend: qdrant
+  url: http://localhost:6333
+  api_key: ""
   collections:
-    knowledge: careercrew_kb
+    knowledge: careercrew_mm
     episodic_memory: careercrew_episodic
 
 # ── RAG 检索（自建） ──
@@ -48,7 +49,15 @@ rag:
     chunk_overlap: 100
     contextual: true             # Contextual Chunking（LLM 加上下文前置）
   loaders:
-    backend: markitdown          # markitdown | pymupdf | python-docx（per-format 回退）
+    backend: mineru              # MinerU 子进程解析（PDF/图片/docx/pptx/xlsx）
+    output_dir: ./data/parsed    # MinerU 产物落盘（页面图/对象裁剪图/Markdown）
+
+# ── VLM（硅基流动，多模态生成 + 精排） ──
+vlm:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  rerank_model: Qwen/Qwen3-VL-Reranker-8B
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
 
 # ── LangGraph supervisor ──
 supervisor:

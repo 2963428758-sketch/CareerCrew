@@ -63,7 +63,7 @@ class IngestionPipeline:
 
     def ingest_file(self, path: str | Path, metadata: dict | None = None) -> int:
         p = Path(path)
-        # 统一加载：Markdown 直读；PDF/Word/Excel/PPT/HTML 用 MarkItDown（§3.7.4）
+        # 统一加载：Markdown 直读；其余格式走 MinerU 多模态管线（pipeline_multimodal）
         from careercrew_core.rag.loaders.loader_factory import create_loader
 
         doc = create_loader(str(p)).load(str(p))

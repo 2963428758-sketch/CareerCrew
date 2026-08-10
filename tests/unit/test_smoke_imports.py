@@ -18,9 +18,10 @@ def test_key_dependencies_importable() -> None:
     """A1 验收要求的关键依赖必须可导入。"""
     for dep in (
         "langgraph",
-        "pymilvus",
+        "qdrant_client",
         "FlagEmbedding",
         "sentence_transformers",
+        "mineru",
         "langchain",
         "langchain_openai",
         "pydantic",

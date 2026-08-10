@@ -24,7 +24,7 @@ def valid_config() -> dict:
         "embedding": {
             "provider": "bge_m3_local",
             "model": "BAAI/bge-m3",
-            "model_path": "./data/ms_cache/models/BAAI--bge-m3/snapshots/master",
+            "model_path": "F:/AI_models/BAAI--bge-m3/snapshots/master",
             "use_fp16": False,
             "batch_size": 12,
         },
@@ -36,9 +36,10 @@ def valid_config() -> dict:
             "top_m": 30,
         },
         "vector_store": {
-            "backend": "milvus_lite",
-            "persist_path": "./data/db/milvus",
-            "collections": {"knowledge": "careercrew_kb", "episodic_memory": "careercrew_episodic"},
+            "backend": "qdrant",
+            "url": ":memory:",
+            "api_key": "",
+            "collections": {"knowledge": "careercrew_mm", "episodic_memory": "careercrew_episodic"},
         },
         "rag": {
             "retrieval": {
@@ -54,6 +55,13 @@ def valid_config() -> dict:
                 "chunk_overlap": 100,
                 "contextual": True,
             },
+            "loaders": {"backend": "mineru", "output_dir": "./data/parsed"},
+        },
+        "vlm": {
+            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "rerank_model": "Qwen/Qwen3-VL-Reranker-8B",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": "sk-test-literal",
         },
         "supervisor": {
             "checkpointer": {"backend": "sqlite", "path": "./data/db/checkpointer.db"},

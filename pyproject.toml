@@ -20,28 +20,27 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-text-splitters>=0.3.0",
     "langgraph-checkpoint-sqlite>=3.1.0",
-    "pymilvus>=2.4.0",
     "FlagEmbedding>=1.4.0",
     "modelscope>=1.39.0",
     "sentence-transformers>=5.0.0",
     "pydantic>=2.7.0",
     "PyYAML>=6.0",
     "python-dotenv>=1.0.0",
+    "qdrant-client>=1.19.0",
+    "mineru>=3.4.0",
+    "pymupdf>=1.24.0",
+    "mcp>=1.20,<2",
 ]
 
 [project.optional-dependencies]
-# milvus-lite 嵌入式后端（D2 阶段用；Windows wheel 单独装，不阻塞 A1）
-milvus = ["milvus-lite>=2.4.0"]
-# Chroma 兜底后端（D5 阶段用；dense-only）
-chroma = ["chromadb>=1.0.0"]
-# 多格式文档加载（D4 阶段用：PDF/Word/Excel -> Markdown）
-ingestion = ["markitdown>=0.0.1"]
+# 多格式文档解析（多模态 RAG：PDF/Word/Excel/图片 -> 页面图 + Markdown）
+ingestion = ["mineru[pipeline]>=3.4.0"]
 # 答案级评估（L1 阶段用）
 eval = ["ragas>=0.2.0"]
 # Streamlit Dashboard（L4 阶段用）
 ui = ["streamlit>=1.30.0"]
 # Web 前端后端：FastAPI + SSE 流式（uvicorn/multipart 已在 env，实际只补 fastapi）
-web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9", "markitdown[pdf]>=0.0.1"]
+web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 # 测试工具链（A2 起用）
 dev = [
     "pytest>=8.0.0",
@@ -51,9 +50,10 @@ dev = [
 
 [project.scripts]
 careercrew = "careercrew_cli.app:main"
+careercrew-mcp = "careercrew_mcp.server:main"
 
 [tool.setuptools.packages.find]
-include = ["careercrew_ai", "careercrew_ai.*", "careercrew_core", "careercrew_core.*", "careercrew_cli", "careercrew_cli.*", "careercrew_ui", "careercrew_ui.*", "careercrew_api", "careercrew_api.*"]
+include = ["careercrew_ai", "careercrew_ai.*", "careercrew_core", "careercrew_core.*", "careercrew_cli", "careercrew_cli.*", "careercrew_ui", "careercrew_ui.*", "careercrew_api", "careercrew_api.*", "careercrew_mcp", "careercrew_mcp.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

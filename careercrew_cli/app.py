@@ -44,16 +44,17 @@ def _build_job_cycle():
 
     from careercrew_ai.embedding import create_embedding
     from careercrew_ai.llm import create_llm
-    from careercrew_ai.reranker import create_reranker
+    from careercrew_ai.reranker.siliconflow_vl_reranker import SiliconFlowVLReranker
     from careercrew_ai.vector_store import create_vector_store
     from careercrew_cli.workflow.job_cycle import JobCycle
     from careercrew_core.agents.job_matcher import JobMatcher
     from careercrew_core.agents.resume_advisor import ResumeAdvisor
     from careercrew_core.memory.episodic import EpisodicMemory
     from careercrew_core.memory.user_model import UserModelStore
-    from careercrew_core.rag.pipeline import IngestionPipeline
-    from careercrew_core.rag.retrieval.hybrid_search import HybridSearch
+    from careercrew_core.rag.pipeline_multimodal import MultimodalIngestionPipeline
+    from careercrew_core.rag.retrieval.multimodal_search import MultimodalSearch
     from careercrew_core.state.settings import load_settings
+    from careercrew_core.tools.internal.read_image import make_read_image_tool
     from careercrew_core.tools.internal.memory_write import make_memory_write_tool
     from careercrew_core.tools.internal.profile_update import make_profile_update_tool
     from careercrew_core.tools.internal.rag_query import make_rag_query_tool
@@ -66,18 +67,30 @@ def _build_job_cycle():
     embedding = create_embedding(settings)
     store = create_vector_store(settings)
     llm = create_llm(settings, max_tokens=1024)
-    rr = create_reranker(settings)
-    hs = HybridSearch(embedding, store, reranker=rr, top_m=20)
+    rr = SiliconFlowVLReranker(settings)
+    img_reader = make_read_image_tool(settings)
+    hs = MultimodalSearch(
+        embedding, store, reranker=rr, top_m=30,
+        image_reader=lambda p: img_reader.invoke({"image_path": p}),
+    )
 
-    # 确保知识库已入库
+    # 确保知识库已入库（data/uploads 下的 PDF/图片/docx；data/knowledge 不参与）
     if store.count() == 0:
-        pipe = IngestionPipeline(
+        pipe = MultimodalIngestionPipeline(
             embedding, store, contextual=False,
+            output_dir=settings.rag.loaders.output_dir,
             chunk_size=settings.rag.chunking.chunk_size,
             chunk_overlap=settings.rag.chunking.chunk_overlap,
         )
-        for f in sorted(Path("data/knowledge").glob("*.md")):
-            pipe.ingest_file(f)
+        ingest_files = sorted(
+            p for p in Path("data/uploads").glob("*")
+            if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
+        )
+        for f in ingest_files:
+            try:
+                pipe.ingest_file(f)
+            except Exception as e:
+                print(f"[chat] ingest 跳过 {f}: {e}")
         print("[chat] 知识库已入库")
 
     episodic = EpisodicMemory(Path(settings.memory.episodic.transcript_dir) / "u_001" / "m1.jsonl")

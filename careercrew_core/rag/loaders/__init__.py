@@ -1,7 +1,23 @@
-"""careercrew_core.rag.loaders - 多格式文档加载（§3.7.4）。"""
-from careercrew_core.rag.loaders.base_loader import BaseLoader, Document
+"""careercrew_core.rag.loaders - 文档加载（文本直读 + MinerU 多模态解析）。"""
+from careercrew_core.rag.loaders.base_loader import (
+    BaseLoader,
+    Document,
+    ParsedDocument,
+    ParsedObject,
+    ParsedPage,
+)
 from careercrew_core.rag.loaders.loader_factory import create_loader
 from careercrew_core.rag.loaders.markdown_loader import MarkdownLoader
-from careercrew_core.rag.loaders.markitdown_loader import MarkItDownLoader
+from careercrew_core.rag.loaders.mineru_loader import MinerULoader, ParsingError
 
-__all__ = ["BaseLoader", "Document", "create_loader", "MarkdownLoader", "MarkItDownLoader"]
+__all__ = [
+    "BaseLoader",
+    "Document",
+    "ParsedDocument",
+    "ParsedPage",
+    "ParsedObject",
+    "create_loader",
+    "MarkdownLoader",
+    "MinerULoader",
+    "ParsingError",
+]
