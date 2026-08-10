@@ -16,26 +16,13 @@ from careercrew_core.state.checkpointer import get_checkpointer
 from careercrew_core.state.settings import Settings
 from careercrew_core.supervisor.graph import build_graph
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
+from tests.fakes import FakeChatModel
 
 
 @tool
 def add(a: int, b: int) -> int:
     """Add two numbers."""
     return a + b
-
-
-class FakeChatModel:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self._i = 0
-
-    def bind_tools(self, tools, **kwargs):
-        return self
-
-    def invoke(self, messages, config=None):
-        resp = self.responses[self._i]
-        self._i += 1
-        return resp
 
 
 def _tc(name, args, id_="1"):

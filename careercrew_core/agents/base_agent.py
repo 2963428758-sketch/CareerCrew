@@ -1,10 +1,13 @@
-"""agent 节点基类（B4）。
+"""agent 节点基类（B4，AGENT_LANGSMITH_SPEC Part A 改造）。
 
-套手写 ReAct 循环：读 system prompt + state.messages -> ReactLoop.run -> 产出写回 state。
-- messages：最终答案作为 AIMessage 追加（add_messages reducer）。
-- agent_outputs：本 agent 产出存到 agent_outputs[name]（merge_dicts reducer 聚合多 agent）。
+内部驱动 LangChain 1.x ``create_agent`` 编译图（LLM/工具/循环/流式事件由平台提供），
+对外契约不变：
+- ``run(state) -> state_update``（LangGraph 节点 callable）
+- ``last_result: AgentResult``（content / stopped_reason / tool_calls_total / iterations）
+- ``agent_outputs[name]`` 聚合多 agent 产出
 
-作为 LangGraph 节点 callable：run(state) -> state_update。
+``run`` 挂 LangSmith 根 run（``agent.<name>``），metadata 带 user_id/thread_id/stage；
+逐轮明细过程交给 LangSmith，本地只保留轻量迭代记录。
 """
 from __future__ import annotations
 
@@ -14,9 +17,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
-from careercrew_ai.react.react_loop import AgentResult, ReactLoop
+from careercrew_ai.agents.langchain_agent import AgentResult, build_agent, run_agent
 from careercrew_core.state.thread_state import CareerCrewState
 from careercrew_core.tools.registry import ToolRegistry
+from careercrew_core.tracing.langsmith import attach_run_metadata, traced_call
 
 
 class BaseAgent:
@@ -29,22 +33,41 @@ class BaseAgent:
         llm: BaseChatModel,
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 10,
-        tracer=None,  # 可选 TraceRecorder（L3 全链路打点）
         stream_callback=None,  # 可选: 流式输出回调(text)->None, 用户不等
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
         self.llm = llm
         self.tools = tools or []
-        self.loop = ReactLoop(
-            max_iterations=max_iterations, tracer=tracer, stream_callback=stream_callback
+        self.max_iterations = max_iterations
+        self.stream_callback = stream_callback
+        self.agent = build_agent(
+            llm=llm,
+            tools=self._bindable_tools() or None,
+            system_prompt=system_prompt,
+            max_iterations=max_iterations,
         )
         self.last_result: AgentResult | None = None  # 供 trace/调试取完整迭代记录
 
     def run(self, state: CareerCrewState) -> dict:
-        """LangGraph 节点入口：套 ReAct 循环，返回 state 更新。"""
+        """LangGraph 节点入口：驱动 create_agent 图（LangSmith 根 run），返回 state 更新。"""
+        return traced_call(
+            self._run_impl,
+            name=f"agent.{self.name}",
+            run_type="chain",
+            state=state,
+        )
+
+    def _run_impl(self, state: CareerCrewState) -> dict:
+        attach_run_metadata(
+            user_id=state.get("user_id", ""),
+            thread_id=state.get("thread_id", ""),
+            stage=state.get("stage", ""),
+        )
         messages = list(state.get("messages", []))
-        result = self.loop.run(self.system_prompt, messages, self._bindable_tools(), self.llm)
+        result = run_agent(
+            self.agent, messages, self.stream_callback, self.max_iterations
+        )
         self.last_result = result
         return self._build_update(result)
 

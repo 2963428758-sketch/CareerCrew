@@ -13,6 +13,7 @@ from langchain_core.messages import BaseMessage, SystemMessage
 
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.memory.types import MemoryEntry
+from careercrew_core.tracing.langsmith import traced_call
 
 
 def _msg_tokens(msg: BaseMessage) -> int:
@@ -52,6 +53,17 @@ class Compactor:
         return total >= limit * self._token_threshold_ratio
 
     def compact(self, messages, episodic: EpisodicMemory) -> tuple[list[BaseMessage], MemoryEntry | None]:
+        """保留区 + 压缩区（子 run careercrew.compaction）。"""
+        return traced_call(
+            self._compact_impl,
+            name="careercrew.compaction",
+            run_type="chain",
+            run_metadata={"endpoint": "compaction"},
+            messages=messages,
+            episodic=episodic,
+        )
+
+    def _compact_impl(self, messages, episodic: EpisodicMemory) -> tuple[list[BaseMessage], MemoryEntry | None]:
         """保留区 + 压缩区；写 compaction 条目；返回 (新 messages, compaction 条目)。"""
         if not self.should_compact(messages):
             return list(messages), None

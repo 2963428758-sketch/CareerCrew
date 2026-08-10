@@ -33,7 +33,6 @@ class Interviewer(BaseAgent):
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 8,
         prompt_path: Path | None = None,
-        tracer=None,
         stream_callback=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
@@ -44,7 +43,6 @@ class Interviewer(BaseAgent):
             llm=llm,
             tools=tools,
             max_iterations=max_iterations,
-            tracer=tracer,
             stream_callback=stream_callback,
         )
 

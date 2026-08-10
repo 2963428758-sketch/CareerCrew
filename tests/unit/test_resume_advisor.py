@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from careercrew_core.agents.resume_advisor import ResumeAdvisor, resume_match_score
 from careercrew_core.tools.internal.rag_query import make_rag_query_tool
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
+from tests.fakes import FakeChatModel
 
 
 def test_resume_match_score_perfect() -> None:
@@ -27,20 +28,6 @@ def test_resume_match_score_empty() -> None:
     assert resume_match_score("会 Python", "") == 0.0
     # JD 无已知技能
     assert resume_match_score("会 Python", "招聘工程师，待遇从优") == 0.0
-
-
-class FakeChatModel:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self._i = 0
-
-    def bind_tools(self, tools, **kwargs):
-        return self
-
-    def invoke(self, messages, config=None):
-        resp = self.responses[self._i]
-        self._i += 1
-        return resp
 
 
 def _tc(name, args, id_="1"):

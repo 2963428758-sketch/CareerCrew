@@ -8,6 +8,7 @@ from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.tools.internal.memory_write import make_memory_write_tool
 from careercrew_core.tools.internal.search_jobs import search_jobs
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
+from tests.fakes import FakeChatModel
 
 
 def test_score_jd_match_perfect() -> None:
@@ -61,37 +62,8 @@ def test_extract_profile_from_intent_type_guard() -> None:
     assert fields == {}
 
 
-class FakeChatModel:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self._i = 0
-
-    def bind_tools(self, tools, **kwargs):
-        return self
-
-    def invoke(self, messages, config=None):
-        resp = self.responses[self._i]
-        self._i += 1
-        return resp
-
-
 def _tc(name, args, id_="1"):
     return {"name": name, "args": args, "id": id_, "type": "tool_call"}
-
-
-def test_job_matcher_accepts_tracer(tmp_path) -> None:
-    """回归：所有 agent 子类必须透传 tracer（CLI chat 传 tracer 会失败）。"""
-    from careercrew_core.tracing.trace import TraceRecorder
-
-    llm = FakeChatModel([AIMessage(content="匹配结果")])
-    agent = JobMatcher(llm=llm, tools=ToolRegistry(), tracer=TraceRecorder(tmp_path / "t.jsonl"))
-    state = {
-        "thread_id": "t1", "user_id": "u1", "stage": "match", "user_intent": "找岗位",
-        "messages": [HumanMessage(content="找岗位")],
-        "pending_action": None, "agent_outputs": {}, "target_companies": [],
-    }
-    agent.run(state)
-    assert agent.last_result.content == "匹配结果"
 
 
 def test_job_matcher_writes_job_match(tmp_path) -> None:

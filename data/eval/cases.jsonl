@@ -1,0 +1,5 @@
+{"id": "resume-1", "case_type": "resume_match", "resume_text": "精通 Python，用 LangChain 搭建 RAG 系统，做过 Agent 应用，熟悉向量检索与 Qdrant", "jd_text": "要求 Python、LangChain、RAG、Agent，熟悉向量数据库"}
+{"id": "resume-2", "case_type": "resume_match", "resume_text": "三年 Java 后端，Spring Boot / MyBatis / Redis", "jd_text": "Go 开发，要求 K8s 与分布式经验"}
+{"id": "resume-3", "case_type": "resume_match", "resume_text": "在校生，学习能力强，愿意从零学", "jd_text": "要求 Python 与数据分析经验"}
+{"id": "interview-1", "case_type": "interview_qa", "question": "讲一下 RAG 怎么减少大模型幻觉", "answer": "检索增强生成通过把外部文档切块后向量化，回答时先检索相关片段作为上下文，模型只能基于给定证据作答，并附引用来源，从而降低凭空编造的概率。"}
+{"id": "interview-2", "case_type": "interview_qa", "question": "HashMap 的底层原理是什么", "answer": "HashMap 底层是数组加链表，JDK8 起链表超过阈值会转红黑树，通过扰动函数降低哈希碰撞，扩容时按 2 倍扩容并重新散列。"}

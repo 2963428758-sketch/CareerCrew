@@ -20,6 +20,7 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-text-splitters>=0.3.0",
     "langgraph-checkpoint-sqlite>=3.1.0",
+    "langsmith>=0.10",
     "FlagEmbedding>=1.4.0",
     "modelscope>=1.39.0",
     "sentence-transformers>=5.0.0",
@@ -37,8 +38,6 @@ dependencies = [
 ingestion = ["mineru[pipeline]>=3.4.0"]
 # 答案级评估（L1 阶段用）
 eval = ["ragas>=0.2.0"]
-# Streamlit Dashboard（L4 阶段用）
-ui = ["streamlit>=1.30.0"]
 # Web 前端后端：FastAPI + SSE 流式（uvicorn/multipart 已在 env，实际只补 fastapi）
 web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 # 测试工具链（A2 起用）

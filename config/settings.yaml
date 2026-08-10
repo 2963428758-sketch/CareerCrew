@@ -94,13 +94,10 @@ tools:
 hitl:
   default_policy: confirm        # 默认 HITL，仅低风险自动化
 
-# ── 可观测性（自建 trace） ──
-observability:
+# ── LangSmith 全链路追踪（替代自建 trace + Streamlit Dashboard） ──
+langsmith:
   enabled: true
-  log_file: ./logs/traces.jsonl
-
-# ── Dashboard ──
-dashboard:
-  enabled: true
-  port: 8501
-  traces_dir: ./logs
+  project: careercrew
+  api_key: "${LANGSMITH_API_KEY}"
+  masking: true              # 默认脱敏：截断 + 打码手机号/邮箱/薪资
+  max_chars: 2000            # 单条字符串上传上限（超出截断）

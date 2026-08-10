@@ -28,6 +28,45 @@ export interface InterviewQA {
   feedback?: string
 }
 
+/** LangSmith run 摘要（GET /api/runs）。 */
+export interface RunSummary {
+  run_id: string
+  name: string
+  run_type: string
+  start_time: string | null
+  end_time: string | null
+  duration_ms: number | null
+  status: string
+  error: string | null
+  metadata: Record<string, string>
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  estimated_cost: number | null
+}
+
+/** 子 run 时间线步骤（GET /api/runs/{id}）。 */
+export interface RunStep {
+  run_id: string
+  name: string
+  run_type: string
+  start_time: string | null
+  end_time: string | null
+  duration_ms: number | null
+  status: string
+  error: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  inputs_preview?: string
+  outputs_preview?: string
+}
+
+export interface RunDetail {
+  run: RunSummary
+  steps: RunStep[]
+}
+
 /** 会诊 agent 选项。 */
 export const CONSULT_AGENTS = [
   { id: "salary_negotiator", label: "薪资谈判师", color: "#7C3AED" },

@@ -77,8 +77,13 @@ def valid_config() -> dict:
             "hitl": {"requires_confirmation": ["submit_application", "accept_offer"]},
         },
         "hitl": {"default_policy": "confirm"},
-        "observability": {"enabled": True, "log_file": "./logs/traces.jsonl"},
-        "dashboard": {"enabled": True, "port": 8501, "traces_dir": "./logs"},
+        "langsmith": {
+            "enabled": True,
+            "project": "careercrew",
+            "api_key": "lsv2-test-literal",
+            "masking": True,
+            "max_chars": 2000,
+        },
     }
 
 

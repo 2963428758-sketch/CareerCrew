@@ -9,6 +9,42 @@ from collections.abc import Callable
 
 import pytest
 
+from careercrew_core.tracing.langsmith import RunNotFoundError
+
+
+_FAKE_RUNS = [
+    {
+        "run_id": "run-1",
+        "name": "careercrew.match",
+        "run_type": "chain",
+        "start_time": "2026-08-10T10:00:00+08:00",
+        "end_time": "2026-08-10T10:00:05+08:00",
+        "duration_ms": 5000,
+        "status": "success",
+        "error": None,
+        "metadata": {"user_id": "u_001", "thread_id": "m1", "stage": "match"},
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150,
+        "estimated_cost": None,
+    },
+    {
+        "run_id": "run-2",
+        "name": "agent.job_matcher",
+        "run_type": "chain",
+        "start_time": "2026-08-10T10:00:01+08:00",
+        "end_time": "2026-08-10T10:00:04+08:00",
+        "duration_ms": 3000,
+        "status": "success",
+        "error": None,
+        "metadata": {"user_id": "u_001", "thread_id": "m1", "stage": "match"},
+        "prompt_tokens": 80,
+        "completion_tokens": 40,
+        "total_tokens": 120,
+        "estimated_cost": None,
+    },
+]
+
 
 class FakeRuntime:
     """测试用假运行时（duck-typed，不初始化重组件）。"""
@@ -151,6 +187,47 @@ class FakeRuntime:
             for name in names:
                 cb(name, self.consult_opinions.get(name, "无意见"))
         return {"opinions": self.consult_opinions, "synthesis": self.consult_synthesis}
+
+    def list_runs(
+        self,
+        limit: int = 50,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        stage: str | None = None,
+    ) -> list[dict]:
+        runs = list(_FAKE_RUNS)
+        if user_id:
+            runs = [r for r in runs if r["metadata"].get("user_id") == user_id]
+        if thread_id:
+            runs = [r for r in runs if r["metadata"].get("thread_id") == thread_id]
+        if stage:
+            runs = [r for r in runs if r["metadata"].get("stage") == stage]
+        return runs[:limit]
+
+    def get_run_detail(self, run_id: str) -> dict:
+        if run_id not in ("run-1", "run-2"):
+            raise RunNotFoundError(run_id)
+        run = next(r for r in _FAKE_RUNS if r["run_id"] == run_id)
+        return {
+            "run": run,
+            "steps": [
+                {
+                    "run_id": "llm-1",
+                    "name": "ChatOpenAI",
+                    "run_type": "llm",
+                    "start_time": run["start_time"],
+                    "end_time": run["end_time"],
+                    "duration_ms": 2000,
+                    "status": "success",
+                    "error": None,
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "total_tokens": 150,
+                    "inputs_preview": '{"messages": [[...]]}',
+                    "outputs_preview": '{"generations": [[...]]}',
+                }
+            ],
+        }
 
 
 @pytest.fixture

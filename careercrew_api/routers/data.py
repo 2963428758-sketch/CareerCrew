@@ -100,10 +100,3 @@ def memory(user_id: str = Query("u_001"), thread_id: str | None = Query(None), t
     if type:
         entries = [e for e in entries if e.get("type") == type]
     return entries
-
-
-@router.get("/traces")
-def traces(limit: int = Query(200)) -> list[dict]:
-    from careercrew_ui.dashboard.data import get_traces
-
-    return get_traces(limit=limit)

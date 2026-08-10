@@ -60,7 +60,6 @@ def _build_job_cycle():
     from careercrew_core.tools.internal.rag_query import make_rag_query_tool
     from careercrew_core.tools.internal.search_jobs import search_jobs
     from careercrew_core.tools.registry import ToolRegistry, ToolSpec
-    from careercrew_core.tracing.trace import TraceRecorder
     from careercrew_ui.cli.renderer import Renderer
 
     settings = load_settings()
@@ -106,12 +105,11 @@ def _build_job_cycle():
     resume_tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
     resume_tools.register(ToolSpec(tool=make_profile_update_tool(um)))
 
-    tracer = TraceRecorder()  # L3 全链路 trace（Dashboard 追踪页）
     renderer = Renderer()
     return JobCycle(
-        JobMatcher(llm=llm, tools=matcher_tools, max_iterations=8, tracer=tracer,
+        JobMatcher(llm=llm, tools=matcher_tools, max_iterations=8,
                    stream_callback=renderer.stream),  # 流式输出, 用户不等
-        ResumeAdvisor(llm=llm, tools=resume_tools, max_iterations=8, tracer=tracer,
+        ResumeAdvisor(llm=llm, tools=resume_tools, max_iterations=8,
                       stream_callback=renderer.stream),
         renderer=renderer,
         user_model_store=um,

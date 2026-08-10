@@ -20,6 +20,7 @@ from careercrew_core.rag.chunking.document_chunker import DocumentChunker
 from careercrew_core.rag.loaders.base_loader import ParsedDocument
 from careercrew_core.rag.loaders.markdown_loader import MarkdownLoader
 from careercrew_core.rag.loaders.mineru_loader import MinerULoader
+from careercrew_core.tracing.langsmith import traced_call
 
 if TYPE_CHECKING:
     from careercrew_core.rag.chunking.contextualizer import Contextualizer
@@ -48,6 +49,16 @@ class MultimodalIngestionPipeline:
         self._chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     def ingest_text(self, text: str, source: str = "", metadata: dict | None = None) -> int:
+        """纯文本入库（根 run careercrew.ingest，Contextualizer 逐 chunk LLM 不刷配额）。"""
+        return traced_call(
+            self._ingest_text_impl,
+            name="careercrew.ingest",
+            run_type="chain",
+            run_metadata={"endpoint": "ingest"},
+            text=text, source=source, metadata=metadata,
+        )
+
+    def _ingest_text_impl(self, text: str, source: str = "", metadata: dict | None = None) -> int:
         """纯文本路径：切分 -> contextualize -> BGE-M3 -> upsert（无视觉向量）。"""
         chunks = self._chunker.chunk(text, source=source, metadata=metadata)
         doc_id = Path(source).stem if source else "doc"
@@ -72,6 +83,16 @@ class MultimodalIngestionPipeline:
         return len(records)
 
     def ingest_file(self, path: str | Path, metadata: dict | None = None) -> int:
+        """文件入库（根 run careercrew.ingest）。"""
+        return traced_call(
+            self._ingest_file_impl,
+            name="careercrew.ingest",
+            run_type="chain",
+            run_metadata={"endpoint": "ingest"},
+            path=path, metadata=metadata,
+        )
+
+    def _ingest_file_impl(self, path: str | Path, metadata: dict | None = None) -> int:
         """文件入库：md/txt 走文本路径；其余走 MinerU 多模态路径。"""
         p = Path(path)
         if p.suffix.lower() in _TEXT_EXTS:

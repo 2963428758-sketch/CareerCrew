@@ -169,15 +169,14 @@ class HitlSettings(BaseModel):
     default_policy: str  # confirm | auto
 
 
-class ObservabilitySettings(BaseModel):
-    enabled: bool
-    log_file: str
+class LangSmithSettings(BaseModel):
+    """LangSmith 追踪（AGENT_LANGSMITH_SPEC Part B）。"""
 
-
-class DashboardSettings(BaseModel):
     enabled: bool
-    port: int
-    traces_dir: str
+    project: str = "careercrew"
+    api_key: str = ""
+    masking: bool = True
+    max_chars: int = 2000
 
 
 class Settings(BaseModel):
@@ -193,8 +192,7 @@ class Settings(BaseModel):
     memory: MemorySettings
     tools: ToolsSettings
     hitl: HitlSettings
-    observability: ObservabilitySettings
-    dashboard: DashboardSettings
+    langsmith: LangSmithSettings
 
 
 # ── 环境变量替换 ──
@@ -236,8 +234,6 @@ def _resolve_paths(settings: Settings) -> Settings:
     settings.supervisor.checkpointer.path = _resolve_path(settings.supervisor.checkpointer.path)
     settings.memory.episodic.transcript_dir = _resolve_path(settings.memory.episodic.transcript_dir)
     settings.memory.user_model.path = _resolve_path(settings.memory.user_model.path)
-    settings.observability.log_file = _resolve_path(settings.observability.log_file)
-    settings.dashboard.traces_dir = _resolve_path(settings.dashboard.traces_dir)
     return settings
 
 
@@ -262,6 +258,12 @@ def validate_settings(settings: Settings) -> None:
     # VLM api_key（多模态生成/精排）
     if not settings.vlm.api_key or "${" in settings.vlm.api_key:
         problems.append("vlm.api_key 未设置（需 SILICONFLOW_API_KEY）")
+
+    # LangSmith api_key：enabled=true 时必须提供 LANGSMITH_API_KEY
+    if settings.langsmith.enabled and (
+        not settings.langsmith.api_key or "${" in settings.langsmith.api_key
+    ):
+        problems.append("langsmith.api_key 未设置（enabled=true 时需 LANGSMITH_API_KEY）")
 
     # 向量库后端取值
     if settings.vector_store.backend not in _VALID_VECTOR_BACKENDS:

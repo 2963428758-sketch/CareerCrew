@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
+from careercrew_core.tracing.langsmith import attach_run_metadata, traced_call
 
 router = APIRouter()
 
@@ -35,7 +36,8 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
         q: queue.Queue = queue.Queue(maxsize=512)
         err: dict[str, BaseException] = {}
 
-        def _worker():
+        def _worker_impl():
+            attach_run_metadata(user_id=req.user_id, stage="consult")
             try:
                 from langchain_core.messages import HumanMessage
 
@@ -86,6 +88,14 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
                 err["exc"] = e
             finally:
                 q.put(_SENTINEL)
+
+        def _worker():
+            traced_call(
+                _worker_impl,
+                name="careercrew.consult",
+                run_type="chain",
+                run_metadata={"endpoint": "consult"},
+            )
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()

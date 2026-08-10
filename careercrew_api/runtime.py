@@ -17,6 +17,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from careercrew_core.tracing.langsmith import (
+    attach_run_metadata,
+    configure_langsmith,
+    traced_call,
+)
+
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
@@ -51,7 +57,6 @@ class CareerCrewRuntime:
         self.ingest_pipeline = None
         self.episodic = None
         self.user_model = None
-        self.tracer = None
 
     # ── 重组件初始化 ──
 
@@ -73,10 +78,9 @@ class CareerCrewRuntime:
             from careercrew_core.rag.pipeline_multimodal import MultimodalIngestionPipeline
             from careercrew_core.rag.retrieval.multimodal_search import MultimodalSearch
             from careercrew_core.state.settings import load_settings
-            from careercrew_core.tracing.trace import TraceRecorder
-
             settings = load_settings()
             self.settings = settings
+            configure_langsmith(settings)  # 必须先于 create_llm/任何 LLM 调用
 
             try:
                 embedding = create_embedding(settings)
@@ -119,7 +123,6 @@ class CareerCrewRuntime:
                 Path(settings.memory.episodic.transcript_dir) / "u_001" / "m1.jsonl"
             )
             um = UserModelStore(settings.memory.user_model.path)
-            tracer = TraceRecorder()
 
             self.embedding = embedding
             self.store = store
@@ -128,7 +131,6 @@ class CareerCrewRuntime:
             self.multimodal_search = hs
             self.episodic = episodic
             self.user_model = um
-            self.tracer = tracer
             self._initialized = True
 
     # ── 会话级 JobCycle（LRU 缓存）──
@@ -209,6 +211,20 @@ class CareerCrewRuntime:
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None) -> str:
         """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。"""
+        return traced_call(
+            self._run_match_stream_impl,
+            name="careercrew.match",
+            run_type="chain",
+            run_metadata={"endpoint": "match"},
+            thread_id=thread_id,
+            user_id=user_id,
+            intent=intent,
+            cb=cb,
+        )
+
+    def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
+                               cb: Callable[[str], None] | None = None) -> str:
+        attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
         cycle = self.get_cycle(thread_id, user_id)
         ep = self._get_episodic(thread_id, user_id)
         cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
@@ -241,6 +257,20 @@ class CareerCrewRuntime:
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None) -> str:
         """流式 resume：用带 callback 的 agent 替换 cycle 中的 advisor，保留对话历史。"""
+        return traced_call(
+            self._run_resume_stream_impl,
+            name="careercrew.resume",
+            run_type="chain",
+            run_metadata={"endpoint": "resume"},
+            thread_id=thread_id,
+            user_id=user_id,
+            jd_text=jd_text,
+            cb=cb,
+        )
+
+    def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
+                                cb: Callable[[str], None] | None = None) -> str:
+        attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
         cycle = self.get_cycle(thread_id, user_id)
         ep = self._get_episodic(thread_id, user_id)
         cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
@@ -285,7 +315,7 @@ class CareerCrewRuntime:
 
         return JobMatcher(
             llm=self.llm, tools=self._make_tools("matcher", episodic=episodic),
-            max_iterations=15, tracer=self.tracer, stream_callback=cb,
+            max_iterations=15, stream_callback=cb,
         )
 
     def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -294,7 +324,7 @@ class CareerCrewRuntime:
 
         return ResumeAdvisor(
             llm=self.llm, tools=self._make_tools("resume", episodic=episodic),
-            max_iterations=15, tracer=self.tracer, stream_callback=cb,
+            max_iterations=15, stream_callback=cb,
         )
 
     def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -303,7 +333,7 @@ class CareerCrewRuntime:
 
         return Interviewer(
             llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic),
-            max_iterations=15, tracer=self.tracer, stream_callback=cb,
+            max_iterations=15, stream_callback=cb,
         )
 
     def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
@@ -314,24 +344,56 @@ class CareerCrewRuntime:
 
             return SalaryNegotiator(
                 llm=self.llm, tools=self._make_tools("salary", episodic=episodic),
-                max_iterations=15, tracer=self.tracer, stream_callback=cb,
+                max_iterations=15, stream_callback=cb,
             )
         if name == "career_planner":
             from careercrew_core.agents.career_planner import CareerPlanner
 
             return CareerPlanner(
                 llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
-                max_iterations=15, tracer=self.tracer, stream_callback=cb,
+                max_iterations=15, stream_callback=cb,
             )
         raise ValueError(f"未知会诊 agent: {name}")
 
     # ── 直通方法 ──
 
     def score_answer(self, question: str, answer: str, max_score: int = 10) -> dict:
+        return traced_call(
+            self._score_answer_impl,
+            name="careercrew.interview.score",
+            run_type="chain",
+            run_metadata={"endpoint": "interview.score"},
+            question=question,
+            answer=answer,
+            max_score=max_score,
+        )
+
+    def _score_answer_impl(self, question: str, answer: str, max_score: int = 10) -> dict:
+        attach_run_metadata(stage="interview")
         self._ensure_heavy()
         from careercrew_core.agents.interviewer import score_answer
 
         return score_answer(question, answer, self.llm, max_score=max_score)
+
+    # ── LangSmith 读取（/api/runs）──
+
+    def list_runs(
+        self,
+        limit: int = 50,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        stage: str | None = None,
+    ) -> list[dict]:
+        """列出最近根 run（FakeRuntime 在测试中覆盖）。"""
+        from careercrew_core.tracing.langsmith import list_runs as _list_runs
+
+        return _list_runs(limit=limit, user_id=user_id, thread_id=thread_id, stage=stage)
+
+    def get_run_detail(self, run_id: str) -> dict:
+        """run 详情 + 展平子 run 时间线（FakeRuntime 在测试中覆盖）。"""
+        from careercrew_core.tracing.langsmith import get_run_detail as _detail
+
+        return _detail(run_id)
 
     def record_interview_qa(self, entries: list[dict]) -> int:
         self._ensure_heavy()

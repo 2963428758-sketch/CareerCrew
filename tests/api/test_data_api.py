@@ -32,8 +32,40 @@ def test_memory_endpoint(client):
 
 
 @pytest.mark.web
-def test_traces_endpoint(client):
-    """GET /api/traces。"""
-    resp = client.get("/api/traces?limit=10")
+def test_runs_endpoint(client):
+    """GET /api/runs：根 run 列表（LangSmith 读取替代 /api/traces）。"""
+    resp = client.get("/api/runs?limit=10&user_id=u_001&stage=match")
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    body = resp.json()
+    assert isinstance(body["runs"], list)
+    assert body["runs"][0]["run_id"] == "run-1"
+    assert body["runs"][0]["metadata"]["stage"] == "match"
+
+
+@pytest.mark.web
+def test_run_detail_endpoint(client):
+    """GET /api/runs/{id}：run + 展平 steps。"""
+    resp = client.get("/api/runs/run-1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["run"]["name"] == "careercrew.match"
+    assert body["steps"][0]["run_type"] == "llm"
+
+
+@pytest.mark.web
+def test_run_detail_not_found(client):
+    """GET /api/runs/{id} 不存在 -> 404。"""
+    resp = client.get("/api/runs/nope")
+    assert resp.status_code == 404
+
+
+@pytest.mark.web
+def test_runs_service_unavailable(client, fake_runtime, monkeypatch):
+    """LangSmith 不可用 -> 503 可读错误。"""
+    def _boom(**kwargs):
+        raise RuntimeError("langsmith down")
+
+    monkeypatch.setattr(fake_runtime, "list_runs", _boom)
+    resp = client.get("/api/runs")
+    assert resp.status_code == 503
+    assert "追踪服务不可用" in resp.json()["detail"]
