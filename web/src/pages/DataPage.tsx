@@ -91,7 +91,13 @@ function useFetch<T>(url: string) {
     let cancelled = false
     setLoading(true)
     fetch(url)
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => null)
+          throw new Error(body?.detail || `HTTP ${r.status}`)
+        }
+        return r.json()
+      })
       .then((d) => { if (!cancelled) setData(d) })
       .catch((e) => { if (!cancelled) setError(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -398,7 +404,10 @@ function TracesPanel() {
     if (!details[runId] && !detailErrors[runId]) {
       try {
         const resp = await fetch(`/api/runs/${runId}`)
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => null)
+          throw new Error(body?.detail || `HTTP ${resp.status}`)
+        }
         const detail = (await resp.json()) as RunDetail
         setDetails((d) => ({ ...d, [runId]: detail }))
       } catch (e) {

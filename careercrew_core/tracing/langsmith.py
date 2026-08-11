@@ -184,6 +184,22 @@ class RunNotFoundError(LookupError):
 
 
 def _client():
+    """取 LangSmith client；未配置 key 时尝试从 .env 自举，仍缺失则抛可读错误。
+
+    /api/runs 可能在首次对话（_ensure_heavy -> configure_langsmith）之前就被访问，
+    此时进程环境里还没有 LANGSMITH_API_KEY，直接调 API 会 401/403 而非可读 503。
+    """
+    if not os.environ.get("LANGSMITH_API_KEY"):
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv()
+        except Exception:  # noqa: BLE001 - .env 缺失不阻塞，后续给出可读错误
+            pass
+    if not os.environ.get("LANGSMITH_API_KEY"):
+        raise RuntimeError(
+            "LANGSMITH_API_KEY 未配置（检查 .env 或环境变量）"
+        )
     from langsmith.run_trees import get_cached_client
 
     return get_cached_client()

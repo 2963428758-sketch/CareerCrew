@@ -164,6 +164,17 @@ def test_langchain_tracer_reuses_cached_client(monkeypatch) -> None:
     assert tracer.client is fake_client
 
 
+def test_client_missing_key_raises_readable(monkeypatch) -> None:
+    """未配置 LANGSMITH_API_KEY 且 .env 也无 key 时，读取接口抛可读错误（→503 文案）。"""
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    for key in _TRACING_ENV_KEYS:
+        os.environ.pop(key, None)
+    from careercrew_core.tracing.langsmith import _client
+
+    with pytest.raises(RuntimeError, match="LANGSMITH_API_KEY"):
+        _client()
+
+
 # ── run 序列化 / 根 run 过滤 / 详情 ──
 
 
