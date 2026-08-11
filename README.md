@@ -27,6 +27,9 @@ export SILICONFLOW_API_KEY="sk-xxx"        # Git Bash
 export LANGSMITH_API_KEY="lsv2_xxx"        # LangSmith 追踪（可选，缺失时自动禁用）
 # $env:LANGSMITH_API_KEY="lsv2_xxx"
 
+# 国内网络访问 LangSmith 需走本地代理（Clash 默认 127.0.0.1:7890）
+# $env:HTTPS_PROXY="http://127.0.0.1:7890"; $env:HTTP_PROXY="http://127.0.0.1:7890"
+
 # 4. 运行
 careercrew --version
 conda run -n careercrew python -m careercrew_cli.app
