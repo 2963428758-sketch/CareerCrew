@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import argparse
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,11 +16,33 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
+    ap = argparse.ArgumentParser(description="LangSmith 冒烟 / 只读查看")
+    ap.add_argument(
+        "--list", action="store_true",
+        help="只读列出 careercrew 项目最近根 run（不创建任何 run）",
+    )
+    args = ap.parse_args()
+
     from careercrew_core.state.settings import load_settings
     from careercrew_core.tracing.langsmith import configure_langsmith, traced_call
 
     settings = load_settings()
     configure_langsmith(settings)
+
+    if args.list:
+        from careercrew_core.tracing.langsmith import list_runs
+
+        runs = list_runs(limit=20)
+        if not runs:
+            print("[list] 无 run（先跑一次对话再来看）")
+            return 0
+        for r in runs:
+            print(
+                f"  {r['start_time']} | {r['name']} | {r['status']} "
+                f"| tokens={r['total_tokens']} | {r['metadata']}"
+            )
+        print(f"[list] 共 {len(runs)} 条根 run")
+        return 0
 
     long_text = "敏感内容" * 1000  # 4000 字符，远超 max_chars=2000
     phone = "13800138000"
