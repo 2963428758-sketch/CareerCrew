@@ -375,26 +375,6 @@ class CareerCrewRuntime:
 
         return score_answer(question, answer, self.llm, max_score=max_score)
 
-    # ── LangSmith 读取（/api/runs）──
-
-    def list_runs(
-        self,
-        limit: int = 50,
-        user_id: str | None = None,
-        thread_id: str | None = None,
-        stage: str | None = None,
-    ) -> list[dict]:
-        """列出最近根 run（FakeRuntime 在测试中覆盖）。"""
-        from careercrew_core.tracing.langsmith import list_runs as _list_runs
-
-        return _list_runs(limit=limit, user_id=user_id, thread_id=thread_id, stage=stage)
-
-    def get_run_detail(self, run_id: str) -> dict:
-        """run 详情 + 展平子 run 时间线（FakeRuntime 在测试中覆盖）。"""
-        from careercrew_core.tracing.langsmith import get_run_detail as _detail
-
-        return _detail(run_id)
-
     def record_interview_qa(self, entries: list[dict]) -> int:
         self._ensure_heavy()
         from careercrew_core.agents.interviewer import record_interview_qa

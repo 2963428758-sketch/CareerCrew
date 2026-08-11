@@ -6,7 +6,6 @@ run 列表/详情序列化与根 run 过滤、404/503 分支。
 """
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -15,9 +14,7 @@ import pytest
 
 from careercrew_core.state.settings import LangSmithSettings, SettingsError, validate_settings
 from careercrew_core.tracing.langsmith import (
-    RunNotFoundError,
     configure_langsmith,
-    get_run_detail,
     list_runs,
     make_anonymizer,
     serialize_run_summary,
@@ -241,54 +238,3 @@ def test_list_runs_filters_roots_by_metadata(monkeypatch) -> None:
     finally:
         _reset()
 
-
-def test_get_run_detail_flattens_steps(monkeypatch) -> None:
-    child = SimpleNamespace(
-        id="llm-1",
-        name="ChatOpenAI",
-        run_type="llm",
-        start_time=datetime(2026, 8, 11, 10, 0, 1, tzinfo=timezone.utc),
-        end_time=datetime(2026, 8, 11, 10, 0, 3, tzinfo=timezone.utc),
-        status="success",
-        error=None,
-        total_tokens=150,
-        prompt_tokens=100,
-        completion_tokens=50,
-        inputs={"messages": [["human", "A" * 1000]]},
-        outputs={"generations": [["assistant", "hi"]]},
-        child_runs=[],
-    )
-    run = _make_run("run-1", "careercrew.match")
-    run.child_runs = [child]
-
-    class FakeClient:
-        def read_run(self, run_id, load_child_runs=False):
-            assert load_child_runs is True
-            return run
-
-    monkeypatch.setattr("careercrew_core.tracing.langsmith._client", lambda: FakeClient())
-    try:
-        detail = get_run_detail("run-1")
-        assert detail["run"]["run_id"] == "run-1"
-        assert detail["steps"][0]["run_type"] == "llm"
-        assert detail["steps"][0]["duration_ms"] == 2000
-        assert len(detail["steps"][0]["inputs_preview"]) <= 500 + len("…[已截断]")
-        assert "…[已截断]" in detail["steps"][0]["inputs_preview"]
-    finally:
-        _reset()
-
-
-def test_get_run_detail_not_found_raises(monkeypatch) -> None:
-    class NotFound(RuntimeError):
-        status_code = 404
-
-    class FakeClient:
-        def read_run(self, run_id, load_child_runs=False):
-            raise NotFound("not found")
-
-    monkeypatch.setattr("careercrew_core.tracing.langsmith._client", lambda: FakeClient())
-    try:
-        with pytest.raises(RunNotFoundError):
-            get_run_detail("nope")
-    finally:
-        _reset()

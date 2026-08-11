@@ -8,11 +8,10 @@
   LLM/工具 run 全部经过 anonymizer 脱敏。
 - ``traced_call``：LangSmith 启用时才包 ``traceable``（根 run 纪律），未启用时直通，
   测试与本地无 key 场景零网络副作用。
-- 读取侧 ``list_runs`` / ``get_run_detail`` 供 ``/api/runs`` 使用。
+- 读取侧 ``list_runs`` 供脚本（``smoke --list`` / ``eval --business``）使用。
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
@@ -151,7 +150,7 @@ def _estimated_cost(run) -> float | None:
 
 
 def serialize_run_summary(run) -> dict:
-    """Run schema -> RunSummary（前端契约）。"""
+    """Run schema -> 摘要 dict（脚本查看用）。"""
     return {
         "run_id": str(run.id),
         "name": getattr(run, "name", ""),
@@ -169,25 +168,11 @@ def serialize_run_summary(run) -> dict:
     }
 
 
-def _preview(value: Any, max_chars: int = 500) -> str:
-    try:
-        text = json.dumps(value, ensure_ascii=False, default=str)
-    except Exception:  # noqa: BLE001
-        text = str(value)
-    if len(text) > max_chars:
-        return text[:max_chars] + _TRUNC_SUFFIX
-    return text
-
-
-class RunNotFoundError(LookupError):
-    """LangSmith 中不存在指定 run。"""
-
-
 def _client():
     """取 LangSmith client；未配置 key 时尝试从 .env 自举，仍缺失则抛可读错误。
 
-    /api/runs 可能在首次对话（_ensure_heavy -> configure_langsmith）之前就被访问，
-    此时进程环境里还没有 LANGSMITH_API_KEY，直接调 API 会 401/403 而非可读 503。
+    脚本可能在首次对话（_ensure_heavy -> configure_langsmith）之前就被调用，
+    此时进程环境里还没有 LANGSMITH_API_KEY，直接调 API 会 401/403。
     """
     if not os.environ.get("LANGSMITH_API_KEY"):
         try:
@@ -231,36 +216,3 @@ def list_runs(
         if len(out) >= limit:
             break
     return out
-
-
-def get_run_detail(run_id: str) -> dict:
-    """run + 展平子 run 时间线（steps）。"""
-    try:
-        run = _client().read_run(run_id, load_child_runs=True)
-    except Exception as e:  # noqa: BLE001
-        if getattr(e, "status_code", None) == 404 or "not found" in str(e).lower():
-            raise RunNotFoundError(run_id) from e
-        raise
-    steps: list[dict] = []
-    queue: list = list(getattr(run, "child_runs", None) or [])
-    while queue:
-        child = queue.pop(0)
-        steps.append(
-            {
-                "run_id": str(child.id),
-                "name": getattr(child, "name", ""),
-                "run_type": getattr(child, "run_type", ""),
-                "start_time": _serialize_dt(getattr(child, "start_time", None)),
-                "end_time": _serialize_dt(getattr(child, "end_time", None)),
-                "duration_ms": _duration_ms(getattr(child, "start_time", None), getattr(child, "end_time", None)),
-                "status": getattr(child, "status", ""),
-                "error": getattr(child, "error", None),
-                "prompt_tokens": getattr(child, "prompt_tokens", None),
-                "completion_tokens": getattr(child, "completion_tokens", None),
-                "total_tokens": getattr(child, "total_tokens", None),
-                "inputs_preview": _preview(getattr(child, "inputs", None)),
-                "outputs_preview": _preview(getattr(child, "outputs", None)),
-            }
-        )
-        queue.extend(list(getattr(child, "child_runs", None) or []))
-    return {"run": serialize_run_summary(run), "steps": steps}

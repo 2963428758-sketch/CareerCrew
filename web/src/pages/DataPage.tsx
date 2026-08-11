@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Database, User, Brain, Activity, Building2, Wallet, MapPin, Pencil, Check, X, Upload, BookOpen, Trash2, ChevronDown, ChevronRight } from "lucide-react"
+import { Database, User, Brain, Building2, Wallet, MapPin, Pencil, Check, X, Upload, BookOpen, Trash2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -7,51 +7,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { useChatStore } from "@/store/chatStore"
-import type { RunDetail, RunStep, RunSummary } from "@/types"
-
-const RUN_NAME_LABELS: Array<[string, string]> = [
-  ["careercrew.match", "职位匹配"],
-  ["careercrew.resume", "简历定制"],
-  ["careercrew.interview.score", "面试评分"],
-  ["careercrew.consult", "会诊"],
-  ["careercrew.ingest", "知识库入库"],
-  ["careercrew.compaction", "记忆压缩"],
-  ["agent.job_matcher", "职位匹配官"],
-  ["agent.resume_advisor", "简历顾问"],
-  ["agent.interviewer", "面试官"],
-  ["agent.salary_negotiator", "薪资谈判师"],
-  ["agent.career_planner", "职业规划师"],
-]
-
-const RUN_TYPE_LABELS: Record<string, string> = {
-  llm: "LLM",
-  tool: "工具",
-  chain: "流程",
-  retriever: "检索",
-  prompt: "提示词",
-  agent: "Agent",
-}
-
-function runLabel(name: string): string {
-  const hit = RUN_NAME_LABELS.find(([prefix]) => name.startsWith(prefix))
-  return hit ? hit[1] : name
-}
-
-function stepLabel(type: string): string {
-  return RUN_TYPE_LABELS[type] ?? type
-}
-
-function fmtTime(iso: string | null): string {
-  if (!iso) return ""
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ""
-  return d.toLocaleString("zh-CN", { hour12: false })
-}
-
-function fmtDuration(ms: number | null): string {
-  if (ms == null) return ""
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
-}
 
 export default function DataPage() {
   return (
@@ -59,7 +14,7 @@ export default function DataPage() {
       <header className="flex h-16 shrink-0 items-center border-b px-6">
         <div>
           <h1 className="font-display text-xl font-semibold">数据看板</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">用户画像、情景记忆与调用轨迹</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">用户画像、情景记忆与知识库</p>
         </div>
       </header>
 
@@ -69,12 +24,10 @@ export default function DataPage() {
             <TabsList>
               <TabsTrigger value="profile" className="gap-1.5"><User className="h-3 w-3" />画像</TabsTrigger>
               <TabsTrigger value="memory" className="gap-1.5"><Brain className="h-3 w-3" />记忆</TabsTrigger>
-              <TabsTrigger value="traces" className="gap-1.5"><Activity className="h-3 w-3" />轨迹</TabsTrigger>
               <TabsTrigger value="knowledge" className="gap-1.5"><BookOpen className="h-3 w-3" />知识库</TabsTrigger>
             </TabsList>
             <TabsContent value="profile"><ProfilePanel /></TabsContent>
             <TabsContent value="memory"><MemoryPanel /></TabsContent>
-            <TabsContent value="traces"><TracesPanel /></TabsContent>
             <TabsContent value="knowledge"><KnowledgePanel /></TabsContent>
           </Tabs>
         </div>
@@ -380,109 +333,6 @@ function MemoryContent({ content }: { content?: string | Record<string, unknown>
         </div>
       ))}
     </div>
-  )
-}
-
-// ── 轨迹面板（倒序，最新在前）──
-
-function TracesPanel() {
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [details, setDetails] = useState<Record<string, RunDetail>>({})
-  const [detailErrors, setDetailErrors] = useState<Record<string, string>>({})
-  const { data, loading, error } = useFetch<{ runs: RunSummary[] }>("/api/runs?limit=100")
-
-  if (loading) return <Skeleton className="h-48 w-full" />
-  if (error) return <ErrorCard msg={error} />
-  if (!data || data.runs.length === 0) return <EmptyCard text="暂无追踪数据（跑一次对话后可见）" />
-
-  const toggle = async (runId: string) => {
-    if (expandedId === runId) {
-      setExpandedId(null)
-      return
-    }
-    setExpandedId(runId)
-    if (!details[runId] && !detailErrors[runId]) {
-      try {
-        const resp = await fetch(`/api/runs/${runId}`)
-        if (!resp.ok) {
-          const body = await resp.json().catch(() => null)
-          throw new Error(body?.detail || `HTTP ${resp.status}`)
-        }
-        const detail = (await resp.json()) as RunDetail
-        setDetails((d) => ({ ...d, [runId]: detail }))
-      } catch (e) {
-        setDetailErrors((m) => ({ ...m, [runId]: e instanceof Error ? e.message : String(e) }))
-      }
-    }
-  }
-
-  return (
-    <div className="space-y-1.5">
-      {data.runs.map((run) => {
-        const expanded = expandedId === run.run_id
-        const detail = details[run.run_id]
-        return (
-          <div key={run.run_id} className="rounded-md border bg-card text-xs">
-            <button
-              type="button"
-              onClick={() => toggle(run.run_id)}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40"
-            >
-              {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
-              <span className="text-muted-foreground">{fmtTime(run.start_time)}</span>
-              <Badge variant="outline" className="text-[11px]">{runLabel(run.name)}</Badge>
-              <Badge variant={run.status === "error" ? "destructive" : "secondary"} className="text-[11px]">{run.status}</Badge>
-              {run.total_tokens != null && <span className="text-muted-foreground">{run.total_tokens.toLocaleString()} tokens</span>}
-              {run.estimated_cost != null && <span className="text-muted-foreground">¥{run.estimated_cost}</span>}
-              <span className="ml-auto text-muted-foreground">{fmtDuration(run.duration_ms)}</span>
-            </button>
-            {expanded && (
-              <div className="border-t px-3 py-2">
-                {detailErrors[run.run_id] ? (
-                  <p className="text-destructive">加载失败：{detailErrors[run.run_id]}</p>
-                ) : !detail ? (
-                  <Skeleton className="h-24 w-full" />
-                ) : (
-                  <RunTimeline steps={detail.steps} />
-                )}
-              </div>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function RunTimeline({ steps }: { steps: RunStep[] }) {
-  if (steps.length === 0) {
-    return <p className="text-muted-foreground">该 run 无子步骤</p>
-  }
-  return (
-    <ol className="space-y-2">
-      {steps.map((step, i) => (
-        <li key={step.run_id || i} className="rounded border bg-muted/30 p-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="text-[10px]">{stepLabel(step.run_type)}</Badge>
-            <span className="font-medium">{step.name}</span>
-            {step.duration_ms != null && <span className="text-muted-foreground">{fmtDuration(step.duration_ms)}</span>}
-            {step.total_tokens != null && <span className="text-muted-foreground">{step.total_tokens} tokens</span>}
-            {step.status === "error" && <Badge variant="destructive" className="text-[10px]">error</Badge>}
-          </div>
-          {(step.inputs_preview || step.outputs_preview) && (
-            <details className="mt-1">
-              <summary className="cursor-pointer text-muted-foreground">输入/输出预览（已脱敏）</summary>
-              {step.inputs_preview && (
-                <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all">{step.inputs_preview}</pre>
-              )}
-              {step.outputs_preview && (
-                <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all">{step.outputs_preview}</pre>
-              )}
-            </details>
-          )}
-        </li>
-      ))}
-    </ol>
   )
 }
 

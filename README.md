@@ -6,7 +6,7 @@
 - **三层记忆**（仿 Hermes）：短期 Context Window / 情景 append-only 树 / 长期 User Model。
 - **自建 RAG（多模态）**：BGE-M3 三合一（dense+sparse+colbert）+ Contextual Chunking + Hybrid/RRF + bge-reranker + VLM 看图，向量库 Qdrant；PDF/图片/docx 走 MinerU 解析。
 - **HITL 闸门**：高 stakes 决策（投递/接 offer/谈薪）默认人工确认。
-- **可观测**：LangSmith 全链路追踪（LLM/工具/ReAct/HITL/RAG/记忆），默认脱敏上传；Web 前端"数据看板→轨迹"查看。
+- **可观测**：LangSmith 全链路追踪（LLM/工具/ReAct/HITL/RAG/记忆），默认脱敏上传，直接在 LangSmith 控制台查看。
 - **本地优先**：Qdrant / SQLite / JSONL 零外部服务；LLM/Rerank 走硅基流动 API。
 
 > 详细设计见 [DEV_SPEC.md](DEV_SPEC.md)（架构 / 目录树 / 排期 A1–N5 / ADR / 面试映射）。
