@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import { useEffect, useState, type ComponentType } from "react"
-import { MessageSquare, GraduationCap, FileText, Users, Database, Trash2, MessageCircle } from "lucide-react"
+import { MessageSquare, GraduationCap, FileText, Users, Database, Trash2, MessageCircle, BookOpen, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useChatStore } from "@/store/chatStore"
 import ChatPage from "@/pages/ChatPage"
@@ -8,19 +8,25 @@ import InterviewPage from "@/pages/InterviewPage"
 import ResumePage from "@/pages/ResumePage"
 import ConsultPage from "@/pages/ConsultPage"
 import DataPage from "@/pages/DataPage"
+import KnowledgePage from "@/pages/KnowledgePage"
+import MatcherPage from "@/pages/MatcherPage"
 
 const NAV = [
   { to: "/", label: "求职对话", icon: MessageSquare, end: true },
+  { to: "/matcher", label: "职位匹配", icon: Target },
   { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/resume", label: "简历优化", icon: FileText },
+  { to: "/knowledge", label: "知识库问答", icon: BookOpen },
   { to: "/consult", label: "会诊", icon: Users },
   { to: "/data", label: "数据看板", icon: Database },
 ]
 
 const PAGES: Record<string, ComponentType> = {
   "/": ChatPage,
+  "/matcher": MatcherPage,
   "/interview": InterviewPage,
   "/resume": ResumePage,
+  "/knowledge": KnowledgePage,
   "/consult": ConsultPage,
   "/data": DataPage,
 }

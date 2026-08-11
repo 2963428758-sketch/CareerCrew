@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Database, User, Brain, Building2, Wallet, MapPin, Pencil, Check, X, Upload, BookOpen, Trash2 } from "lucide-react"
+import { Database, User, Brain, Building2, Wallet, MapPin, Pencil, Check, X } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -24,11 +24,9 @@ export default function DataPage() {
             <TabsList>
               <TabsTrigger value="profile" className="gap-1.5"><User className="h-3 w-3" />画像</TabsTrigger>
               <TabsTrigger value="memory" className="gap-1.5"><Brain className="h-3 w-3" />记忆</TabsTrigger>
-              <TabsTrigger value="knowledge" className="gap-1.5"><BookOpen className="h-3 w-3" />知识库</TabsTrigger>
             </TabsList>
             <TabsContent value="profile"><ProfilePanel /></TabsContent>
             <TabsContent value="memory"><MemoryPanel /></TabsContent>
-            <TabsContent value="knowledge"><KnowledgePanel /></TabsContent>
           </Tabs>
         </div>
       </div>
@@ -347,141 +345,5 @@ function EmptyCard({ text }: { text: string }) {
         <Database className="mr-2 h-4 w-4" />{text}
       </CardContent>
     </Card>
-  )
-}
-
-// ── 知识库面板（上传 / 列表 / 删除）──
-
-interface KnowledgeDoc {
-  doc: string
-  source: string
-  points: number
-}
-
-interface KnowledgeStatus {
-  points: number
-  docs: KnowledgeDoc[]
-}
-
-function KnowledgePanel() {
-  const [status, setStatus] = useState<KnowledgeStatus | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState("")
-  const [files, setFiles] = useState<FileList | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [result, setResult] = useState<Record<string, unknown> | null>(null)
-  const [uploadError, setUploadError] = useState("")
-
-  const refresh = () => {
-    setLoading(true)
-    setError("")
-    fetch("/api/knowledge")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then((d) => setStatus(d))
-      .catch((e) => setError((e as Error).message))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => { refresh() }, [])
-
-  const handleUpload = async () => {
-    if (!files || files.length === 0) return
-    setUploading(true)
-    setUploadError("")
-    setResult(null)
-    const fd = new FormData()
-    fd.append("file", files[0])
-    try {
-      const resp = await fetch("/api/knowledge/upload", { method: "POST", body: fd })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
-      setResult(data)
-      setFiles(null)
-      refresh()
-    } catch (e) {
-      setUploadError((e as Error).message)
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const handleDelete = async (doc: string) => {
-    if (!window.confirm(`确定从知识库删除「${doc}」吗？删除后需重新上传才能恢复。`)) return
-    await fetch(`/api/knowledge/${encodeURIComponent(doc)}`, { method: "DELETE" })
-    refresh()
-  }
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">上传知识文档</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              type="file"
-              accept=".pdf,.png,.jpg,.jpeg,.docx,.pptx,.xlsx,.md,.markdown,.txt"
-              onChange={(e) => setFiles(e.target.files)}
-              className="h-9 max-w-sm text-sm"
-            />
-            <Button size="sm" onClick={handleUpload} disabled={uploading || !files || files.length === 0}>
-              <Upload className="mr-1 h-3.5 w-3.5" />
-              {uploading ? "解析入库中…" : "上传入库"}
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            支持 PDF / 图片 / DOCX / PPTX / XLSX / Markdown / TXT。PDF 与图片会先经 MinerU
-            抽取文本再向量化，约需 1-2 分钟，请耐心等待。
-          </p>
-          {uploading && <Skeleton className="h-4 w-64" />}
-          {result && (
-            <p className="text-xs font-medium text-green-600">
-              ✓ 入库成功：{String(result.filename)} → doc_id={String(result.doc_id)}，
-              {Number(result.points)} 个向量点
-            </p>
-          )}
-          {uploadError && <p className="text-xs font-medium text-destructive">上传失败：{uploadError}</p>}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">
-            库内文档 {status ? <span className="font-normal text-muted-foreground">（共 {status.points} 个向量点）</span> : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <Skeleton className="h-32 w-full" />
-          ) : error ? (
-            <p className="text-sm text-destructive">加载失败：{error}</p>
-          ) : !status || status.docs.length === 0 ? (
-            <EmptyCard text="知识库为空，先上传一份文档吧" />
-          ) : (
-            <div className="space-y-1.5">
-              {status.docs.map((doc) => (
-                <div key={doc.doc} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
-                  <BookOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{doc.doc}</p>
-                    <p className="truncate text-[11px] text-muted-foreground">
-                      {doc.source.split(/[\\/]/).pop() || doc.source} · {doc.points} 点
-                    </p>
-                  </div>
-                  <button
-                    className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                    onClick={() => handleDelete(doc.doc)}
-                    title={`删除 ${doc.doc}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
   )
 }

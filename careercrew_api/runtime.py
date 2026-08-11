@@ -294,9 +294,59 @@ class CareerCrewRuntime:
         ep.write(MemoryEntry(type="agent_response", content=result))
         return result
 
+    def run_knowledge_ask_stream(self, question: str, user_id: str,
+                                 cb: Callable[[str], None] | None = None) -> str:
+        """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
+
+        返回 ``{"content": str, "sources": list[dict]}``：
+        sources 为 agent 实际检索到的结构化片段（doc/source/score/text/image_path/page），
+        供前端标注来源并点击查看原文。
+        """
+        return traced_call(
+            self._run_knowledge_ask_stream_impl,
+            name="careercrew.knowledge.ask",
+            run_type="chain",
+            run_metadata={"endpoint": "knowledge.ask"},
+            question=question,
+            user_id=user_id,
+            cb=cb,
+        )
+
+    def _run_knowledge_ask_stream_impl(self, question: str, user_id: str,
+                                       cb: Callable[[str], None] | None = None) -> str:
+        attach_run_metadata(user_id=user_id, stage="knowledge")
+        from langchain_core.messages import HumanMessage
+
+        sources: list[dict] = []
+        seen: set[str] = set()
+
+        def _sink(r) -> None:
+            if r.id in seen:
+                return
+            seen.add(r.id)
+            sources.append({
+                "doc": str(r.metadata.get("doc", "")),
+                "source": str(r.metadata.get("source", "")),
+                "score": round(float(r.score), 3),
+                "text": r.text,
+                "image_path": r.image_path or "",
+                "page": r.page,
+            })
+
+        agent = self.new_knowledge_advisor(cb, rag_sink=_sink)
+        state = {
+            "thread_id": "knowledge", "user_id": user_id, "stage": "knowledge",
+            "user_intent": question,
+            "messages": [HumanMessage(content=question)],
+            "pending_action": None, "agent_outputs": {}, "target_companies": [],
+        }
+        agent.run(state)
+        content = (agent.last_result.content or "").strip()
+        return {"content": content, "sources": sources}
+
     # ── agent 工厂（每次 new 一套，避免 last_result 并发串写）──
 
-    def _make_tools(self, kind: str, episodic=None):
+    def _make_tools(self, kind: str, episodic=None, rag_sink=None):
         """构造 agent 工具集。episodic 为 None 时用默认单例。"""
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
         from careercrew_core.tools.internal.profile_update import make_profile_update_tool
@@ -321,6 +371,8 @@ class CareerCrewRuntime:
         elif kind == "salary" or kind == "planner":
             tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
             tools.register(ToolSpec(tool=make_profile_update_tool(self.user_model)))
+        elif kind == "knowledge":
+            tools.register(ToolSpec(tool=make_rag_query_tool(hs, sink=rag_sink)))
         return tools
 
     def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -350,6 +402,16 @@ class CareerCrewRuntime:
             max_iterations=15, stream_callback=cb,
         )
 
+    def new_knowledge_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
+                              rag_sink=None):
+        self._ensure_heavy()
+        from careercrew_core.agents.knowledge_advisor import KnowledgeAdvisor
+
+        return KnowledgeAdvisor(
+            llm=self.llm, tools=self._make_tools("knowledge", episodic=episodic, rag_sink=rag_sink),
+            max_iterations=15, stream_callback=cb,
+        )
+
     def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
         """按名字建会诊 agent。"""
         self._ensure_heavy()
@@ -367,6 +429,12 @@ class CareerCrewRuntime:
                 llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
                 max_iterations=15, stream_callback=cb,
             )
+        if name == "job_matcher":
+            return self.new_job_matcher(cb, episodic=episodic)
+        if name == "resume_advisor":
+            return self.new_resume_advisor(cb, episodic=episodic)
+        if name == "interviewer":
+            return self.new_interviewer(cb, episodic=episodic)
         raise ValueError(f"未知会诊 agent: {name}")
 
     # ── 直通方法 ──
@@ -430,13 +498,22 @@ class CareerCrewRuntime:
             ).parse(path)
         return parsed.to_text()
 
-    def ingest_document(self, path: str, metadata: dict | None = None) -> dict:
-        """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。"""
+    def ingest_document(
+        self,
+        path: str,
+        metadata: dict | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> dict:
+        """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。
+
+        progress_cb(stage, progress) 可选进度回调：stage ∈ parse/vectorize/store，
+        progress ∈ [0, 1]（阶段边界处的真实进度，非秒级平滑值）。
+        """
         self._ensure_heavy()
         from pathlib import Path
 
         p = Path(path)
-        n = self.ingest_pipeline.ingest_file(p, metadata=metadata)
+        n = self.ingest_pipeline.ingest_file(p, metadata=metadata, progress_cb=progress_cb)
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
     def delete_document(self, doc_id: str) -> int:

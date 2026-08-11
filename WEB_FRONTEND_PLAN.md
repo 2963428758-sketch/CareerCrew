@@ -106,7 +106,8 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 | POST | /api/resume/generate | {user_resume, jd?, thread_id?, user_id?} | **是** | 简历顾问流式优化 |
 | POST | /api/consult | {question, agents?, user_id?} | **是** | 并行观点→synthesis |
 | GET | /api/knowledge | – | 否 | 库状态{points, docs}(store.count/list_docs) |
-| POST | /api/knowledge/upload | multipart file | 否 | **上传入库**(md 文本路;PDF/图片/docx/pptx/xlsx 走 MinerU) |
+| POST | /api/knowledge/upload | multipart file | 否 | **异步上传入库**：202 返回 {job_id}，后台入库；PDF/图片/docx/pptx/xlsx 走 MinerU |
+| GET | /api/knowledge/upload/{job_id} | – | 否 | 任务进度 {status, stage, progress, error, result}（前端轮询渲染真实进度条） |
 | DELETE | /api/knowledge/{doc_id} | – | 否 | 删除文档全部向量点 |
 
 > 追踪查看**无 HTTP 接口**：`GET /api/traces` 已移除，直接在 LangSmith 控制台查看，

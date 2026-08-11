@@ -70,3 +70,25 @@ def test_consult_single_agent(client, fake_runtime):
     events = [json.loads(l) for l in lines]
     agent_starts = [e for e in events if e["type"] == "agent_start"]
     assert len(agent_starts) == 1
+
+
+@pytest.mark.web
+def test_consult_all_five_agents(client):
+    """会诊放开全部 5 个业务 agent：job_matcher / resume_advisor / interviewer 可勾选。"""
+    resp = client.post("/api/consult", json={
+        "question": "30K 字节跳动 offer 要不要接？",
+        "agents": ["job_matcher", "resume_advisor", "interviewer", "salary_negotiator", "career_planner"],
+    })
+    assert resp.status_code == 200
+    lines = [l for l in resp.text.strip().split("\n") if l.strip()]
+    events = [json.loads(l) for l in lines]
+
+    agent_starts = [e for e in events if e["type"] == "agent_start"]
+    agent_ends = [e for e in events if e["type"] == "agent_end"]
+    assert len(agent_starts) == 5
+    assert len(agent_ends) == 5
+
+    done = events[-1]
+    assert done["type"] == "done"
+    for name in ("job_matcher", "resume_advisor", "interviewer", "salary_negotiator", "career_planner"):
+        assert name in done["opinions"]

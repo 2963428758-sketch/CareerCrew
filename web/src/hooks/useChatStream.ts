@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react"
-import type { StreamEvent, StreamStatus } from "@/types"
+import type { KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
 
 /**
  * 核心 hook：fetch POST + ReadableStream 读 NDJSON，按行解析事件。
@@ -16,6 +16,7 @@ export function useChatStream() {
   const [stage, setStage] = useState<string>("")
   const [doneContent, setDoneContent] = useState("")
   const [opinions, setOpinions] = useState<Record<string, string>>({})
+  const [doneSources, setDoneSources] = useState<KnowledgeSource[]>([])
   const [errorMsg, setErrorMsg] = useState("")
   /** 流式中 2 秒无新 chunk → true（区分初始化 vs 工具调用） */
   const [thinking, setThinking] = useState(false)
@@ -29,6 +30,7 @@ export function useChatStream() {
     setStage("")
     setDoneContent("")
     setOpinions({})
+    setDoneSources([])
     setErrorMsg("")
     setThinking(false)
     setStatus("idle")
@@ -55,6 +57,7 @@ export function useChatStream() {
     setStage("")
     setDoneContent("")
     setOpinions({})
+    setDoneSources([])
     setErrorMsg("")
     setThinking(false)
     setStatus("streaming")
@@ -119,6 +122,7 @@ export function useChatStream() {
             } else if (evt.type === "done") {
               setDoneContent(evt.content)
               if (evt.opinions) setOpinions(evt.opinions)
+              if (evt.sources) setDoneSources(evt.sources)
               setStatus("done")
             } else if (evt.type === "error") {
               setErrorMsg(evt.message)
@@ -156,6 +160,7 @@ export function useChatStream() {
     stage,
     doneContent,
     opinions,
+    doneSources,
     errorMsg,
     /** 流式中 2 秒无新 chunk → true */
     thinking,

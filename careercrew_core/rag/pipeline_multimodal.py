@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -89,17 +90,29 @@ class MultimodalIngestionPipeline:
             timeout=self._loader_timeout,
         )
 
-    def ingest_text(self, text: str, source: str = "", metadata: dict | None = None) -> int:
+    def ingest_text(
+        self,
+        text: str,
+        source: str = "",
+        metadata: dict | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> int:
         """纯文本入库（根 run careercrew.ingest，Contextualizer 逐 chunk LLM 不刷配额）。"""
         return traced_call(
             self._ingest_text_impl,
             name="careercrew.ingest",
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
-            text=text, source=source, metadata=metadata,
+            text=text, source=source, metadata=metadata, progress_cb=progress_cb,
         )
 
-    def _ingest_text_impl(self, text: str, source: str = "", metadata: dict | None = None) -> int:
+    def _ingest_text_impl(
+        self,
+        text: str,
+        source: str = "",
+        metadata: dict | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> int:
         """纯文本路径：切分 -> contextualize -> BGE-M3 -> upsert（无视觉向量）。"""
         chunks = self._chunker.chunk(text, source=source, metadata=metadata)
         doc_id = Path(source).stem if source else "doc"
@@ -108,6 +121,8 @@ class MultimodalIngestionPipeline:
             if self._contextual and self._contextualizer:
                 c = self._contextualizer.contextualize(c, text)
             texts_to_embed.append(c.contextualized_text or c.text)
+        if progress_cb:
+            progress_cb("vectorize", 0.6)
         emb = self._embedding.encode(texts_to_embed)
         records = [
             VectorRecord(
@@ -120,30 +135,51 @@ class MultimodalIngestionPipeline:
             for i, c in enumerate(chunks)
         ]
         if records:
+            if progress_cb:
+                progress_cb("store", 0.95)
             self._store.upsert(records)
         return len(records)
 
-    def ingest_file(self, path: str | Path, metadata: dict | None = None) -> int:
+    def ingest_file(
+        self,
+        path: str | Path,
+        metadata: dict | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> int:
         """文件入库（根 run careercrew.ingest）。"""
         return traced_call(
             self._ingest_file_impl,
             name="careercrew.ingest",
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
-            path=path, metadata=metadata,
+            path=path, metadata=metadata, progress_cb=progress_cb,
         )
 
-    def _ingest_file_impl(self, path: str | Path, metadata: dict | None = None) -> int:
+    def _ingest_file_impl(
+        self,
+        path: str | Path,
+        metadata: dict | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> int:
         """文件入库：md/txt 走文本路径；其余走 MinerU 多模态路径。"""
         p = Path(path)
         if p.suffix.lower() in _TEXT_EXTS:
             doc = MarkdownLoader().load(str(p))
             meta = {**doc.metadata, **(metadata or {})}
-            return self.ingest_text(doc.text, source=str(p), metadata=meta)
+            return self.ingest_text(doc.text, source=str(p), metadata=meta, progress_cb=progress_cb)
+        if progress_cb:
+            progress_cb("parse", 0.05)
         parsed = self._make_loader().parse(p)
-        return self._ingest_parsed(parsed, metadata)
+        if progress_cb:
+            progress_cb("vectorize", 0.6)
+        return self._ingest_parsed(parsed, metadata, progress_cb=progress_cb)
 
-    def _ingest_parsed(self, parsed: ParsedDocument, metadata: dict | None = None) -> int:
+    def _ingest_parsed(
+        self,
+        parsed: ParsedDocument,
+        metadata: dict | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> int:
         meta = metadata or {}
         base_meta = {"doc": parsed.doc_id, "source": meta.get("source", "") or parsed.metadata.get("source_path", "")}
         doc_text = "\n\n".join(pg.markdown for pg in parsed.pages)
@@ -215,6 +251,8 @@ class MultimodalIngestionPipeline:
 
         records = [r for r in records if len(r.dense) > 0]
         if records:
+            if progress_cb:
+                progress_cb("store", 0.95)
             self._store.upsert(records)
         return len(records)
 

@@ -83,3 +83,11 @@ class ConsultRequest(BaseModel):
     question: str
     agents: list[str] = Field(default_factory=lambda: ["salary_negotiator", "career_planner"])
     user_id: str = "u_001"
+
+
+# ── Knowledge（知识库问答）──
+
+
+class KnowledgeAskRequest(BaseModel):
+    question: str = Field(min_length=1)
+    user_id: str = "u_001"
