@@ -202,6 +202,8 @@ def list_runs(
     runs = list(_client().list_runs(project_name=project, is_root=True, limit=fetch))
     out: list[dict] = []
     for run in runs:
+        if getattr(run, "parent_run_id", None) is not None:
+            continue  # 服务端 is_root=True 已过滤，Python 侧兜底
         meta = dict(getattr(run, "metadata", None) or {})
         if user_id and meta.get("user_id") != user_id:
             continue
