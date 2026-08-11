@@ -6,11 +6,12 @@
 - embedding.encode 加锁；user_model 写操作 per-user lock
 - 初始化放首请求惰性触发（非 lifespan），uvicorn 秒起
 
-复用 ``careercrew_cli/app.py`` 的 ``_build_job_cycle`` 组装逻辑，去掉 Renderer 依赖。
+组装逻辑与 ``careercrew_cli/app.py`` 的 ``_build_job_cycle`` 保持一致（去掉 Renderer 依赖）。
 """
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 
 
 class RuntimeInitError(RuntimeError):
-    """运行时初始化失败（如 Milvus DataDirLocked），应映射为 503。"""
+    """运行时初始化失败（重组件加载 / 向量库连接失败等），应映射为 503。"""
 
 
 class CareerCrewRuntime:
@@ -61,7 +62,7 @@ class CareerCrewRuntime:
     # ── 重组件初始化 ──
 
     def _ensure_heavy(self) -> None:
-        """惰性初始化重组件（首调 10-30s）。捕获 Milvus DataDirLocked -> 503。"""
+        """惰性初始化重组件（首调 10-30s）。初始化失败异常映射 503（RuntimeInitError）。"""
         if self._initialized:
             return
         with self._lock:
@@ -88,8 +89,8 @@ class CareerCrewRuntime:
             except Exception as e:
                 if "DataDirLocked" in type(e).__name__ or "DataDirLocked" in str(e):
                     raise RuntimeInitError(
-                        "Milvus 数据目录被锁（可能有残留进程占用）。"
-                        "请结束所有占用 data/db 的进程后重试。"
+                        "向量库初始化失败（数据目录被占用或 Qdrant 连接不可用）。"
+                        "请检查 Qdrant 服务与 data/db 占用后重试。"
                     ) from e
                 raise
 
@@ -118,9 +119,10 @@ class CareerCrewRuntime:
             self.ingest_pipeline = pipe
 
             # 知识库入库（首次：data/uploads 下的 PDF/图片/docx；data/knowledge 不参与）
+            uploads_dir = Path(__file__).resolve().parents[1] / "data" / "uploads"
             if store.count() == 0:
                 ingest_files = sorted(
-                    p for p in Path("data/uploads").glob("*")
+                    p for p in uploads_dir.glob("*")
                     if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
                 )
                 for f in ingest_files:
@@ -158,12 +160,14 @@ class CareerCrewRuntime:
     def get_threads(self, user_id: str = "u_001") -> list[dict]:
         """列出用户的所有对话线程（按修改时间倒序）。
 
-        只读文件系统，不需要初始化重栈（BGE-M3/Milvus）。
+        只读文件系统，不需要初始化重栈（BGE-M3/Qdrant）。
         """
         from careercrew_core.state.settings import load_settings
         settings = self.settings or load_settings()
-        import os
-        transcript_dir = Path(settings.memory.episodic.transcript_dir) / user_id
+        base = Path(settings.memory.episodic.transcript_dir).resolve()
+        transcript_dir = (base / user_id).resolve()
+        if not transcript_dir.is_relative_to(base):
+            return []  # 非法 user_id（路径穿越）直接视为无线程
         if not transcript_dir.exists():
             return []
         threads = []

@@ -2,8 +2,14 @@
 
 > 本文档合并两个工作流（Part A：Agent 执行链迁移；Part B：LangSmith 数据追踪），
 > 因为它们共享改动面（BaseAgent / ReactLoop / runtime / settings / tests），合并为一次迭代落地。
-> 前置条件：多模态 RAG 改造（`MULTIMODAL_RAG_SPEC.md`）先提交——工作区已有未提交实现，
-> 本规格的改动在其之上叠加。
+> 前置条件：多模态 RAG 改造（`MULTIMODAL_RAG_SPEC.md`）先提交。
+
+> **实施后定稿（2026-08-11）**：Part A/B 均已落地并提交（`05fc568` 及后续）。
+> 相对本文初稿的实际偏差已同步修正到正文：读取侧不再提供 `/api/runs` HTTP 接口
+> （改在 LangSmith 控制台直接查看，`list_runs` 仅作脚本只读 helper，见 B4）；
+> `consult_stream` / `route_llm` / `query_decomposer` / `extract_profile_from_intent` /
+> `vlm_answer` 回退等游离 LLM 调用未包根 run（见 B3 现状盘点）；`AgentResult` 保留
+> 轻量 `ReactIteration` 明细（A3.3）。其余各节描述即当前实现。
 
 ## 0. 背景、范围与主路径
 
@@ -23,7 +29,8 @@
 
 - A：只迁 agent 执行链；RAG 多模态管线、记忆、评估保持自建。
 - B：保留对外契约——`last_result.{content, stopped_reason, tool_calls_total, iterations}`，
-  runtime / job_cycle / SSE / 前端零改动；逐轮 `ReactIteration` 明细丢弃，详细过程交给 LangSmith。
+  runtime / job_cycle / SSE / 前端零改动；`AgentResult` 保留轻量 `ReactIteration` 明细
+  （iteration / content / tool_calls / tool_results），详细过程交给 LangSmith。
 - HITL：本次不接入 agent 执行流（`requires_confirmation` 工具保持现状），预留 middleware 接缝。
 - 主路径：**Web 前端 + FastAPI（SSE 流式）**。CLI 不在验证范围，但保留可运行
   （`test_smoke_imports` 依赖 CLI 入口）。
@@ -139,8 +146,8 @@ langsmith:
 
 删除原 `observability` 与 `dashboard` 段；pydantic 模型同步替换。语义校验沿用现有哲学：
 `enabled: true` 且 key 缺失/未解析 → fail-fast（`SettingsError`，信息含字段路径）。
-**注意：`.env` 当前没有 `LANGSMITH_API_KEY`，合入后首次启动必须先提供 key**；
-`.env` 已 gitignore，实现时不回显 key 原文。
+注意：`.env` 已提供 `LANGSMITH_API_KEY`（`.env` 已 gitignore，实现不回显 key 原文）；
+缺失或未解析时按上述语义校验 fail-fast。
 
 ### B2 configure_langsmith 与 anonymizer（关键机制）
 
@@ -173,33 +180,41 @@ langsmith:
 |---|---|
 | `BaseAgent.run` | `@traceable(name="agent.<name>")`，附 `user_id/thread_id/stage` metadata，输出附迭代/工具数/停止原因摘要 |
 | `CareerCrewRuntime.run_match_stream` / `run_resume_stream` | **根 run 加在这两个方法上，不是 FastAPI handler**（SSE 端点先返回 `StreamingResponse`，实际工作在线程里异步跑；threading 会复制 contextvars，跨线程追踪成立） |
-| `CareerCrewRuntime.consult_stream` | 同上（worker 线程内 agent 与 `_synthesize` 成为子 run） |
 | `CareerCrewRuntime.score_answer` | 根 run |
 | compaction 的 `Compactor.compact` | 子 run（`@traceable(name="careercrew.compaction")`） |
 | ingest 整体（`MultimodalIngestionPipeline.ingest_file/ingest_text`） | 根 run `careercrew.ingest`，**Contextualizer 的逐 chunk LLM 调用必须在其上下文内**，避免批量入库时每 chunk 一条根 run 刷爆配额 |
+| `CareerCrewRuntime.consult_stream` | **未单独包根 run**（现状）：每个会诊 agent 的 `run()` 各自成根 run（`agent.<name>`），`_synthesize` 不埋点 |
 
-**游离 LLM 调用清单（必须包裹或纳入上下文）**：runtime 标题生成（`run_match_stream` 内，
-随方法级根 run 自动覆盖）、`score_answer`、`consult._synthesize`、
-`job_matcher.extract_profile_from_intent`（job_cycle 调用，需包根 run）、
-`agent_router.route_llm` / `query_decomposer`（agentic RAG，使用时包根 run）、
-`vlm_answer` 回退文本生成、compaction 两处。
+**游离 LLM 调用清单（现状盘点）**：
+- 已覆盖：runtime 标题生成（`run_match_stream` 内，随方法级根 run 自动覆盖）、
+  `score_answer`、compaction 两处（`careercrew.compaction` 子 run）、ingest 全流程。
+- 未覆盖（记录在案）：`consult._synthesize`（会诊综合）、
+  `job_matcher.extract_profile_from_intent`（job_cycle 匹配前刷新画像）、
+  `agent_router.route_llm` / `query_decomposer`（Agentic RAG）、
+  `vlm_answer` 回退文本生成。这些 LLM 调用不落在根 run 上下文内，LangSmith 会把它们
+  记成独立根 run（低频路径，配额影响可接受）；后续如需收敛可逐个包 `traced_call`。
 
 **追踪范围声明（v1 明确排除）**：`read_image`、`vlm_answer` 的 VLM 调用、VL reranker
 走裸 OpenAI/requests（非 LangChain），LangSmith 不可见——v1 不包（数据不外泄，也不可观测），
 如需后续加包 `@traceable`（base64 图片会经过 anonymizer 的 max_chars 截断）。
 
-### B4 读取 API 与前端
+### B4 读取侧：LangSmith 控制台 + 脚本（无 HTTP 读取接口）
 
-- `GET /api/runs?limit=&user_id=&thread_id=&stage=` → `{runs: RunSummary[]}`
-  （run_id、name、start/end、duration_ms、status、tokens、estimated_cost——成本按内置价格表，
-  未知模型 null；按 metadata 过滤根 run，limit 上限 200）。
-- `GET /api/runs/{run_id}` → `{run, steps}`（`read_run(load_child_runs=True)` 展平时间线，
-  input/output 预览服务端截断 500 字符）；LangSmith 不可用 → 503 可读错误。
-- 删除旧 `GET /api/traces`；前端 `web/src/pages/DataPage.tsx` TracesPanel 改读新接口：
-  run 列表卡片（时间/阶段标签/状态/token/成本）+ 点击展开时间线（LLM/工具/agent 步骤、
-  耗时、掩码后的输入输出预览）；`types.ts` 新增 `RunSummary/RunStep/RunDetail`。
-- `tests/api/conftest.py` 的 FakeRuntime 新增 `list_runs` / `get_run_detail`；
-  `test_data_api.py` 的 `test_traces_endpoint` 替换为 `/api/runs` 用例（含 404/503 分支）。
+**实施后定稿**：原计划的 `GET /api/runs` / `GET /api/runs/{run_id}` 读取接口与前端
+TracesPanel **均已移除**（`5167be1`）——追踪明细直接在 LangSmith 控制台查看
+（含 anonymizer 脱敏后的 input/output、LLM/工具/agent 子 run 时间线），不再自建读取 API。
+保留的读取能力：
+
+- `careercrew_core/tracing/langsmith.py` 的 `list_runs(limit, user_id, thread_id, stage)`
+  与 `serialize_run_summary` 作为核心 helper 保留（按 metadata 过滤根 run，limit 上限 200），
+  仅供脚本消费：`scripts/langsmith_smoke.py --list`（只读列根 run）、
+  `scripts/eval_langsmith.py --business`（把业务漏斗统计挂到最新根 run 的 feedback）。
+- 前端 `web/src/pages/DataPage.tsx` 无追踪 tab（当前三个 tab：画像 / 记忆 / 知识库）；
+  `web/src/types.ts` 不包含 `RunSummary/RunStep/RunDetail`。
+- `tests/api/conftest.py` 的 FakeRuntime 无 `list_runs` / `get_run_detail`；
+  `test_data_api.py` 不含 `/api/runs` 用例；LangSmith 相关单测只覆盖
+  `list_runs` 过滤与 `serialize_run_summary`（`tests/unit/test_langsmith_tracer.py`）。
+- 读取侧缺 `LANGSMITH_API_KEY` 时抛可读 `RuntimeError`（脚本输出错误信息，无 HTTP 503）。
 
 ### B5 评估闭环
 
@@ -210,6 +225,8 @@ langsmith:
 - 新增 `scripts/langsmith_smoke.py`：验证连接、创建合成 run 并回读断言脱敏生效（不启动重栈）。
 
 ### B6 迁移与清理
+
+> **实施状态（2026-08-11）**：以下清理均已落地并提交；本节保留为完成清单。
 
 - 删除 `careercrew_core/tracing/trace.py` **及 `careercrew_core/tracing/__init__.py` 的
   `TraceRecorder` 导出**（删文件时同步改，否则 import 断裂）；删除 `tests/unit/test_trace.py`。
@@ -235,7 +252,7 @@ langsmith:
 
 ### C2 实施顺序
 
-1. **先提交多模态 RAG 改造**（工作区未提交实现，与本文档共享 runtime/app.py/settings/tests 改动面）。
+1. **先提交多模态 RAG 改造**（`1a59ce5`，与本文档共享 runtime/app.py/settings/tests 改动面）。
 2. Part A（agent 执行链迁移）——独立可测，先落地并全绿。
 3. Part B（LangSmith）——在 A 之上叠加（tracer 参数移除已由 A 完成）。
 
@@ -246,7 +263,7 @@ langsmith:
 | create_agent 行为与手写循环有细微差异（如流式 token 时机） | 测试断言 token 序列与最终 content；异常时回退 `stream_callback` 直通模式 |
 | LangGraph 版本升级改变事件/metadata 结构 | 流式适配层单点封装，事件解析隔离在一处 |
 | max_iterations middleware 计数与真实迭代不一致 | 单测固定模型永不停止调工具的场景，断言 `_it` 与 ToolMessage 数一致 |
-| LangSmith 不可用/key 无效 | 写入静默降级；读取接口 503 可读错误 |
+| LangSmith 不可用/key 无效 | 写入静默降级；读取侧（scripts）缺 key 抛可读错误（无 HTTP 读取接口） |
 | 5000 条/月配额超限 | 根 run 纪律清单 + ingest 单根 run；必要时降采样（`tracing_sampling_rate`） |
 | anonymizer 漏掉嵌套结构 | 递归处理所有字符串叶子 + `langsmith_smoke.py` 回读断言 |
 
@@ -255,25 +272,25 @@ langsmith:
 **单元**：
 - Part A：agent 执行链（A4 用例清单）、AgentResult 字段、middleware 短路。
 - Part B：`test_langsmith_tracer.py`（masking 截断/打码、settings 解析、key 缺失 fail-fast、
-  **get_cached_client 预置后自动追踪 run 的 input 被掩码**、run 列表/详情序列化与根 run 过滤，
-  mock `langsmith.Client`）；更新 `test_config_loading.py`、`test_react_loop.py`、
-  `test_base_agent.py`（移除 tracer 参数）。
+  **get_cached_client 预置后自动追踪 run 的 input 被掩码**、`list_runs` 根 run 过滤与
+  `serialize_run_summary`，mock `langsmith.Client`）；更新 `test_config_loading.py`、
+  `test_base_agent.py`（移除 tracer 参数，改 create_agent fake 驱动）。
 
-**API**：`/api/runs` + `/api/runs/{id}`（FakeRuntime，404/503 分支）；
-`test_data_api.py` 的 `/api/traces` 用例替换；dashboard smoke 移除 traces/页面导入断言。
+**API**：无读取接口（`/api/traces` 与 `/api/runs` 均已删除）；`test_data_api.py` 仅保留
+health/profile/memory 用例；dashboard smoke 移除 traces/页面导入断言。
 
-**前端**：`npm run lint` + `npm run build` 通过；手工验证轨迹 tab 列表、展开时间线、
-空态与错误态。
+**前端**：`npm run lint` + `npm run build` 通过；DataPage 无轨迹 tab（画像 / 记忆 / 知识库）。
 
 **集成（手动，需真实 key）**：`scripts/langsmith_smoke.py` 验证脱敏；
 `scripts/eval_langsmith.py` 跑通并在 LangSmith UI 看到 dataset 与 feedback；
-真实 match 请求后 `/api/runs` 可见且不含简历全文。
+真实 match 请求后在 LangSmith 控制台（或 `scripts/langsmith_smoke.py --list`）可见根 run，
+且不含简历全文。
 
 ## 假设与默认
 
 - 免费档 5000 traces/月按"一次用户请求=一条根 run"控制，子 run 不额外计费。
-- LangSmith 不可用或 key 无效：写入静默降级不阻塞业务；读取接口 503。
+- LangSmith 不可用或 key 无效：写入静默降级不阻塞业务；读取侧（scripts）抛可读错误。
 - 默认脱敏开启，可经 `settings.yaml` 关闭（完整上传排查用）。
 - 主路径为 Web 前端 + API；CLI 保留可运行但不作为验证目标。
 - 多模态 RAG 改造先提交；Part A、Part B 同一次迭代落地。
-- `DEV_SPEC.md` 不改；`logs/traces.jsonl` 历史文件只归档不删除。
+- `logs/traces.jsonl` 历史文件只归档不删除。

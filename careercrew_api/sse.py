@@ -1,6 +1,7 @@
 """SSE 桥：线程+queue -> NDJSON 生成器（方案 B，零 core 改动）。
 
-复用现有同步 ``stream_callback`` 接缝（react_loop.py L107-128）：agent 在后台线程跑，
+复用现有同步 ``stream_callback`` 接缝（``careercrew_ai/agents/langchain_agent.py``
+run_agent 的流式适配）：agent 在后台线程跑，
 callback 把 chunk 推入 queue，生成器按行 yield NDJSON 事件。
 
 事件协议（所有流式端点统一）::

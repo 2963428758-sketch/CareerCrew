@@ -1,6 +1,6 @@
 """情景记忆向量索引（I1）。
 
-entry -> embed(BGE-M3) -> Milvus(careercrew_episodic)；query -> 检索 -> 回 episodic 取完整条目。
+entry -> embed(BGE-M3) -> Qdrant(careercrew_episodic)；query -> 检索 -> 回 episodic 取完整条目。
 """
 from __future__ import annotations
 

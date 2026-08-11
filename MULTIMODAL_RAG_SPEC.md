@@ -88,7 +88,8 @@ transformers 4.57.6、FlagEmbedding（BGE-M3，CPU）、mineru 3.4.4[pipeline] +
 （2.4GB）、qdrant-client 1.19.0、pymupdf；Qdrant 1.19.0 已作为 Docker 服务常驻。
 **需变更**：`mcp` 2.0.0 → 降级 `mcp>=1.20,<2`（R1）；卸载 pymilvus / markitdown。
 可选但非必需：flash-attn（Windows 无官方轮子，v1 不做）；ColQwen/SigLIP2 已下载但
-运行时不用（v1.2 移除视觉检索）。
+运行时不用（v1.2 移除视觉检索）。**实施后（v1.3）**：mineru / colpali-engine / peft
+亦不在 `pyproject.toml` 依赖内（云端 API 用 `requests`，本地 loader 仅环境可选回退）。
 
 **目标架构（v1.2）**：文档经 MinerU 解析为「页面文本 + 对象文本（OCR/Markdown）+
 页面图/对象图路径」→ 文本统一用 BGE-M3 编码 dense+sparse → 写入 Qdrant（唯一向量库）
@@ -148,8 +149,9 @@ vlm:
 
 ### 向量层（`careercrew_ai/vector_store/qdrant_store.py`）
 
-实现 `BaseVectorStore` 契约 + `count()` + `query_visual()`；删除 `milvus_store.py`、
-`chroma_store.py` 及工厂注册（`create_vector_store` 只留 fake/qdrant 两路）。
+实现 `BaseVectorStore` 契约 + `count()` + `list_docs()`（按 `payload.doc` 聚合列库内
+文档，知识库管理用）；删除 `milvus_store.py`、`chroma_store.py` 及工厂注册
+（`create_vector_store` 只留 fake/qdrant 两路）。
 
 **Collection `careercrew_mm`**（点 = 一个页面单元或对象单元，v1.2 纯文本双向量）：
 
@@ -176,29 +178,39 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
   `text_sparse`，各取 top_m）→ 客户端 `rrf_fuse(weights=...)` 融合 → 返回
   `QueryResult`（含 `image_path/type/page` 字段，默认值保证旧构造兼容）。
 - `query_routes(dense, sparse, top_m, filters)`：返回各路原始 top_m 供客户端加权融合。
-- `get_by_ids`：`with_vectors=True` 回读 dense/sparse/visual 到 `VectorRecord`。
+- `get_by_ids`：`with_vectors=True` 回读 dense/sparse 到 `VectorRecord`（schema 无视觉向量）。
 - `count()`：按 collection 统计（runtime/CLI 的 `store.count()==0` 首启判断继续可用）。
 - `delete_by_metadata(filters)`：支持 `doc/source/type/page` 组合过滤。
 - `BaseVectorStore` 契约本身不变（记忆系统兼容）；`FakeVectorStore` 补 `count()`。
 
 ### 解析与入库
 
-新增 `careercrew_core/rag/loaders/mineru_loader.py` 与
-`careercrew_core/rag/pipeline_multimodal.py`（`MultimodalIngestionPipeline`）。
+新增 `careercrew_core/rag/loaders/mineru_loader.py`（本地子进程）、
+`mineru_api_loader.py`（云端 API，v1.3 默认）、`mineru_common.py`（产物组装共用）
+与 `careercrew_core/rag/pipeline_multimodal.py`（`MultimodalIngestionPipeline`）。
+按 `rag.loaders.provider` 路由：
 
-- **MinerU 子进程**：`mineru -p <file> -o <output_dir>/<doc_id> -b pipeline --method auto
-  -l ch`；解析产物含每页渲染图、每页 Markdown、`content_list.json`（对象块：
-  表格 Markdown + 图/表裁剪图，带 bbox）。解析失败记录 `doc_type=error` 并跳过，
+- **`api`（默认，v1.3）**：`MinerUApiLoader` 走 MinerU 官方精准解析 API
+  （`file-urls/batch` 上传 → 轮询 `extract-results/batch` → 下载 zip 解压），
+  本机零推理负载；`api_key`（`MINERU_API_KEY`）必填，`poll_interval` / `timeout`
+  控制轮询与超时，上传/轮询/下载带指数退避重试，zip 解压做路径穿越防护。
+- **`local`（可选回退）**：`MinerULoader` 以独立子进程跑
+  `mineru -p <file> -o <output_dir>/<doc_id> -b pipeline --method <method> -l ch`。
+- 两种 loader 产物结构一致：每页渲染图、每页 Markdown、`content_list.json`
+  （对象块：表格 Markdown + 图/表裁剪图，带 bbox），组装逻辑在 `mineru_common.py`
+  共用。解析失败统一 `ParsingError` → 调用方记录 `doc_type=error` 并跳过，
   不中断批量入库。
 - **ParsedDocument 契约**：
   `pages[{page_no, image_path, markdown}]`、
   `objects[{page_no, image_path, text, bbox}]`。
-- **编码**：页面/对象文本 → Contextualizer（LLM 文档级上下文前缀，仅用于 embedding，
-  原 chunker 逻辑保留）→ BGE-M3 dense+sparse；页面图/对象图 → ColQwen2.5
-  （base+adapter，GPU bf16，`batch_size` 从 1 起调）→ 多向量；
+- **编码（v1.2/v1.3 定稿）**：页面/对象文本 →（可选 Contextualizer，LLM 文档级
+  上下文前缀，仅用于 embedding；启用与否由 `settings.rag.chunking.contextual` 决定，
+  运行时首启入库当前固定关闭）→ BGE-M3 dense+sparse；**图片内容由 MinerU 抽取为
+  文本（OCR/Markdown）后统一走 BGE-M3 文本向量，检索侧无任何本地视觉模型**；
+  页面图/对象图路径保留在 payload，回答阶段由 Qwen3-VL-8B API 看图生成。
   合并 upsert 到 `careercrew_mm`。
 - `ingest_text` 保留：纯文本走原路径（Markdown 直读 + 切分 + 上下文 + BGE-M3），
-  visual 向量置空（不建 visual 字段或空 multivector，按实现约定二选一）。
+  schema 无视觉向量（文本双向量与文件路径一致）。
 - `scripts/ingest_knowledge.py` 与 API/CLI 首启自动入库改调新管线；语料默认
   `data/uploads/*.pdf/png/docx`（知识库 = 用户上传的简历/文档；`data/knowledge`
   不参与入库）。
@@ -211,9 +223,10 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
 - **文本查询**：BGE-M3 编 query（dense+sparse）→ 两路 prefetch（各 top_m=30）→
   客户端加权 RRF（weights：dense 1.0 / sparse 1.0）→ 取 top_m。
 - **图片查询**：image_reader（VLM API 提取图片文字/描述）→ 并入文本查询。
-- **精排**：Qwen3-VL-Reranker-8B 走 `RerankVLRequest`（query + documents 含文本与
-  base64 data URI 图片，本地图片必须转 data URI 而非传路径）→ 取 top_k；
-  API 失败回退 RRF 序。记录 image token 计费（响应 meta 有 `image_tokens`）。
+- **精排**：`SiliconFlowVLReranker.rerank` 调硅基流动 `/rerank` 接口
+  （Qwen3-VL-Reranker-8B，`documents[].content` 含文本块 + base64 data URI 图片，
+  本地图片必须转 data URI 而非传路径）→ 取 top_k；API 失败回退 RRF 序
+  （不做 image token 计费记录）。
 - **回答**：top_k 页面图（base64 data URI）+ 文本块 → Qwen3-VL-8B-Instruct 生成，
   返回 `{answer, sources[]}`；sources 含 `image_path`，可在 Web/CLI 展示。
 - **rag_query 输出**：返回字符串保持旧文本格式兼容，图片以
@@ -227,24 +240,26 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
 - **包布局**：顶层新增 `careercrew_mcp/` 包（`__main__.py` + `server.py`），加入
   `pyproject.toml` 的 `[tool.setuptools.packages.find].include`；`[project.scripts]`
   加 `careercrew-mcp` 入口。`python -m careercrew_mcp` 或 `careercrew-mcp` 均可启动
-  （必须用 careercrew env 的 python 跑，base env 无 torch/colpali）。
+  （必须用 careercrew env 的 python 跑，base env 无 torch/FlagEmbedding）。
 - **双传输**：默认 stdio（本地 Agent 直接连）；`--http --port` 时启用 Streamable
   HTTP（uvicorn）。HTTP 默认绑定 `127.0.0.1`，v1 不加认证（README/CLI help 注明）。
 - **工具**：
-  - `ingest_document(path, metadata?) -> {doc_id, pages, objects}`（本地路径或
+  - `ingest_document(path, metadata?) -> {doc_id, points, path}`（本地路径或
     http(s) URL，URL 先下载到 `data/uploads/`）；
   - `search(query, image_path?, top_k=5, filters?) -> [{id, score, text, image_path, type, doc, page}]`；
   - `query(question, image_path?, top_k=5) -> {answer, sources}`；
-  - `status() -> {points, docs, collections}`（按 collection 统计）。
+  - `status() -> {vector_store, url, collections, knowledge_points, vlm_model, rerank_model}`
+    （库状态 + 配置后端）。
 - 项目内 Agent 通过内部函数直调同一核心（不走网络）；外部系统走 MCP。
 
 ### 删除与清理
 
 - 删除 `milvus_store.py` / `chroma_store.py`、`markitdown_loader.py` 及全部引用
   （含 `careercrew_api/routers/resume.py` 的 PDF/docx 路径改 MinerU，R2）。
-- `pyproject.toml`：去掉 `pymilvus`、`markitdown`（含 `ingestion`/`web` extra），加
-  `qdrant-client>=1.19`、`mineru>=3.4`、`colpali-engine>=0.3`、`peft`、`mcp>=1.20,<2`；
-  `requires-python` 维持 `>=3.12,<3.13`。
+- `pyproject.toml`（实施后定稿）：去掉 `pymilvus`、`markitdown`、`mineru`、
+  `colpali-engine`、`peft`；加 `qdrant-client>=1.19`、`requests`（MinerU 云端 API）、
+  `pymupdf`（页面渲染）、`mcp>=1.20,<2`；`requires-python` 维持 `>=3.12,<3.13`。
+  本地 loader（`provider=local`）需要环境里另有 mineru CLI，不再作为项目依赖。
 - careercrew 环境卸载 `pymilvus`、`markitdown`；`data/db/milvus` 遗留目录手动清理
   （旧数据不迁移，源文件完整）。
 - 删除 milvus/chroma 相关测试（`test_milvus_backend.py`、`test_vector_store_switch.py`
@@ -256,8 +271,8 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
   `MultimodalSearch.search(query, image_path?, top_k, filters?)`，返回类型对齐现有
   `QueryResult`（新增 `image_path/type/page` 字段，默认值向后兼容）。
 - `rag_query` 输出扩展为「纯文本块 + `[image: path]` 标记行」，旧文本格式兼容。
-- `BaseVectorStore` 契约不变（兼容记忆系统），QdrantStore 额外提供 `query_visual` 与
-  `count`；记忆系统（episodic）必须使用 episodic collection 的 store 实例
+- `BaseVectorStore` 契约不变（兼容记忆系统），QdrantStore 额外提供 `count` 与
+  `list_docs`；记忆系统（episodic）必须使用 episodic collection 的 store 实例
   （R5，`VectorIndex` 注入时显式传 `collection_name=careercrew_episodic` 的实例）。
 
 ## 测试计划
@@ -269,19 +284,21 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
   失败回退 RRF 序。
 - MinerU loader 契约：mock 子进程输出 → `ParsedDocument` 页面+对象解析正确；
   Markdown 直读走原 `BaseLoader` 路径。
+- MinerU API loader：mock 上传 → 轮询 → 下载 zip → 解压组装全流程
+  （`tests/unit/test_mineru_api_loader.py`），含等待状态、超时与路径穿越防护。
 - `QueryResult` 新字段默认值兼容旧构造；`FakeVectorStore.count()`。
 - `rag_query` 输出：纯文本格式不变 + `[image: ...]` 标记行。
 
 **集成（真实 Qdrant 容器，`pytest.mark.integration` + 容器不可用时 skip）**：
-- QdrantStore 双 schema roundtrip：dense/sparse/multivector（MAX_SIM）、payload 过滤
-  与 `delete_by_metadata`、`count`、`get_by_ids`（with_vectors）。
+- QdrantStore 双 schema roundtrip：dense/sparse、payload 过滤与
+  `delete_by_metadata`、`count`、`get_by_ids`（with_vectors）。
 - 端到端用 `data/uploads/求职简历.pdf`（2 页）与 `resume.png`：ingest → 文本查询命中
   简历要点 → 图片查询命中对应页面 → `query` 看图回答正确引用来源。
 - episodic 回归：`VectorIndex` 写入/检索落到 `careercrew_episodic`（不与知识库混库）。
 - resume 上传回归：PDF 上传走 MinerU 解析成功；损坏文件返回 `doc_type=error`。
 
 **回归**：既有 agent 单测改用 FakeVectorStore 继续通过（补 count）；`test_smoke_imports`
-更新为 qdrant/mineru/colpali 组合；删除 milvus/chroma 相关测试。
+更新为 qdrant_client/requests/pymupdf/mineru loader 组合；删除 milvus/chroma 相关测试。
 
 **MCP**：stdio client 工具发现 + 四工具端到端；HTTP 传输冒烟；外部进程调用 `query`
 返回图文来源（sources 含 image_path）。
@@ -291,9 +308,9 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
 - 生成与精排均走硅基流动 API（已有 key），模型固定
   `Qwen/Qwen3-VL-8B-Instruct`、`Qwen/Qwen3-VL-Reranker-8B`；rerank 文档图片用 base64
   data URI（R8 之外的接口细节）。
-- ColQwen/BGE-M3 本地推理：BGE-M3 CPU、ColQwen GPU bf16；MinerU 子进程（R3）。
-- 首启冷启动（模型加载 ~16s + MinerU 子进程拉起）可接受；批量入库在实施时用 batch
-  验证吞吐并记录（batch_size 从 1 起调）。
+- 本地推理只有 BGE-M3（CPU）；MinerU 默认走云端 API（`provider=api`，本机零推理负载），
+  `provider=local` 本地子进程仅作可选回退（R3 已被 v1.2/v1.3 覆盖）。
+- 首启冷启动（BGE-M3 模型加载 ~16s + 可选本地 MinerU 拉起）可接受。
 - 旧 Milvus 数据不迁移（源文件完整，直接重灌；`data/db/milvus` 手动清理）。
 - v1 语料 = `data/uploads/` 下 PDF/PNG/DOCX（`data/knowledge` 不参与）；MCP `ingest_document`
   支持本地路径与 http(s) URL（URL 先下载到 `data/uploads/`）。
@@ -305,9 +322,9 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
 
 | 风险 | 回退 |
 |---|---|
-| 8GB 显存不足（ColQwen 3B bf16 + 激活） | batch=1；编码完 `del model + torch.cuda.empty_cache()`；必要时顺序加载/卸载 |
+| 云端 API 间歇断连/限流（v1.3） | 上传/轮询/下载指数退避重试；失败记录 `doc_type=error` 跳过；可切 `provider=local` 回退 |
 | MinerU 解析失败或产物结构变化 | 记录 `doc_type=error` 跳过；解析层单点封装（解析器可替换） |
-| VL rerank API 失败/限流 | 回退 RRF 序（保留 visual 权重融合结果） |
+| VL rerank API 失败/限流 | 回退 RRF 融合序（dense/sparse 等权） |
 | VL 生成 API 失败 | 回退文本生成（DeepSeek + 文本块），sources 仍返回 |
 | mcp 2.0 依赖树被其他包拉起 | `pyproject` 显式 `mcp>=1.20,<2`；CI/启动时冒烟 import FastMCP |
 | 服务端 RRF 诱惑回潮 | 代码评审点：`query()` 禁止用 Qdrant `Fusion.RRF`（无法加权，R4） |

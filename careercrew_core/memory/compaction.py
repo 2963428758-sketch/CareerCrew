@@ -80,12 +80,14 @@ class Compactor:
                 break
         kept = list(reversed(kept))
         compressibles = messages[: len(messages) - len(kept)]
+        if not compressibles:
+            return list(messages), None  # 全部都在保留区，无需压缩
 
         # M2: 压缩前 flush 关键信息到长期记忆（防丢）
-        if self._user_model_store is not None and compressibles:
+        if self._user_model_store is not None:
             self._flush(compressibles)
 
-        summary = self._summarize(compressibles) if compressibles else ""
+        summary = self._summarize(compressibles)
         entry = episodic.write(MemoryEntry(type="compaction", content={
             "firstKeptEntryId": _msg_id(kept[0]) if kept else None,
             "summary": summary,

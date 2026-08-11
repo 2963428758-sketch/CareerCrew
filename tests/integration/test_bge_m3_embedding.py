@@ -22,6 +22,6 @@ def test_bge_m3_encode_three_outputs(valid_config_data: dict) -> None:
     out = emb.encode(["什么是 RAG", "LangGraph 状态机"])
     assert out.dense.shape == (2, 1024)
     assert out.sparse is not None and len(out.sparse) == 2
-    # sparse token id 为 int（Milvus SPARSE_FLOAT_VECTOR 要 int key）
+    # sparse token id 为 int（Qdrant 稀疏向量要 int key）
     assert all(isinstance(k, int) for k in out.sparse[0])
     assert out.colbert is not None and len(out.colbert) == 2

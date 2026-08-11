@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 from careercrew_ai.embedding import create_embedding
 from careercrew_ai.llm import create_llm
 from careercrew_ai.vector_store import create_vector_store
@@ -29,7 +31,7 @@ def main() -> None:
             files.extend(p.glob("**/*") if p.is_dir() else [p])
     else:
         files = sorted(
-            p for p in Path("data/uploads").glob("*")
+            p for p in (PROJECT_ROOT / "data" / "uploads").glob("*")
             if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
         )
     files = sorted({f.resolve() for f in files if f.is_file()})

@@ -4,6 +4,14 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _uploads_to_tmp(monkeypatch, tmp_path):
+    """上传落盘改到临时目录，避免污染 data/uploads。"""
+    import careercrew_api.routers.knowledge as knowledge
+
+    monkeypatch.setattr(knowledge, "UPLOAD_DIR", tmp_path)
+
+
 @pytest.mark.web
 def test_knowledge_list(client, fake_runtime):
     """GET /api/knowledge -> {points, docs}。"""

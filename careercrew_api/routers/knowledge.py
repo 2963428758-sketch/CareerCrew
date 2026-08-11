@@ -12,7 +12,7 @@ from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 router = APIRouter()
 
 _MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
-UPLOAD_DIR = Path("data/uploads")
+UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data" / "uploads"
 
 
 @router.post("/upload")
@@ -25,7 +25,8 @@ async def upload_knowledge(
     if len(content) > _MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
 
-    filename = file.filename or "upload"
+    # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）
+    filename = Path(file.filename or "upload").name or "upload"
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     save_path = UPLOAD_DIR / filename
     save_path.write_bytes(content)

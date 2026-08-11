@@ -7,6 +7,14 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _uploads_to_tmp(monkeypatch, tmp_path):
+    """上传落盘改到临时目录，避免污染 data/uploads。"""
+    import careercrew_api.routers.resume as resume
+
+    monkeypatch.setattr(resume, "UPLOAD_DIR", tmp_path)
+
+
 @pytest.mark.web
 def test_upload_text(client, fake_runtime, tmp_path):
     """txt 文件 -> 直接读文本。"""

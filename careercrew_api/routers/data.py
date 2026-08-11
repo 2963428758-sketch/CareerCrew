@@ -1,7 +1,7 @@
-"""data 路由：health / config / profile / memory / traces / threads。"""
+"""data 路由：health / config / profile / threads / memory。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
@@ -47,8 +47,11 @@ def update_profile(fields: dict, user_id: str = Query("u_001")) -> dict:
 
     settings = load_settings()
     store = UserModelStore(settings.memory.user_model.path)
-    model = store.update(user_id, fields)
-    return model.model_dump()
+    try:
+        model = store.update(user_id, fields)
+        return model.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/threads")
@@ -64,7 +67,10 @@ def delete_thread(thread_id: str, user_id: str = Query("u_001")) -> dict:
     from careercrew_core.state.settings import load_settings
 
     settings = load_settings()
-    path = Path(settings.memory.episodic.transcript_dir) / user_id / f"{thread_id}.jsonl"
+    base = Path(settings.memory.episodic.transcript_dir).resolve()
+    path = (base / user_id / f"{thread_id}.jsonl").resolve()
+    if not path.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="非法 thread_id")
     if path.exists():
         path.unlink()
         return {"deleted": True, "thread_id": thread_id}
@@ -86,7 +92,11 @@ def memory(user_id: str = Query("u_001"), thread_id: str | None = Query(None), t
     transcript_dir = Path(settings.memory.episodic.transcript_dir) / user_id
 
     if thread_id:
-        files = [transcript_dir / f"{thread_id}.jsonl"]
+        base = Path(settings.memory.episodic.transcript_dir).resolve()
+        target = (base / user_id / f"{thread_id}.jsonl").resolve()
+        if not target.is_relative_to(base):
+            raise HTTPException(status_code=400, detail="非法 thread_id")
+        files = [target]
     else:
         # 所有线程合并
         files = sorted(transcript_dir.glob("*.jsonl"))

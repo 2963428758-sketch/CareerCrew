@@ -7,7 +7,7 @@
 8GB 显存机型与其他进程叠加易 OOM——这里强制 devices="cpu"（对齐 v1.2 无 GPU 依赖）。
 
 FlagEmbedding 在 __init__ 内 lazy import，避免 import 本模块就加载 2GB 模型。
-sparse 的 token id 从 str 转 int（Milvus SPARSE_FLOAT_VECTOR 要 int key）。
+sparse 的 token id 从 str 转 int（Qdrant 稀疏向量要 int key）。
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class BGEM3Embedding(BaseEmbedding):
             return_sparse=True,
             return_colbert_vecs=True,
         )
-        # lexical_weights: list[dict{str_token_id: float}] -> 转 int key（Milvus 用）
+        # lexical_weights: list[dict{str_token_id: float}] -> 转 int key（Qdrant 用）
         sparse = [
             {int(k): float(v) for k, v in weights.items()}
             for weights in out["lexical_weights"]

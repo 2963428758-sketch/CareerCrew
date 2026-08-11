@@ -26,12 +26,14 @@ class JobCycle:
         user_model_store=None,  # UserModelStore（画像注入 + 持久化）
         user_id: str = "u_001",
         streaming: bool = False,  # agent 输出已流式打出, 不重复完整打印
+        thread_id: str = "m1",  # 情景记忆/追踪元数据用（API 按会话传入，CLI 默认 m1）
     ) -> None:
         self.job_matcher = job_matcher
         self.resume_advisor = resume_advisor
         self.renderer = renderer or Renderer()
         self._user_model_store = user_model_store
         self._user_id = user_id
+        self._thread_id = thread_id
         self._streaming = streaming  # 流式模式: agent 内容已逐 token 打出, 不再重复 show_agent
         self._messages: list = []  # 跨步骤对话历史
 
@@ -85,7 +87,7 @@ class JobCycle:
             msgs.append(SystemMessage(content=preamble))
         msgs.append(HumanMessage(content=text))
         return {
-            "thread_id": "m1", "user_id": self._user_id, "stage": stage, "user_intent": text,
+            "thread_id": self._thread_id, "user_id": self._user_id, "stage": stage, "user_intent": text,
             "messages": msgs, "pending_action": None, "agent_outputs": {}, "target_companies": [],
         }
 

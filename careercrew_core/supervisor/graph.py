@@ -3,7 +3,7 @@
 supervisor 节点 -> 条件路由(route) -> agent 节点 -> 回 supervisor -> ... -> END。
 checkpointer 持久化 thread 状态（B1）。agent 在执行中可改 stage 推进流程或终止。
 
-分工必然性：LangGraph 擅长状态机/路由/中断/持久化，agent 节点内手写 ReAct 管工具推理。
+分工必然性：LangGraph 擅长状态机/路由/中断/持久化，agent 节点内 create_agent 管工具推理。
 """
 from __future__ import annotations
 

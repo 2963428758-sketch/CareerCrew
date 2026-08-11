@@ -27,7 +27,7 @@ _MAX_CONTENT_CHARS = 200_000
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 _TEXT_EXTS = {".txt", ".md", ".markdown"}
 
-UPLOAD_DIR = Path("data/uploads")
+UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data" / "uploads"
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -58,7 +58,8 @@ async def upload(
             content="文件超过 20MB 限制",
         )
 
-    filename = file.filename or "upload"
+    # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）
+    filename = Path(file.filename or "upload").name or "upload"
     ext = Path(filename).suffix.lower()
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     save_path = UPLOAD_DIR / filename

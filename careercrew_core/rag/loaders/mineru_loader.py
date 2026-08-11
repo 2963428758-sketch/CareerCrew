@@ -4,7 +4,7 @@
 产物落盘到 ``output_dir/<doc_id>/``：
 - ``<stem>.md`` + ``<stem>_content_list.json``：页面文本 / 对象块
 - ``images/``：MinerU 裁剪图（对象块）
-- ``pages/page_NNN.png``：pymupdf 渲染的整页图（ColPali 视觉路用）
+- ``pages/page_NNN.png``：pymupdf 渲染的整页图（VLM 看图回答展示用）
 
 解析失败抛 ``ParsingError``（调用方记 doc_type=error 跳过，不中断批量入库）。
 

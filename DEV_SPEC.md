@@ -19,7 +19,7 @@
 
 ## 1. 项目概述
 
-CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端有三套入口：**CLI**（本地优先、轻量）、**Web**（FastAPI 后端 `careercrew_api` + React 单页应用 `web/`，SSE 流式，生产模式 FastAPI 单端口托管 `web/dist`）、**MCP Server**（`careercrew_mcp`，把多模态 RAG 能力暴露为 ingest/search/query/status 工具，供外部 Agent 直连）。早期 Streamlit Dashboard（`careercrew_ui/dashboard/`）保留为只读数据浏览备用。
+CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端有三套入口：**CLI**（本地优先、轻量）、**Web**（FastAPI 后端 `careercrew_api` + React 单页应用 `web/`，SSE 流式，生产模式 FastAPI 单端口托管 `web/dist`）、**MCP Server**（`careercrew_mcp`，把多模态 RAG 能力暴露为 ingest/search/query/status 工具，供外部 Agent 直连）。早期 Streamlit Dashboard 已移除 app/pages，`careercrew_ui/dashboard/data.py` 仅保留为 /api 提供数据读取 helper。
 
 ### 设计理念 (Design Philosophy)
 
@@ -78,7 +78,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 | 层级 | 实现 | 用途 |
 |------|------|------|
 | **短期** (Short-term) | Context Window | 当前对话轮上下文 |
-| **情景** (Episodic) | Session Transcript：append-only JSONL，每条带 `id`+`parentId`，会话存成树，从叶子回溯到根 = 上下文；+ Milvus 向量 | 面试/投递/offer 等事件记忆，可检索可回溯 |
+| **情景** (Episodic) | Session Transcript：append-only JSONL，每条带 `id`+`parentId`，会话存成树，从叶子回溯到根 = 上下文；+ Qdrant 向量（collection `careercrew_episodic`） | 面试/投递/offer 等事件记忆，可检索可回溯 |
 | **长期** (Long-term) | User Model：能力画像 / 目标公司池 / 偏好，结构化 | 跨会话用户画像 |
 
 **append-only 树的红利**：会话是只增不改的树，任何历史轨迹可完整回放——这是轨迹级评估（黄金轨迹回放）的基础。
@@ -107,7 +107,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 意向 -> 规划师建画像+目标公司池 -> 匹配官搜新 JD -> 命中 -> 简历顾问定制 -> 面试官模拟+记录 -> 谈判师准备策略 -> HITL 确认投递 -> 跟踪 -> 复盘写入记忆 -> 循环。一个完整的、可 dogfood 的求职陪跑闭环。
 
 ### 全链路可观测 + 评估闭环
-- **可观测性**：LangSmith 全链路追踪（替代自建 JSONL trace）。`configure_langsmith` 在任何 LLM 调用前预置带 anonymizer 的缓存 client，LangChain 自动捕获的 LLM/工具 run 全部经脱敏（截断 + 打码手机号 / 邮箱 / 薪资）；`traced_call` 包根 run（一次用户请求 = 一条根 run），`attach_run_metadata` 注入 user_id/thread_id/stage 供按会话过滤。前端追踪查看走 Web 数据页 + `scripts/langsmith_smoke.py`（`--list` 只读列根 run）。
+- **可观测性**：LangSmith 全链路追踪（替代自建 JSONL trace）。`configure_langsmith` 在任何 LLM 调用前预置带 anonymizer 的缓存 client，LangChain 自动捕获的 LLM/工具 run 全部经脱敏（截断 + 打码手机号 / 邮箱 / 薪资）；`traced_call` 包根 run（一次用户请求 = 一条根 run），`attach_run_metadata` 注入 user_id/thread_id/stage 供按会话过滤。追踪明细直接在 **LangSmith 控制台**查看；`scripts/langsmith_smoke.py --list` 只读列根 run。
 - **评估**：答案级（简历匹配度 / 面试题质量，集成 Ragas）+ 业务级（投递->面试转化率、面试通过率、拿 offer dogfood，数据走 LangSmith run + 情景记忆事件）。高级方向补轨迹级评估。
 
 ### 本地优先 (Local-First)
@@ -135,7 +135,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 
 #### 3.1.2 supervisor 与 agent 节点分工
 - **supervisor 节点**：不直接调工具，只做"读状态 -> 判断阶段 -> 路由到 agent / 触发 HITL / 结束"。
-- **agent 节点**：内部跑手写 ReAct 循环（见 3.2），可调工具，产出结果后返回 supervisor。
+- **agent 节点**：内部跑 LangChain `create_agent` 内核（见 3.2），可调工具，产出结果后返回 supervisor。
 - **HITL 节点**：supervisor 遇 `requires_confirmation` 动作时，`interrupt` 暂停，等待人工 yes/no，恢复后继续。
 
 #### 3.1.3 状态结构（Thread State）
@@ -163,7 +163,7 @@ class CareerCrewState(TypedDict):
 
 #### 3.1.6 LangGraph 版本约定（1.x）【MVP 核心】
 
-> 2026-08-01 实测环境（conda env `careercrew`）：langgraph 1.2.10 / langchain 1.3.14 / langchain-core 1.5.2 / langchain-openai 1.4.1 / qdrant-client。
+> 2026-08-01 实测环境（conda env `careercrew`）：langgraph 1.2.10 / langchain 1.3.14 / langchain-core 1.5.3 / langchain-openai 1.4.1 / qdrant-client。
 
 - **统一按 LangGraph 1.x API 实现**（pyproject 下限已改为 `langgraph>=1.2.0`）。spec 中所有图 / 中断 / 检查点描述以 1.x 为准，0.2 时代写法不再使用：
   - `interrupt()` 是节点内函数（`langgraph.types.interrupt`），恢复用 `Command(resume=...)`（`langgraph.types.Command`）；不用"抛 Interrupt 信号给 supervisor"的旧写法。
@@ -233,7 +233,7 @@ AgentResult{content, iterations:[ReactIteration], tool_calls_total, stopped_reas
 
 - **append-only**：只增不改，保证可完整回放。
 - **parentId 树**：每条记录指向父节点，会话构成树；从任意叶子回溯到根 = 该上下文的完整历史。
-- **向量索引**：每条（或按事件聚合后）写一份 embedding 到 Milvus（collection: `careercrew_episodic`），支持语义检索。
+- **向量索引**：每条（或按事件聚合后）写一份 embedding 到 Qdrant（collection: `careercrew_episodic`），支持语义检索。
 - **存储**：`data/transcripts/{user_id}/{thread_id}.jsonl`。
 
 **上下文重建**：给定当前叶子节点 id，沿 `parentId` 链回溯到根，按时间序拼接即为上下文。这是 ReAct 循环"组装上下文"的重要输入。
@@ -356,14 +356,17 @@ RAG 知识库与情景记忆向量共用 Qdrant 实例，但 collection 隔离�
 
 **目标：** 接入现成 MCP 工具跑通 MVP；自建求职者端 MCP 放后期。
 
-#### 3.6.1 现成 MCP 接入【MVP 核心 - mock 先行】
-- **策略：mock 先行，真实 MCP 可选**。MVP 阶段先落地 mock（`tools/mcp/mock_jobs.py` 提供样例 JD）保证 E3-E4 不依赖外部 server；真实 server 接入不阻塞任何排期任务，接入后由统一注册表自动发现注册。
-- **外部 MCP server 清单**（本机均未预装，接入参数 E2 阶段确定）：
+#### 3.6.1 现成 MCP 接入【MVP 核心 - 真实 mcp-jobs 为准】
+- **演进说明**：v0.3 规划"mock 先行，真实 MCP 可选"（`mock_jobs.py` 样例 JD）。
+  落地中 mock 数据已删除，**真实 mcp-jobs（只抓猎聘）成为唯一职位来源**：
+  `careercrew_core/tools/jobs/mcp_jobs.py` 封装 `mcp-servers/run-mcp-jobs.js`
+  （Playwright 爬猎聘，屏蔽 stdout 日志污染 MCP 协议 + 只启用猎聘源），
+  每次调用现连现调（约 1-2 分钟，返回真实岗位）；`search_jobs` 工具实时搜索。
 
-  | server | 用途 | 接入方式 | MVP 状态 |
+  | server | 用途 | 接入方式 | 状态 |
   |--------|------|---------|---------|
-  | mcp-jobs | 职位检索（JD 库） | MCP client（stdio 命令或 SSE URL） | mock 兜底，真实可选 |
-  | Google MCP | 通用搜索（公司信息/薪资公开数据补充） | MCP client | 可选；未接入时用 rag_query + 手动数据替代 |
+  | mcp-jobs | 职位检索（猎聘真实岗位） | MCP client（stdio，`run-mcp-jobs.js`） | **已接入，唯一职位来源** |
+  | Google MCP | 通用搜索（公司信息/薪资公开数据补充） | MCP client | 未接入；用 rag_query + 手动数据替代 |
 
 - 通过 MCP client 连接，工具自动注册进统一工具注册表；连接失败按 §5.7 降级（工具返回错误信息给 agent，不阻塞主流程）。
 
@@ -402,28 +405,20 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 
 #### 3.7.3 知识库 Ingestion
 自建多模态 Ingestion Pipeline（`pipeline_multimodal.py`）摄取知识库到 Qdrant（collection `careercrew_mm`）：
-- 大模型八股 + 真实面试题
-- 算法岗面经
-- JD 库（MVP 由 `mock_jobs` 生成 + 用户手动收集，真实 mcp-jobs 沉淀为增量）
-- 公司/薪资公开数据
-- 简历范本
+- 语料 = `data/uploads/` 下用户上传的 PDF / 图片 / DOCX / PPTX / XLSX / Markdown
+  （`data/knowledge` 手写 seed 已移除——LLM 已知的通用知识不入库，只留用户材料 + 实时猎聘 JD）
+- JD 库由 `search_jobs` 实时搜索猎聘（mcp-jobs）沉淀，不再预置 mock JD
+- 简历范本 / 面经 / 公司数据按需由 Web/MCP 上传入库
 
 流水线（文件路由）：
 - md/txt -> MarkdownLoader 直读 -> DocumentChunker 切分 -> Contextual Chunking（LLM 加上下文）-> BGE-M3 编码（dense+sparse）-> Qdrant Upsert
 - PDF/图片/docx -> MinerU 解析 -> 页面单元（`{doc_id}_p{page:03d}`）+ 对象单元（`{doc_id}_o{page:03d}_{idx:02d}`）-> MinerU 抽取文本走 BGE-M3 编码 -> Qdrant Upsert（图路径存 payload，不参与向量化）
 
-**MVP 首批知识库（`data/knowledge/`，D4 验收用；先备数据再实现 pipeline）**：
+**知识库语料（实施后定稿）**：`data/uploads/`（Web 上传、MCP `ingest_document`、首启自动入库），
+`data/knowledge` 手写 seed 已移除。MinerU 解析产物落 `data/parsed/`。
 
-| 类别 | 内容 | 来源 | 许可 / 合规 |
-|------|------|------|------------|
-| 大模型八股 | 1 份 Markdown（100-300 行常见概念问答） | 自写整理（优先）或开源笔记 | 自写无版权问题；引用开源须注明来源 |
-| 真实面试题 | 面试题集 Markdown 1 份 | 自备或开源仓库（标注来源） | 按来源 License |
-| 算法面经 | 可选 1 份 | 同上 | 同上 |
-| JD 库 | 5-10 条样例 JD | `mock_jobs` 生成 + 用户手动收集 | 招聘公开信息 |
-| 简历范本 | 用户自己的简历 1-2 份（脱敏）+ 结构化字段说明 | 用户自备 | 用户自有，勿外传 |
-| 公司/薪资数据 | 公开薪资表（可选） | 开源数据集或自备 | 按来源 License |
-
-> 数据源原则：**dogfood 优先用用户自己的材料**（简历 / 面经 / 目标公司），开源材料只作补充；不抓取受版权保护内容。
+> 数据源原则：**dogfood 优先用用户自己的材料**（简历 / 面经 / 目标公司），实时 JD 走猎聘，
+> 不抓取受版权保护内容。
 
 #### 3.7.4 文档加载（多模态解析）【MVP 核心】
 
@@ -562,7 +557,7 @@ HITL 确认投递 (apply) ── interrupt
 
 **目标：** LangSmith 全链路追踪（替代自建 JSONL trace）+ React Web 前端（替代 Streamlit 主力），零自维护 trace schema。
 
-> **演进说明**：v0.3 spec 为"自建 TraceContext + JSON Lines + Streamlit Dashboard，不依赖 LangSmith"。落地中改为 LangSmith 承担全链路追踪（逐轮明细自动捕获 + 脱敏 + 按会话过滤），自建 JSONL trace 退役；前端主力从 Streamlit 切到 React Web（`web/`），Streamlit Dashboard 降级为只读数据浏览备用（见 ADR-14）。
+> **演进说明**：v0.3 spec 为"自建 TraceContext + JSON Lines + Streamlit Dashboard，不依赖 LangSmith"。落地中改为 LangSmith 承担全链路追踪（逐轮明细自动捕获 + 脱敏 + 按会话过滤），自建 JSONL trace 退役；前端主力从 Streamlit 切到 React Web（`web/`）；后续 Streamlit app/pages 与自建读取接口（`/api/runs`、前端轨迹面板）一并移除，追踪直接在 LangSmith 控制台查看（见 ADR-14 / ADR-15）。
 
 #### 3.11.1 LangSmith 全链路追踪【MVP 核心】
 实现位置：`careercrew_core/tracing/langsmith.py`。
@@ -574,10 +569,12 @@ HITL 确认投递 (apply) ── interrupt
 
 #### 3.11.2 React Web 前端【MVP 核心】
 实现位置：`web/`（React 19 + Vite + TypeScript + Tailwind + zustand + react-router）。
-- **后端**：`careercrew_api`（FastAPI），6 个路由：`/api/data` / `/api/chat` / `/api/interview` / `/api/resume` / `/api/consult` / `/api/knowledge`，SSE NDJSON 流式；生产模式 FastAPI 单端口托管 `web/dist`（SPA fallback）。
+- **后端**：`careercrew_api`（FastAPI），6 个路由模块：`data`（`/api/health`、`/api/config`、`/api/profile`、`/api/threads`、`/api/memory`）/ `chat` / `interview` / `resume` / `consult` / `knowledge`，SSE NDJSON 流式；生产模式 FastAPI 单端口托管 `web/dist`（SPA fallback）。
 - **运行时**：`careercrew_api/runtime.py` 进程级重组件单例（llm / embedding / store / reranker / MultimodalSearch / episodic / user_model）+ 会话级 agent / JobCycle（LRU 缓存，按 thread_id）。
-- **页面**：Chat / Consult（多 agent 会诊）/ Data（知识库 + 追踪查看）/ Interview / Resume。
-- **Streamlit 备用**：`careercrew_ui/dashboard/`（三页面：总览 / 数据浏览 / 追踪）保留为只读浏览，不再是主力前端。
+- **页面**：Chat / Consult（多 agent 会诊）/ Data（画像 / 记忆 / 知识库管理）/ Interview / Resume。
+- **Dashboard 状态（实施后定稿）**：Streamlit 的 `app.py` 与 `pages/*` 已移除，
+  `careercrew_ui/dashboard/data.py`（无 streamlit import）仅保留数据读取 helper，
+  供 /api 的 `config` / `profile` / `memory` 端点复用；追踪查看直接走 LangSmith 控制台。
 
 ---
 
@@ -592,7 +589,7 @@ HITL 确认投递 (apply) ── interrupt
 | API 层 | `careercrew_api` | FastAPI 后端：6 路由 + SSE 流式 + runtime 单例 + 生产托管 web/dist |
 | 产品层 | `careercrew_cli` | 求职周期工作流编排 + HITL 闸门 + CLI 入口（JobCycle 被 api 复用） |
 | MCP 层 | `careercrew_mcp` | 多模态 RAG MCP Server（ingest / search / query / status），stdio 或 Streamable HTTP |
-| UI 层 | `careercrew_ui` | CLI 渲染 + Streamlit Dashboard（备用只读） |
+| UI 层 | `careercrew_ui` | CLI 渲染 + dashboard 数据读取 helper（Streamlit app/pages 已移除） |
 | Web 层 | `web/` | React 单页应用（5 页面），Vite 构建，生产产物 web/dist 由 FastAPI 托管 |
 
 > 详细目录树见 5.2。分层规则：`careercrew_ai` 不 import `careercrew_core`（避免循环）；`careercrew_core` 不碰渲染 / 协议；`careercrew_api` 复用 `careercrew_cli` 的 JobCycle 组装逻辑（去掉 Renderer 依赖）。
@@ -606,7 +603,7 @@ HITL 确认投递 (apply) ── interrupt
 - **Hermes 完整版记忆**：Skill Library / User Model 丰富化 / 反思自进化循环 / 记忆双通道检索。
 - **compaction 完整策略**：token 占比触发（用模型真实 usage）+ 保留区 + 压缩区 + **Pre-compaction Memory Flush**。
 - **Loop Engineering 视角**：求职闭环建模为七步 `Goal->Task->Loop->Execute->Evidence->Asset->Govern`；三角色对位（规划师=Planner / 执行 agent=Developer / 面试官+评估=Reviewer，建设性对抗）；原则"Design the loop, not the perfect prompt"；human-in-loop 默认 HITL。
-- **手写 ReAct 高级**：工具并行/串行策略（`parallel_safe`）、运行中插话(steering)、收尾追问(follow-up)、随时中断(abort)。
+- **Agent 内核高级**（对 create_agent 内核扩展）：工具并行/串行策略（`parallel_safe`）、运行中插话(steering)、收尾追问(follow-up)、随时中断(abort)。
 - **Agentic RAG**：query router（路由到 KB/web/记忆）、query decomposition（多跳问题分解为子查询）、multi-step 检索；与多 agent 架构天然契合。
 - **检索自纠正（Self-RAG / CRAG）**：检索评估器打分，质量差则触发重试/查询改写/web 回退；提升 Grounding。
 - **层级/图 RAG（RAPTOR / LightRAG）**：递归抽象树或轻量知识图，用于面经跨文档关联与全局性问题。
@@ -637,7 +634,7 @@ HITL 确认投递 (apply) ── interrupt
 | ADR-12 | 模型下载源 | HuggingFace / ModelScope | **ModelScope** | 本机 HF 直连被拦（SSL 断流），ModelScope 可通。 |
 | ADR-13 | 文档加载 | per-format / MarkItDown / MinerU | **MinerU 多模态解析 + Markdown 直读** | PDF 面经含图表/公式/截图，MarkItDown 纯文本提取丢视觉信息；MinerU 输出页面图 + 对象图 + Markdown，支撑 VLM 看图回答。云端 API 精准解析且本机零负载。v0.3 曾选 MarkItDown，因多模态需求演进。 |
 | ADR-14 | 可观测性 | 自建 JSONL trace / LangSmith | **LangSmith** | 自建 trace 需维护 schema + 打点 + Dashboard 追踪页，重复造轮；LangChain 自动捕获 LLM/工具 run，配 anonymizer 脱敏 + 按会话过滤，逐轮明细开箱即用。v0.3 曾坚持自建不依赖 LangSmith，落地中演进。 |
-| ADR-15 | 前端 | Streamlit / React | **React Web（FastAPI 后端）+ Streamlit 备用** | Streamlit 不适合 SSE 流式对话与复杂交互；React+Vite+zustand 支撑 5 页面 SPA，FastAPI 单端口托管生产产物。Streamlit 降级为只读数据浏览。 |
+| ADR-15 | 前端 | Streamlit / React | **React Web（FastAPI 后端）+ Streamlit 退役** | Streamlit 不适合 SSE 流式对话与复杂交互；React+Vite+zustand 支撑 5 页面 SPA，FastAPI 单端口托管生产产物。Streamlit app/pages 已移除，仅 data.py 数据读取 helper 保留（/api 复用）。 |
 | ADR-16 | 多模态 RAG | 纯文本 / ColQwen 视觉向量 / MinerU+VLM | **MinerU 抽文本 + BGE-M3 文本向量 + VLM 看图回答** | ColQwen 视觉多向量路曾尝试后移除（重排/检索成本高）；改为 MinerU 把图片 OCR/Markdown 化统一走 BGE-M3 文本向量，图路径存 payload 供 VLM 看图回答展示，检索路径统一、成本可控。 |
 
 ### 3.15 Prompt 与生成参数约定【MVP 核心】
@@ -691,17 +688,17 @@ HITL 确认投递 (apply) ── interrupt
 ### 4.2 测试分层策略
 
 #### 4.2.1 单元测试 (Unit Tests)
-隔离外部依赖（LLM / Milvus / MCP），验证内部逻辑。
+隔离外部依赖（LLM / Qdrant / MCP），验证内部逻辑。
 
 | 模块 | 测试重点 | 典型用例 |
 |------|---------|---------|
-| **ReAct 内核** | 循环逻辑、轮次上限、工具调用判定 | Mock LLM 返回 tool_call -> 验证执行+回喂；无 tool_call -> 验证 break；超轮次 -> 抛错 |
+| **create_agent 内核** | 循环逻辑、迭代上限（middleware）、工具调用判定 | Mock LLM 返回 tool_call -> 验证执行+回喂；无 tool_call -> 验证 break；超限 -> `stopped_reason=max_iterations` |
 | **记忆 - 情景** | append-only、parentId 树、回溯重建 | 写入后 parentId 链正确；从叶子回溯到根拼接上下文完整 |
 | **记忆 - User Model** | 结构化读写、字段约束 | `profile_update` 更新字段；非法字段拒绝 |
 | **记忆 - compaction** | 触发阈值、保留区、压缩条目 | token 占比超阈值触发；保留区原封；compaction 条目带 `firstKeptEntryId` |
 | **工具注册表** | 注册、路由、requires_confirmation | MCP/内部工具统一 schema；高风险工具触发节点内 `interrupt()` 挂起 |
 | **supervisor 路由** | 阶段->agent 路由 | 意图+阶段 -> 正确 agent；多 agent 会诊 fan-out |
-| **Milvus 后端** | upsert/query 契约 | roundtrip 确定性；Dense+Sparse 混合检索；collection 隔离 |
+| **Qdrant 后端** | upsert/query 契约 | roundtrip 确定性；Dense+Sparse 混合检索；collection 隔离 |
 
 **技术选型**：`pytest` + `unittest.mock`/`pytest-mock` + `pytest-check`。
 
@@ -714,7 +711,7 @@ HITL 确认投递 (apply) ── interrupt
 | **agent + 记忆** | ReAct 主动 `memory_search` -> 结果回喂 -> 写情景记忆 |
 | **agent + RAG** | `rag_query` 调自建 RAG 检索 -> 结果回喂 |
 | **HITL 流程** | 高风险工具 -> interrupt -> 人工确认 -> 恢复 -> 写记忆 |
-| **Milvus + RAG** | 知识库 ingestion -> 检索 roundtrip（真实 milvus-lite） |
+| **Qdrant + RAG** | 知识库 ingestion -> 检索 roundtrip（真实 Qdrant 容器） |
 
 #### 4.2.3 端到端测试 (E2E Tests)
 模拟真实求职闭环：
@@ -739,10 +736,10 @@ HITL 确认投递 (apply) ── interrupt
 ### 4.4 测试工具链
 
 - **框架**：`pytest`（参数化、Fixture）。
-- **Mock**：`unittest.mock`（LLM / MCP / Milvus）。
+- **Mock**：`unittest.mock`（LLM / MCP / Qdrant）。
 - **Agent 评估**：golden 路由集 + golden 轨迹集（`tests/fixtures/`）。
 - **CI**：GitHub Actions（`.github/workflows/ci.yml`），push / PR 触发；CI 跑轻量单测（配置加载 + AI 工厂契约，外部依赖全 mock，**无需 API key**）；重 ML 栈（FlagEmbedding / torch / BGE-M3）由本地 conda env 验证（D 阶段起涉及）。
-- **覆盖率目标**：单元测试核心逻辑 ≥ 80%；E2E 至少 4 个关键流程；**关键集成路径**（§4.2.2 的 5 条：supervisor+agent+ReAct / agent+记忆 / agent+RAG / HITL 流程 / Milvus+RAG）**各至少 1 个用例**（不追求集成层覆盖率数字，以路径清单为准）。
+- **覆盖率目标**：单元测试核心逻辑 ≥ 80%；E2E 至少 4 个关键流程；**关键集成路径**（§4.2.2 的 5 条：supervisor+agent+create_agent / agent+记忆 / agent+RAG / HITL 流程 / Qdrant+RAG）**各至少 1 个用例**（不追求集成层覆盖率数字，以路径清单为准）。
 
 ---
 
@@ -752,11 +749,11 @@ HITL 确认投递 (apply) ── interrupt
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          前端层 (CLI / Web / Streamlit)                      │
-│    ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────┐   │
-│    │   CLI (careercrew_ui)│  │  React Web (web/)    │  │ Streamlit(备用)│   │
-│    │  交互渲染 + HITL 提示 │  │ 5 页面 SPA + SSE 流式│  │ 只读数据浏览   │   │
-│    └──────────┬───────────┘  └──────────┬───────────┘  └────────────────┘   │
+│                          前端层 (CLI / Web)                                  │
+│    ┌──────────────────────┐  ┌──────────────────────┐                       │
+│    │   CLI (careercrew_ui)│  │  React Web (web/)    │                       │
+│    │  交互渲染 + HITL 提示 │  │ 5 页面 SPA + SSE 流式│                       │
+│    └──────────┬───────────┘  └──────────┬───────────┘                       │
 └───────────────┼─────────────────────────┼──────────────────────────────────┘
                 │                         │ HTTP/SSE
                 ▼                         ▼
@@ -947,7 +944,7 @@ CareerCrew/
 │   ├── sse.py                          # SSE NDJSON 流式
 │   └── routers/                        # 6 路由
 │       ├── __init__.py
-│       ├── data.py                     # /api/data（知识库 + 追踪）
+│       ├── data.py                     # /api/health、config、profile、threads、memory
 │       ├── chat.py                     # /api/chat（流式对话）
 │       ├── interview.py               # /api/interview
 │       ├── resume.py                  # /api/resume
@@ -969,19 +966,14 @@ CareerCrew/
 │   ├── __main__.py                     # python -m careercrew_mcp 入口
 │   └── server.py                       # FastMCP：ingest_document/search/query/status
 │
-├── careercrew_ui/                       # UI 层（CLI 渲染 + Streamlit 备用）
+├── careercrew_ui/                       # UI 层（CLI 渲染 + dashboard 数据读取 helper）
 │   ├── __init__.py
 │   ├── cli/
 │   │   ├── __init__.py
 │   │   └── renderer.py                 # 对话渲染 + HITL 提示
-│   └── dashboard/                       # Streamlit Dashboard（备用只读）
+│   └── dashboard/                       # 数据读取 helper（Streamlit app/pages 已移除）
 │       ├── __init__.py
-│       ├── app.py
-│       ├── data.py
-│       └── pages/
-│           ├── overview.py
-│           ├── data_browser.py
-│           └── traces.py
+│       └── data.py                     # get_settings_summary / get_user_model / get_episodic_entries
 │
 ├── web/                                 # Web 层（React 单页应用）
 │   ├── package.json                    # React 19 + Vite + TS + Tailwind + zustand + react-router
@@ -1000,7 +992,6 @@ CareerCrew/
 │   │   └── checkpointer.db              # LangGraph SQLite checkpointer
 │   ├── transcripts/                     # 情景记忆 JSONL（{user_id}/{thread_id}.jsonl）
 │   ├── user_model.json                  # 长期 User Model
-│   ├── knowledge/                       # 知识库原始文档（八股/面经/JD/简历范本）
 │   ├── uploads/                         # Web/MCP 上传文档（首次启动自动入库）
 │   └── parsed/                          # MinerU 产物落盘（页面图/对象裁剪图/Markdown）
 │
@@ -1015,11 +1006,11 @@ CareerCrew/
 │   ├── langsmith_smoke.py               # LangSmith 冒烟（--list 列根 run）
 │   └── eval_langsmith.py                # LangSmith 业务级评估
 │
-├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / qdrant-client / FlagEmbedding / modelscope / mineru / mcp / ragas / pytest
+├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / qdrant-client / FlagEmbedding / modelscope / requests / pymupdf / mcp / langsmith / ragas / pytest
 └── README.md
 ```
 
-> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI + create_agent) / `qdrant-client`(Qdrant) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `mineru`(多模态文档解析) / `mcp`(FastMCP server) / `langsmith`(全链路追踪) / `ragas`(评估) / `pytest`。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
+> **依赖说明**：`pyproject.toml` 依赖 `langgraph` / `langchain`+`langchain-openai`(init_chat_model + ChatOpenAI + create_agent) / `qdrant-client`(Qdrant) / `FlagEmbedding`(BGE-M3 三合一) / `modelscope`(BGE-M3 下载，HF 直连被拦) / `requests`(MinerU 云端 API) / `pymupdf`(页面渲染) / `mcp`(FastMCP server) / `langsmith`(全链路追踪) / `ragas`(评估) / `pytest`。mineru / colpali-engine / peft 不在项目依赖内（本地 `provider=local` 需要环境另有 mineru CLI）。CareerCrew **不依赖外部 RAG 项目**，RAG 流水线全部自建于 `careercrew_ai` 与 `careercrew_core/rag`。
 
 ### 5.3 模块职责表
 
@@ -1098,7 +1089,7 @@ CareerCrew/
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
 | `careercrew_ui/cli/renderer.py` | CLI 对话渲染 | HITL 提示、agent 输出格式化 |
-| `careercrew_ui/dashboard/` | Streamlit 备用（只读） | 总览 / 数据浏览 / 追踪 |
+| `careercrew_ui/dashboard/` | 数据读取 helper（Streamlit app/pages 已移除） | get_settings_summary / get_user_model / get_episodic_entries（/api 复用） |
 | `web/src/pages/*.tsx` | React Web 5 页面 | Chat / Consult / Data / Interview / Resume |
 | `web/` 技术栈 | React 19 + Vite + TS + Tailwind + zustand + react-router | 生产产物 web/dist 由 FastAPI 托管 |
 
@@ -1336,7 +1327,7 @@ langsmith:
 | BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
 | Qdrant | 连接失败 / 查询超时 | 重试；仍失败返回空结果 + 错误日志（单后端架构，无兜底） |
 | Rerank（硅基流动） | 超时 / 失败 | 回退 NoneReranker（原 RRF 排序），不阻塞检索 |
-| MCP 工具（mcp-jobs/Google） | 超时 / 不可用 | 工具返回错误信息给 agent，agent 决定重试/换路径；MVP 用 mock 兜底 |
+| MCP 工具（mcp-jobs/Google） | 超时 / 不可用 | 工具返回错误信息给 agent，agent 决定重试/换路径；无 mock 兜底（真实 mcp-jobs 猎聘为准） |
 | Contextual Chunking LLM | 生成上下文失败 | 该块不加上下文前缀（降级为普通块），继续 ingestion |
 | compaction | 总结 LLM 失败 | 保留原 state 不压缩，记录警告，下轮重试 |
 | 情景记忆写入 | JSONL 写失败 | 重试；失败则内存暂存 + 告警（不丢数据） |
@@ -1369,8 +1360,10 @@ langsmith:
 > 下方排期表记录的是 v0.3 规划阶段的历史任务分解，**文件路径与技术选型已与当前实现脱节**，保留作历史进度参照。实际架构以 §3 / §5 为准，关键演进：
 > - **D2/D5 向量库**：原 `milvus_store.py` + `chroma_store.py` → 实际 `qdrant_store.py`（唯一后端，见 §3.5 / ADR-7）。
 > - **D4 文档加载**：原 `markitdown_loader.py` → 实际 MinerU 系列（`mineru_loader.py` / `mineru_api_loader.py` / `mineru_common.py` / `loader_factory.py`，见 §3.7.4 / ADR-13）。
+>   - **D4 后续（v1.3）**：MinerU 解析默认切到云端 API（`provider=api`，`requests` 上传/轮询/下载），本地 `provider=local` 仅作可选回退；mineru 不再是 pyproject 依赖。
 > - **B2/L3 agent 内核与 trace**：原手写 `react/react_loop.py` + 自建 `traces.jsonl` → 实际 `agents/langchain_agent.py`（create_agent + middleware）+ LangSmith 追踪（见 §3.2 / §3.11 / ADR-1 / ADR-14）。
-> - **L4 Dashboard**：原 Streamlit 主力 → 实际 React Web（`web/`）主力 + Streamlit 备用（见 §3.11.2 / ADR-15）。
+> - **L4 Dashboard / 追踪查看**：原 Streamlit 主力 → 实际 React Web（`web/`）主力；Streamlit app/pages 已移除（data.py 保留）；原计划的 `/api/runs` 读取接口与前端轨迹面板也已移除，追踪直接在 LangSmith 控制台查看（见 §3.11.2 / ADR-14 / ADR-15）。
+> - **知识库语料**：原 `data/knowledge/` 手写 seed → 已移除，知识库只含 `data/uploads/`（用户上传 + MCP/Web 上传）。
 > - **新增层**：排期未规划 `careercrew_api`（FastAPI）/ `careercrew_mcp`（MCP Server）/ `web/`（React），均为后期落地（见 §3.12 / §5.2）。
 
 ### 阶段总览（大阶段 -> 目的）
@@ -2122,7 +2115,7 @@ langsmith:
 
 ### 长期愿景
 - **多用户**：checkpointer 换 Postgres、User Model 换 DB。
-- **云端部署**：Milvus Docker/K8s、API 化。
+- **云端部署**：Qdrant 集群、API 化。
 - **求职知识库沉淀**：从代码 -> 八股 -> 面试技巧，形成完整求职知识库，反哺社区。
 
 ---
@@ -2160,8 +2153,8 @@ langsmith:
 ```bash
 # conda env careercrew（Python 3.12，已建好）
 conda activate careercrew
-# BGE-M3 模型已下至 data/ms_cache/（ModelScope，HF 直连被拦）
-# 模型路径: data/ms_cache/models/BAAI--bge-m3/snapshots/master
+# BGE-M3 模型已下至 F:/AI_models/BAAI--bge-m3/snapshots/master（ModelScope，HF 直连被拦）
+# 对应 settings.yaml 的 embedding.model_path
 ```
 
 ### 9.2 配置
@@ -2170,10 +2163,13 @@ conda activate careercrew
 # 1. 设硅基流动 API key（环境变量，不硬编码）
 export SILICONFLOW_API_KEY="sk-xxx"            # Git Bash
 # $env:SILICONFLOW_API_KEY="sk-xxx"            # PowerShell
+export LANGSMITH_API_KEY="lsv2_xxx"            # LangSmith 追踪（enabled=true 时必填）
+export MINERU_API_KEY="xxx"                    # MinerU 云端解析（rag.loaders.provider=api 时必填）
 
 # 2. 编辑 config/settings.yaml（见 §5.5 完整配置示例）
 #    关键：llm.base_url 指向硅基流动、embedding.provider=bge_m3_local、rerank.backend=siliconflow
-#          vector_store.backend=qdrant、rag.loaders.backend=mineru、langsmith.enabled=true
+#          vector_store.backend=qdrant、rag.loaders.backend=mineru、rag.loaders.provider=api
+#          vlm.api_key（SILICONFLOW_API_KEY）、langsmith.enabled=true
 ```
 
 ### 9.3 运行
@@ -2208,5 +2204,11 @@ conda run -n careercrew pytest -q tests/e2e/          # 端到端（求职闭环
 
 ---
 
-> **文档状态**：v0.3（2026-08-01 修订）——LangGraph 1.x 版本对齐（§3.1.6）、HITL interrupt 恢复语义（§3.8.2）、记忆事件契约（§3.3.6）、知识库数据源与 MCP mock 先行落地（§3.6/§3.7）、配置同步（`rag.loaders`）、CI 与覆盖率口径、Milvus Lite Windows 风险、多用户边界。后续按实际开发迭代细化（排期子任务的修改文件列表与验收标准随实现校正）。
+> **文档状态**：v0.4（2026-08-11 修订，与代码实现对齐）——LangChain 1.x `create_agent` 内核 +
+> 自定义 middleware（§3.2）、Qdrant 唯一向量后端（§3.5，Milvus/Chroma 退役）、MinerU 多模态 RAG
+> （§3.7，云端 API `provider=api` 默认、本地 `local` 回退）、LangSmith 全链路追踪（§3.11，读取侧为
+> LangSmith 控制台 + `scripts/langsmith_smoke.py --list`，无 `/api/runs`）、React Web 主力前端 +
+> Streamlit app/pages 移除（§3.11.2 / ADR-15）、知识库语料收敛到 `data/uploads/`、三前端（CLI/Web/MCP）
+> 落地（§3.12）。v0.3（2026-08-01）曾记录 LangGraph 1.x 对齐、HITL interrupt 语义、记忆事件契约、
+> MCP mock 先行与 Milvus Lite Windows 风险，均已被上述演进取代。后续按实际开发迭代细化。
 > **决策记录**：见 `prompts/gen_dev_spec.md` 末尾"决策记录"小节（供参考，不写进 spec）。

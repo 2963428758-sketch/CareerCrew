@@ -2,7 +2,7 @@
 
 分层：careercrew_ai 最底层，不反向依赖 careercrew_core（Settings 仅 TYPE_CHECKING）。
 
-D2 将注册 milvus_lite/milvus_docker -> MilvusStore，D5 注册 chroma -> ChromaStore。
+向量库后端仅 Qdrant（create_vector_store 工厂路由，见 DEV_SPEC 3.5）。
 A4 提供 FakeVectorStore（内存版 cosine，单测复用）验证工厂路由与契约。
 契约对齐 DEV_SPEC 3.5.1：upsert / query / delete_by_metadata / get_by_ids。
 """
@@ -69,7 +69,7 @@ def _matches(metadata: dict, filters: dict) -> bool:
 
 
 class FakeVectorStore(BaseVectorStore):
-    """内存版向量库（cosine 相似度），单测复用，避免真实 Milvus。"""
+    """内存版向量库（cosine 相似度），单测复用，避免真实 Qdrant。"""
 
     def __init__(self, settings: Settings) -> None:
         self._records: dict[str, VectorRecord] = {}

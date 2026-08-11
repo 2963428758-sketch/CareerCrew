@@ -2,10 +2,8 @@
 
 通过 stdio 连接 MCP server（mcp-jobs / Google MCP），list_tools 发现工具，
 包装成 langchain StructuredTool（args schema 从 MCP inputSchema 转 pydantic），
-注册进 ToolRegistry（source="mcp"）。
-
-MVP 真实 mcp-jobs 未配置时用 search_jobs mock 兜底（N 阶段接真实投递）。
-每次工具调用现连现调（低频可接受，避免持久会话的 async 生命周期复杂度）。
+注册进 ToolRegistry（source="mcp"）。每次工具调用现连现调
+（低频可接受，避免持久会话的 async 生命周期复杂度）。
 """
 from __future__ import annotations
 

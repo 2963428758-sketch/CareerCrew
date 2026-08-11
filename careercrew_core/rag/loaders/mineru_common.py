@@ -25,7 +25,7 @@ class ParsingError(RuntimeError):
 
 
 def sanitize_doc_id(name: str) -> str:
-    """文件名 -> 安全 doc_id（与旧 Milvus 命名规则一致，幂等 id 基础）。"""
+    """文件名 -> 安全 doc_id（幂等 id 基础）。"""
     return re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", name).strip("._") or "doc"
 
 

@@ -74,6 +74,7 @@ def _build_job_cycle():
     )
 
     # 确保知识库已入库（data/uploads 下的 PDF/图片/docx；data/knowledge 不参与）
+    uploads_dir = Path(__file__).resolve().parents[1] / "data" / "uploads"
     if store.count() == 0:
         pipe = MultimodalIngestionPipeline(
             embedding, store, contextual=False,
@@ -92,7 +93,7 @@ def _build_job_cycle():
             chunk_overlap=settings.rag.chunking.chunk_overlap,
         )
         ingest_files = sorted(
-            p for p in Path("data/uploads").glob("*")
+            p for p in uploads_dir.glob("*")
             if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
         )
         for f in ingest_files:
