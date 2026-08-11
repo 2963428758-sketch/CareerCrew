@@ -15,6 +15,7 @@ max_iterations 用 middleware 实现（``before_model`` 计数 + ``wrap_model_ca
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -27,6 +28,8 @@ from langgraph.graph import add_messages
 
 MAX_ITERATIONS_MARKER = "careercrew_max_iterations_reached"
 _MAX_ITERATIONS_PROMPT = "（已达最大迭代轮次）"
+
+logger = logging.getLogger(__name__)
 
 
 class AgentExecState(TypedDict):
@@ -134,7 +137,12 @@ def run_agent(
         stream = agent.stream(
             {"messages": list(messages)},
             stream_mode=["messages", "updates"],
-            config={"recursion_limit": max_iterations * 2 + 6},
+            # langchain 1.3 起 before_model 是独立图节点，每轮迭代实际消耗
+            # 3 个 super-step（before_model + model + tools）；旧公式 2*N+6
+            # 会在 MaxIterationsMiddleware 的 marker（约 3*N+2 处）触发前
+            # 先撞 recursion_limit（实测 GraphRecursionError → 空 content）。
+            # 3*N+10 保证中间件短路先于递归上限。
+            config={"recursion_limit": max_iterations * 3 + 10},
         )
         for event in stream:
             mode, payload = event
@@ -173,8 +181,9 @@ def run_agent(
                             tool_calls_total += 1
                             if last_iter_idx >= 0:
                                 iterations[last_iter_idx].tool_results.append(m.content)
-    except Exception:  # noqa: BLE001 - 任何执行异常标记 error，不吞给上层
+    except Exception as e:  # noqa: BLE001 - 任何执行异常标记 error，不吞给上层
         failed = True
+        logger.exception("agent.stream 执行异常（run_agent 标记 stopped_reason=error）：%s", e)
 
     if max_reached:
         content = stop_content or _MAX_ITERATIONS_PROMPT

@@ -13,6 +13,21 @@ from careercrew_core.agents.base_agent import BaseAgent
 from careercrew_core.state.thread_state import CareerCrewState
 
 
+def opinion_fallback(content: str, stopped_reason: str) -> str:
+    """空意见兜底：顾问失败/超限时给出可读提示，避免前端空卡片。
+
+    content 非空时原样返回（可能是中断前的部分回答）。
+    """
+    content = (content or "").strip()
+    if content:
+        return content
+    if stopped_reason == "max_iterations":
+        return "（该顾问达到最大分析轮次，未能给出完整意见）"
+    if stopped_reason == "error":
+        return "（该顾问本次执行出错，未能给出意见）"
+    return ""
+
+
 def _synthesize(opinions: dict[str, str], question: str, llm: BaseChatModel) -> str:
     parts = "\n\n".join(f"【{name}】\n{content}" for name, content in opinions.items())
     prompt = (
@@ -39,7 +54,10 @@ def consult(
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
         }
         agent.run(state)
-        opinions[name] = agent.last_result.content
+        r = agent.last_result
+        opinions[name] = opinion_fallback(
+            getattr(r, "content", ""), getattr(r, "stopped_reason", "")
+        )
     return {"opinions": opinions, "synthesis": _synthesize(opinions, question, llm)}
 
 

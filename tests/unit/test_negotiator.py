@@ -35,3 +35,12 @@ def test_negotiator_rag_query_then_strategy() -> None:
     agent.run(state)
     assert "报价" in agent.last_result.content
     assert agent.last_result.tool_calls_total == 1
+
+
+def test_negotiator_prompt_limits_rag_retries() -> None:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "salary_negotiator.txt"
+    text = path.read_text(encoding="utf-8")
+    assert "最多检索 2-3 次" in text
+    assert "禁止反复检索" in text

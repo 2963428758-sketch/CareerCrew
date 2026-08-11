@@ -78,6 +78,23 @@ def test_max_iterations_short_circuit() -> None:
     assert agent.last_result.content == "（已达最大迭代轮次）"
 
 
+def test_max_iterations_short_circuit_high_limit() -> None:
+    """回归：langchain 1.3 的 before_model 是独立图节点，每轮迭代消耗 3 个
+    super-step。N=10 时 marker 需约 32 个 super-step，旧 recursion_limit
+    （2*N+6=26）会先撞 GraphRecursionError → 空 content。"""
+    llm = FakeChatModel([
+        AIMessage(content="", tool_calls=[_tc("add", {"a": 1, "b": 1}, f"c{i}")])
+        for i in range(12)
+    ])
+    agent = BaseAgent(name="x", system_prompt="sys", llm=llm, tools=[add], max_iterations=10)
+    update = agent.run(_state())
+    out = update["agent_outputs"]["x"]
+    assert out["stopped_reason"] == "max_iterations"
+    assert out["iterations"] == 10
+    assert out["tool_calls_total"] == 10
+    assert agent.last_result.content == "（已达最大迭代轮次）"
+
+
 def test_no_tools_direct_answer() -> None:
     llm = FakeChatModel([AIMessage(content="无工具回答")])
     agent = BaseAgent(name="x", system_prompt="sys", llm=llm)
@@ -124,4 +141,3 @@ def test_with_tool_registry() -> None:
     update = agent.run(_state(stage="planning"))
     assert update["agent_outputs"]["planner"]["content"] == "done"
     assert update["agent_outputs"]["planner"]["stopped_reason"] == "final_answer"
-

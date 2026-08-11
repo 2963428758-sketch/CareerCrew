@@ -39,6 +39,7 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
         def _worker_impl():
             attach_run_metadata(user_id=req.user_id, stage="consult")
             try:
+                from careercrew_core.supervisor.consult import _synthesize, opinion_fallback
                 from langchain_core.messages import HumanMessage
 
                 agents = req.agents or ["salary_negotiator", "career_planner"]
@@ -55,7 +56,10 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
                         "pending_action": None, "agent_outputs": {}, "target_companies": [],
                     }
                     agent.run(state)
-                    content = (agent.last_result.content or "").strip()
+                    r = agent.last_result
+                    content = opinion_fallback(
+                        getattr(r, "content", ""), getattr(r, "stopped_reason", "")
+                    )
                     opinions[name] = content
                     q.put({"type": "agent_end", "agent": name})
 
@@ -66,7 +70,6 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
 
                 # synthesis 流式
                 q.put({"type": "stage", "stage": "synthesis"})
-                from careercrew_core.supervisor.consult import _synthesize
 
                 # synthesis 用 LLM 一次 invoke（不流式），但拆成 chunk 模拟流式
                 synth = _synthesize(opinions, req.question, rt.llm)
