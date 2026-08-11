@@ -107,7 +107,9 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
             yield _ndjson_line({"type": "stage", "stage": "consult"})
             while True:
                 try:
-                    item = q.get(timeout=60.0)
+                    # salary_query 等真实抓取工具单次可能 5-60s，多顾问并行时
+                    # 放宽到 300s，避免工具执行期被误判为流超时（前端已有"思考中"指示）。
+                    item = q.get(timeout=300.0)
                 except queue.Empty:
                     yield _ndjson_line({"type": "error", "message": "stream timeout after 60s"})
                     break

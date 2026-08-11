@@ -34,3 +34,12 @@ def test_planner_updates_profile(tmp_path) -> None:
     model = um.load("u1")
     assert "Python" in model.profile.skills
     assert model.profile.direction == "大模型应用"
+
+
+def test_planner_prompt_includes_salary_query() -> None:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "career_planner.txt"
+    text = path.read_text(encoding="utf-8")
+    assert "salary_query" in text
+    assert "最多 2 次" in text

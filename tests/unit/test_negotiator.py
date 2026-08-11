@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from careercrew_core.agents.salary_negotiator import SalaryNegotiator
 from careercrew_core.tools.internal.rag_query import make_rag_query_tool
+from careercrew_core.tools.internal.salary_query import make_salary_query_tool
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 from tests.fakes import FakeChatModel
 
@@ -42,5 +43,46 @@ def test_negotiator_prompt_limits_rag_retries() -> None:
 
     path = Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "salary_negotiator.txt"
     text = path.read_text(encoding="utf-8")
-    assert "最多检索 2-3 次" in text
+    assert "salary_query" in text
+    assert "最多 2 次" in text
     assert "禁止反复检索" in text
+
+
+def test_negotiator_uses_salary_query_tool(monkeypatch) -> None:
+    import careercrew_core.tools.internal.salary_query as salary_query_mod
+
+    def fake_search(keyword, city="", top_k=10, timeout=180.0):
+        return [
+            {
+                "title": "大模型工程师（北京）",
+                "city": "北京",
+                "salary": "30-60k",
+                "salary_k": {"min_k": 30.0, "max_k": 60.0, "months": None},
+                "experience": "3-5年",
+            }
+        ]
+
+    monkeypatch.setattr(salary_query_mod, "search_jobs_mcp", fake_search)
+    reg = ToolRegistry()
+    reg.register(ToolSpec(tool=make_salary_query_tool()))
+    agent = SalaryNegotiator(
+        llm=FakeChatModel([
+            AIMessage(content="", tool_calls=[
+                {"name": "salary_query", "args": {"direction": "大模型工程师", "company": "字节跳动"}, "id": "c1", "type": "tool_call"}
+            ]),
+            AIMessage(content="基于猎聘实时薪资，字节大模型岗位 30-60K，建议报价区间 45-55K。"),
+        ]),
+        tools=reg, max_iterations=5,
+    )
+    state = {
+        "thread_id": "t1", "user_id": "u1", "stage": "negotiate", "user_intent": "帮我谈字节 offer 薪资",
+        "messages": [HumanMessage(content="字节 offer 35K，帮我谈")],
+        "pending_action": None, "agent_outputs": {}, "target_companies": [],
+    }
+    agent.run(state)
+    assert "报价" in agent.last_result.content
+    assert agent.last_result.tool_calls_total == 1
+    # 工具结果确为聚合薪资 JSON
+    tool_result = agent.last_result.iterations[0].tool_results[0]
+    assert "monthly_k" in tool_result
+    assert "猎聘" in tool_result

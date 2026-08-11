@@ -351,6 +351,7 @@ class CareerCrewRuntime:
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
         from careercrew_core.tools.internal.profile_update import make_profile_update_tool
         from careercrew_core.tools.internal.rag_query import make_rag_query_tool
+        from careercrew_core.tools.internal.salary_query import make_salary_query_tool
         from careercrew_core.tools.internal.search_jobs import search_jobs
         from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
@@ -371,6 +372,7 @@ class CareerCrewRuntime:
         elif kind == "salary" or kind == "planner":
             tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
             tools.register(ToolSpec(tool=make_profile_update_tool(self.user_model)))
+            tools.register(ToolSpec(tool=make_salary_query_tool()))
         elif kind == "knowledge":
             tools.register(ToolSpec(tool=make_rag_query_tool(hs, sink=rag_sink)))
         return tools
