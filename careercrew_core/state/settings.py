@@ -30,6 +30,8 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 # 向量库后端合法取值（多模态 RAG 全面替换后仅剩 Qdrant）
 _VALID_VECTOR_BACKENDS = {"qdrant"}
 _VALID_LOADER_BACKENDS = {"mineru"}
+_VALID_LOADER_PROVIDERS = {"api", "local"}
+_VALID_LOADER_MODEL_VERSIONS = {"pipeline", "vlm", "MinerU-HTML"}
 
 # 旧值 -> 迁移指引（fail-fast 时提示，不静默替换）
 _VECTOR_BACKEND_MIGRATION = {
@@ -99,10 +101,20 @@ class ChunkingSettings(BaseModel):
 
 
 class LoadersSettings(BaseModel):
-    """文档加载器配置（多模态 RAG：MinerU 子进程解析）。"""
+    """文档加载器配置（多模态 RAG：MinerU 云端 API 或本地子进程解析）。"""
 
     backend: str = "mineru"
+    provider: str = "api"  # api（云端精准解析，推荐，本机零推理负载）| local（本地子进程）
+    api_key: str = ""  # provider=api 时必填（MINERU_API_KEY）
+    model_version: str = "vlm"  # pipeline | vlm（推荐）| MinerU-HTML
+    poll_interval: int = 5  # API 轮询间隔（秒）
+    timeout: int = 1800  # API 任务最长等待（秒）
     output_dir: str = "./data/parsed"  # MinerU 产物落盘（页面图/对象裁剪图/Markdown）
+    device: str = "cpu"  # MinerU 子进程推理设备（cpu/cuda/mps；8GB 显存机型固定 cpu）
+    method: str = "auto"  # 解析方法：auto | txt（纯文本 PDF 最快，跳过 OCR）| ocr（强制 OCR）
+    formula: bool = True  # 公式识别（最重的模型之一；课件/简历等无公式文档可关掉提速）
+    table: bool = True  # 表格识别
+    language: str = "ch"  # 文档语言（API 参数，默认 ch）
 
 
 class RagSettings(BaseModel):
@@ -281,6 +293,26 @@ def validate_settings(settings: Settings) -> None:
         problems.append(
             f"rag.loaders.backend 取值非法: {settings.rag.loaders.backend}，"
             f"应为 {sorted(_VALID_LOADER_BACKENDS)} 之一{migration}"
+        )
+
+    # 文档加载器 provider 取值
+    if settings.rag.loaders.provider not in _VALID_LOADER_PROVIDERS:
+        problems.append(
+            f"rag.loaders.provider 取值非法: {settings.rag.loaders.provider}，"
+            f"应为 {sorted(_VALID_LOADER_PROVIDERS)} 之一"
+        )
+
+    # provider=api 时必须提供 MinerU API key
+    if settings.rag.loaders.provider == "api" and (
+        not settings.rag.loaders.api_key or "${" in settings.rag.loaders.api_key
+    ):
+        problems.append("rag.loaders.api_key 未设置（provider=api 时需 MINERU_API_KEY）")
+
+    # model_version 取值
+    if settings.rag.loaders.model_version not in _VALID_LOADER_MODEL_VERSIONS:
+        problems.append(
+            f"rag.loaders.model_version 取值非法: {settings.rag.loaders.model_version}，"
+            f"应为 {sorted(_VALID_LOADER_MODEL_VERSIONS)} 之一"
         )
 
     if problems:

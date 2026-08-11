@@ -78,6 +78,16 @@ def _build_job_cycle():
         pipe = MultimodalIngestionPipeline(
             embedding, store, contextual=False,
             output_dir=settings.rag.loaders.output_dir,
+            loader_provider=settings.rag.loaders.provider,
+            loader_api_key=settings.rag.loaders.api_key,
+            loader_device=settings.rag.loaders.device,
+            loader_method=settings.rag.loaders.method,
+            loader_formula=settings.rag.loaders.formula,
+            loader_table=settings.rag.loaders.table,
+            loader_language=settings.rag.loaders.language,
+            loader_model_version=settings.rag.loaders.model_version,
+            loader_poll_interval=settings.rag.loaders.poll_interval,
+            loader_timeout=settings.rag.loaders.timeout,
             chunk_size=settings.rag.chunking.chunk_size,
             chunk_overlap=settings.rag.chunking.chunk_overlap,
         )

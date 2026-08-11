@@ -1,7 +1,10 @@
 """BGE-M3 三合一 Embedding（D1）：dense + sparse + colbert 一次前向。
 
 本地 FlagEmbedding 跑（API 只给 dense，三合一只有本地能拿；ADR-3）。
-稀疏路免额外 BM25 倒排索引，与 Milvus 原生 hybrid 直接对接。
+稀疏路免额外 BM25 倒排索引，与 Qdrant 原生 hybrid 直接对接。
+
+注意：FlagEmbedding 1.4 未显式传 devices 时会自动选 CUDA（use_fp16 只控制精度），
+8GB 显存机型与其他进程叠加易 OOM——这里强制 devices="cpu"（对齐 v1.2 无 GPU 依赖）。
 
 FlagEmbedding 在 __init__ 内 lazy import，避免 import 本模块就加载 2GB 模型。
 sparse 的 token id 从 str 转 int（Milvus SPARSE_FLOAT_VECTOR 要 int key）。
@@ -21,7 +24,9 @@ class BGEM3Embedding(BaseEmbedding):
         from FlagEmbedding import BGEM3FlagModel
 
         cfg = settings.embedding
-        self._model = BGEM3FlagModel(cfg.model_path, use_fp16=cfg.use_fp16)
+        self._model = BGEM3FlagModel(
+            cfg.model_path, use_fp16=cfg.use_fp16, devices="cpu"
+        )
         self._batch_size = cfg.batch_size
 
     def encode(self, texts: list[str]) -> EmbeddingOutput:

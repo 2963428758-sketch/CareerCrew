@@ -8,6 +8,7 @@ from careercrew_core.rag.loaders.base_loader import (
 )
 from careercrew_core.rag.loaders.loader_factory import create_loader
 from careercrew_core.rag.loaders.markdown_loader import MarkdownLoader
+from careercrew_core.rag.loaders.mineru_api_loader import MinerUApiLoader
 from careercrew_core.rag.loaders.mineru_loader import MinerULoader, ParsingError
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "ParsedObject",
     "create_loader",
     "MarkdownLoader",
+    "MinerUApiLoader",
     "MinerULoader",
     "ParsingError",
 ]

@@ -38,6 +38,7 @@ def test_load_settings_ok(tmp_path: Path, valid_config_data: dict) -> None:
     assert settings.rag.retrieval.mode == "hybrid"
     assert settings.rag.chunking.contextual is True
     assert settings.rag.loaders.backend == "mineru"
+    assert settings.rag.loaders.provider == "local"  # 单测 fixture 走本地路由，不依赖云端 key
     assert settings.vlm.model == "Qwen/Qwen3-VL-8B-Instruct"
     assert settings.tools.hitl.requires_confirmation == ["submit_application", "accept_offer"]
 
@@ -137,3 +138,33 @@ def test_invalid_loader_backend(tmp_path: Path, valid_config_data: dict) -> None
     with pytest.raises(SettingsError) as exc:
         load_settings(_write_config(tmp_path, valid_config_data))
     assert "rag.loaders.backend" in str(exc.value)
+
+
+def test_loader_provider_api_requires_key(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["rag"]["loaders"]["provider"] = "api"
+    valid_config_data["rag"]["loaders"]["api_key"] = ""
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    assert "rag.loaders.api_key" in str(exc.value)
+
+
+def test_loader_provider_api_key_from_env(tmp_path: Path, valid_config_data: dict, monkeypatch) -> None:
+    valid_config_data["rag"]["loaders"]["provider"] = "api"
+    valid_config_data["rag"]["loaders"]["api_key"] = "${TEST_MINERU_KEY}"
+    monkeypatch.setenv("TEST_MINERU_KEY", "sk-mineru")
+    settings = load_settings(_write_config(tmp_path, valid_config_data))
+    assert settings.rag.loaders.api_key == "sk-mineru"
+
+
+def test_invalid_loader_provider(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["rag"]["loaders"]["provider"] = "weird"
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    assert "rag.loaders.provider" in str(exc.value)
+
+
+def test_invalid_loader_model_version(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["rag"]["loaders"]["model_version"] = "weird"
+    with pytest.raises(SettingsError) as exc:
+        load_settings(_write_config(tmp_path, valid_config_data))
+    assert "rag.loaders.model_version" in str(exc.value)

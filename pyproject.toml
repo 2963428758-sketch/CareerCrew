@@ -28,14 +28,12 @@ dependencies = [
     "PyYAML>=6.0",
     "python-dotenv>=1.0.0",
     "qdrant-client>=1.19.0",
-    "mineru>=3.4.0",
+    "requests>=2.31.0",
     "pymupdf>=1.24.0",
     "mcp>=1.20,<2",
 ]
 
 [project.optional-dependencies]
-# 多格式文档解析（多模态 RAG：PDF/Word/Excel/图片 -> 页面图 + Markdown）
-ingestion = ["mineru[pipeline]>=3.4.0"]
 # 答案级评估（L1 阶段用）
 eval = ["ragas>=0.2.0"]
 # Web 前端后端：FastAPI + SSE 流式（uvicorn/multipart 已在 env，实际只补 fastapi）

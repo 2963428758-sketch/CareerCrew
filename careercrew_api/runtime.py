@@ -102,6 +102,16 @@ class CareerCrewRuntime:
             pipe = MultimodalIngestionPipeline(
                 embedding, store, contextual=False,
                 output_dir=settings.rag.loaders.output_dir,
+                loader_provider=settings.rag.loaders.provider,
+                loader_api_key=settings.rag.loaders.api_key,
+                loader_device=settings.rag.loaders.device,
+                loader_method=settings.rag.loaders.method,
+                loader_formula=settings.rag.loaders.formula,
+                loader_table=settings.rag.loaders.table,
+                loader_language=settings.rag.loaders.language,
+                loader_model_version=settings.rag.loaders.model_version,
+                loader_poll_interval=settings.rag.loaders.poll_interval,
+                loader_timeout=settings.rag.loaders.timeout,
                 chunk_size=settings.rag.chunking.chunk_size,
                 chunk_overlap=settings.rag.chunking.chunk_overlap,
             )
@@ -390,10 +400,30 @@ class CareerCrewRuntime:
         return tool.invoke({"image_path": path, "prompt": "请描述图片内容并提取其中的文字。"})
 
     def load_document(self, path: str) -> str:
-        """MinerU 子进程解析为文本（resume 上传 pdf/docx 等）。"""
-        from careercrew_core.rag.loaders.mineru_loader import MinerULoader
+        """MinerU 解析为文本（resume 上传 pdf/docx 等；按 provider 走云端 API 或本地子进程）。"""
+        loaders = self.settings.rag.loaders
+        if loaders.provider == "local":
+            from careercrew_core.rag.loaders.mineru_loader import MinerULoader
 
-        parsed = MinerULoader(self.settings.rag.loaders.output_dir).parse(path)
+            parsed = MinerULoader(
+                loaders.output_dir,
+                device=loaders.device,
+                method=loaders.method,
+                formula=loaders.formula,
+            ).parse(path)
+        else:
+            from careercrew_core.rag.loaders.mineru_api_loader import MinerUApiLoader
+
+            parsed = MinerUApiLoader(
+                loaders.output_dir,
+                api_key=loaders.api_key,
+                model_version=loaders.model_version,
+                formula=loaders.formula,
+                table=loaders.table,
+                language=loaders.language,
+                poll_interval=loaders.poll_interval,
+                timeout=loaders.timeout,
+            ).parse(path)
         return parsed.to_text()
 
     def ingest_document(self, path: str, metadata: dict | None = None) -> dict:

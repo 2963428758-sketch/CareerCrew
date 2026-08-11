@@ -50,7 +50,17 @@ rag:
     contextual: true             # Contextual Chunking（LLM 加上下文前置）
   loaders:
     backend: mineru              # MinerU 子进程解析（PDF/图片/docx/pptx/xlsx）
+    provider: api                # api（云端精准解析，推荐，本机零推理负载）| local（本地子进程）
+    api_key: "${MINERU_API_KEY}" # MinerU 云端 API token（provider=api 时必填）
+    model_version: vlm           # pipeline | vlm（推荐）| MinerU-HTML
+    poll_interval: 5             # API 轮询间隔（秒）
+    timeout: 1800                # API 任务最长等待（秒）
     output_dir: ./data/parsed    # MinerU 产物落盘（页面图/对象裁剪图/Markdown）
+    device: cpu                  # MinerU 子进程设备：cpu（8GB 显存机型避免 GPU OOM）
+    method: auto                 # auto | txt（纯文本 PDF 最快）| ocr（强制 OCR）
+    formula: true                # 公式识别开关；无公式文档关掉可显著提速
+    table: true                  # 表格识别开关
+    language: ch                 # 文档语言（API 参数）
 
 # ── VLM（硅基流动，多模态生成 + 精排） ──
 vlm:

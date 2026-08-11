@@ -19,6 +19,7 @@ from careercrew_ai.vector_store.base_vector_store import BaseVectorStore, Vector
 from careercrew_core.rag.chunking.document_chunker import DocumentChunker
 from careercrew_core.rag.loaders.base_loader import ParsedDocument
 from careercrew_core.rag.loaders.markdown_loader import MarkdownLoader
+from careercrew_core.rag.loaders.mineru_api_loader import MinerUApiLoader
 from careercrew_core.rag.loaders.mineru_loader import MinerULoader
 from careercrew_core.tracing.langsmith import traced_call
 
@@ -37,6 +38,16 @@ class MultimodalIngestionPipeline:
         contextual: bool = True,
         object_extraction: bool = True,
         output_dir: str | Path = "./data/parsed",
+        loader_provider: str = "api",
+        loader_api_key: str = "",
+        loader_device: str = "cpu",
+        loader_method: str = "auto",
+        loader_formula: bool = True,
+        loader_table: bool = True,
+        loader_language: str = "ch",
+        loader_model_version: str = "vlm",
+        loader_poll_interval: int = 5,
+        loader_timeout: int = 1800,
         chunk_size: int = 800,
         chunk_overlap: int = 100,
     ) -> None:
@@ -46,7 +57,37 @@ class MultimodalIngestionPipeline:
         self._contextual = contextual and contextualizer is not None
         self._object_extraction = object_extraction
         self._output_dir = Path(output_dir)
+        self._loader_provider = loader_provider
+        self._loader_api_key = loader_api_key
+        self._loader_device = loader_device
+        self._loader_method = loader_method
+        self._loader_formula = loader_formula
+        self._loader_table = loader_table
+        self._loader_language = loader_language
+        self._loader_model_version = loader_model_version
+        self._loader_poll_interval = loader_poll_interval
+        self._loader_timeout = loader_timeout
         self._chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    def _make_loader(self):
+        """按 provider 路由：api（云端，默认）| local（本地子进程）。"""
+        if self._loader_provider == "local":
+            return MinerULoader(
+                self._output_dir,
+                device=self._loader_device,
+                method=self._loader_method,
+                formula=self._loader_formula,
+            )
+        return MinerUApiLoader(
+            self._output_dir,
+            api_key=self._loader_api_key,
+            model_version=self._loader_model_version,
+            formula=self._loader_formula,
+            table=self._loader_table,
+            language=self._loader_language,
+            poll_interval=self._loader_poll_interval,
+            timeout=self._loader_timeout,
+        )
 
     def ingest_text(self, text: str, source: str = "", metadata: dict | None = None) -> int:
         """纯文本入库（根 run careercrew.ingest，Contextualizer 逐 chunk LLM 不刷配额）。"""
@@ -99,7 +140,7 @@ class MultimodalIngestionPipeline:
             doc = MarkdownLoader().load(str(p))
             meta = {**doc.metadata, **(metadata or {})}
             return self.ingest_text(doc.text, source=str(p), metadata=meta)
-        parsed = MinerULoader(self._output_dir).parse(p)
+        parsed = self._make_loader().parse(p)
         return self._ingest_parsed(parsed, metadata)
 
     def _ingest_parsed(self, parsed: ParsedDocument, metadata: dict | None = None) -> int:

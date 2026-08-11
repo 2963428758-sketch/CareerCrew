@@ -26,6 +26,7 @@ secrets.yaml
 
 # Test / cache
 .pytest_cache/
+.pytest_tmp/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/

@@ -10,6 +10,19 @@
 > `MultimodalSearch` 只有文本路（图片查询经 VLM API 提取文本后入文本路）；
 > `rag.multimodal` 配置段删除；ColQwen/SigLIP2 均不在运行时使用。
 
+> **v1.3 修订（2026-08-11，云端 API 化定稿）**：MinerU 解析从本地子进程切换为
+> **MinerU 官方精准解析 API**（`https://mineru.net/api/v4/file-urls/batch` 上传 →
+> 轮询 `GET /api/v4/extract-results/batch/{batch_id}` → 下载 zip 解压），本机零推理负载，
+> 彻底消除 8GB 显存 OOM 与 CPU 慢解析。新增 `rag.loaders.provider: api|local`
+> （默认 `api`）、`api_key`（`MINERU_API_KEY`）、`model_version`（默认 `vlm`）、
+> `poll_interval` / `timeout` / `table` / `language`；本地 loader 保留为 `local`
+> 可选回退。新增 `careercrew_core/rag/loaders/mineru_api_loader.py`，产物组装
+> 抽到 `mineru_common.py` 与本地 loader 共用。实现要点：
+> - OSS 上传 TLS 需关闭 ALPN（urllib3 默认协商 h2 触发 SSL EOF），已内置默认 Session；
+> - 上传/轮询/下载带指数退避重试（云端间歇断连）；
+> - 批量结果状态含 `waiting-file`（上传后排队）等活跃态；
+> - zip 解压做路径穿越防护；解析失败统一 `ParsingError` → `doc_type=error` 跳过。
+
 ## 0. 修订说明（相对 v1 的关键决策）
 
 **R1 · MCP SDK 锁定 1.x，用 FastMCP。** 实测当前环境 `mcp==2.0.0` 已移除
@@ -104,7 +117,17 @@ vector_store:
 rag:
   loaders:
     backend: mineru            # 合法值只剩 {"mineru"}
+    provider: api              # api（云端精准解析，默认）| local（本地子进程回退）
+    api_key: "${MINERU_API_KEY}"
+    model_version: vlm         # pipeline | vlm（推荐）| MinerU-HTML
+    poll_interval: 5
+    timeout: 1800
     output_dir: ./data/parsed  # MinerU 产物落盘（页面图/对象裁剪图/Markdown）
+    device: cpu                # 仅 provider=local 使用
+    method: auto               # 仅 provider=local 使用
+    formula: true
+    table: true
+    language: ch
 
 vlm:
   model: Qwen/Qwen3-VL-8B-Instruct

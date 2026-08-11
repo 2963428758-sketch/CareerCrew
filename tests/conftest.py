@@ -55,7 +55,20 @@ def valid_config() -> dict:
                 "chunk_overlap": 100,
                 "contextual": True,
             },
-            "loaders": {"backend": "mineru", "output_dir": "./data/parsed"},
+            "loaders": {
+                "backend": "mineru",
+                "provider": "local",  # 单测不依赖云端 key，走本地子进程路由
+                "api_key": "",
+                "model_version": "vlm",
+                "poll_interval": 5,
+                "timeout": 1800,
+                "output_dir": "./data/parsed",
+                "device": "cpu",
+                "method": "auto",
+                "formula": True,
+                "table": True,
+                "language": "ch",
+            },
         },
         "vlm": {
             "model": "Qwen/Qwen3-VL-8B-Instruct",
