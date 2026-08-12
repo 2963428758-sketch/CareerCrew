@@ -32,13 +32,13 @@
 pyproject.toml              # [web] extra + packages.find include careercrew_api
 careercrew_api/             # FastAPI 后端包(与 CLI 平级的组合根)
 ├── __init__.py
-├── main.py                 # app、CORS、/api 挂载、生产托管 web/dist(SPA fallback)
+├── main.py                 # app、CORS、/api 挂载、生产托管 careercrew_web/dist(SPA fallback)
 ├── runtime.py              # CareerCrewRuntime 惰性单例 + 会话级 agent 工厂 + per-thread episodic
 ├── sse.py                  # stream_agent(): 线程+queue → NDJSON 生成器
 ├── schemas.py              # pydantic 请求/响应模型
 ├── deps.py                 # get_runtime_dep 依赖(测试用 dependency_overrides 换 fake)
 └── routers/{__init__,chat,interview,resume,consult,data,knowledge}.py
-web/                        # React 前端(独立 package.json,Vite 工程)
+careercrew_web/             # React 前端(独立 package.json,Vite 工程)
 tests/api/                  # API 测试(TestClient + FakeRuntime 注入)
 data/uploads/{user_id}/     # 上传暂存(gitignore 加 data/uploads/)
 ```
@@ -114,7 +114,7 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 > 追踪查看**无 HTTP 接口**：`GET /api/traces` 已移除，直接在 LangSmith 控制台查看，
 > `scripts/langsmith_smoke.py --list` 只读列根 run。
 
-## 5. 前端(web/src)
+## 5. 前端(careercrew_web/src)
 
 - **技术**: Vite + React 19 + TypeScript + Tailwind CSS v3 + shadcn/ui(button/card/textarea/tabs/skeleton/badge/input)+ zustand + react-router-dom v6 + react-markdown(remark-gfm)+ @fontsource/space-grotesk(本地字体,不依赖 Google Fonts)
 - `vite.config.ts` 加 `server.proxy["/api"] = "http://localhost:8000"`(dev)
@@ -145,7 +145,7 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 
 ## 7. 生产模式
 
-- `cd web && npm run build` → FastAPI StaticFiles 托管 `/assets` + catch-all SPA fallback 到 index.html
+- `cd careercrew_web && npm run build` → FastAPI StaticFiles 托管 `/assets` + catch-all SPA fallback 到 index.html
 - 开发模式: uvicorn :8000 + vite :5173(`/api` 代理到 8000)
 
 ---

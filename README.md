@@ -49,9 +49,9 @@ conda run -n careercrew pytest -q tests/unit/
 |----|------|
 | `careercrew_ai` | LLM 适配 / embedding(BGE-M3) / reranker / vector_store / `create_agent` 执行链 |
 | `careercrew_core` | LangGraph supervisor + 6 agent + 记忆 + 工具注册表 + state + 自建 RAG + 求职周期工作流 |
-| `careercrew_api` | FastAPI（SSE 流式 + 会诊 + 记忆/线程管理），生产托管 `web/dist` |
+| `careercrew_api` | FastAPI（SSE 流式 + 会诊 + 记忆/线程管理），生产托管 `careercrew_web/dist` |
 | `careercrew_mcp` | 自建 MCP server |
-| `web/` | React + Vite 前端（求职对话 / 会诊 / 面试 / 简历 / 知识库 / 数据） |
+| `careercrew_web/` | React + Vite 前端（求职对话 / 会诊 / 面试 / 简历 / 知识库 / 数据） |
 
 依赖方向：`careercrew_ai` → `careercrew_core` → `careercrew_api`（单向，core 只发事件不碰渲染）。
 

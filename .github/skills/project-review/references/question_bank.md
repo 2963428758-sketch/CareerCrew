@@ -17,7 +17,7 @@
 **参考答案**：引出默认 HITL（投递/接 offer 等必确认）、记忆系统（避免重复犯错）、风险分级工具（requires_confirmation）。高 stakes 决策不允许全自动。
 
 ### 1-04 ⭐ CareerCrew 的分层架构是什么？依赖方向？
-**参考答案**：careercrew_ai -> careercrew_core -> careercrew_api，单向依赖，core 只发事件不碰渲染，web/ 独立前端。
+**参考答案**：careercrew_ai -> careercrew_core -> careercrew_api，单向依赖，core 只发事件不碰渲染，careercrew_web/ 独立前端。
 
 ### 1-05 ⭐⭐ 项目复用了 MODULAR-RAG-MCP-SERVER 哪些能力？为什么不从头写？
 **参考答案**：复用 Hybrid 检索+Rerank+MCP+llm_factory/trace/evaluator/BaseVectorStore。不重复造轮子，聚焦 CareerCrew 自己的核心创新（多 agent+记忆+HITL+工作流）。

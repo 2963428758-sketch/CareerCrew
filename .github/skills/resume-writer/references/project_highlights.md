@@ -49,7 +49,7 @@
 - **核心说法**：LangSmith 全链路追踪（脱敏上传）+ Web 数据看板（画像/记忆/记忆设置）；答案级评估（简历匹配度/面试题质量，复用 Ragas）+ 业务级评估（转化率/通过率/offer）。
 - **话术方向**：agent 系统的黑盒问题用 LangSmith trace 破解；轨迹级评估（高级，LLM-as-judge + 黄金回放）。
 - **量化角度**：LLM/工具/ReAct/HITL/RAG/记忆全链路追踪、答案级+业务级双维度。
-- **锚点**：`docs/DEV_SPEC.md` §3.10/§3.11、`web/src/pages/DataPage.tsx`。
+- **锚点**：`docs/DEV_SPEC.md` §3.10/§3.11、`careercrew_web/src/pages/DataPage.tsx`。
 
 ## 亮点 9：本地优先（零外部服务）
 - **核心说法**：Postgres/Qdrant 跑在本地 Docker（通用容器，跨项目共用），LLM/Rerank 走硅基流动 API，`pip install` 即可跑通。

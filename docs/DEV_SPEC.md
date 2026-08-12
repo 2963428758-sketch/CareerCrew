@@ -19,7 +19,7 @@
 
 ## 1. 项目概述
 
-CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端有两套入口：**Web**（FastAPI 后端 `careercrew_api` + React 单页应用 `web/`，SSE 流式，生产模式 FastAPI 单端口托管 `web/dist`）、**MCP Server**（`careercrew_mcp`，把多模态 RAG 能力暴露为 ingest/search/query/status 工具，供外部 Agent 直连）。
+CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端有两套入口：**Web**（FastAPI 后端 `careercrew_api` + React 单页应用 `careercrew_web/`，SSE 流式，生产模式 FastAPI 单端口托管 `careercrew_web/dist`）、**MCP Server**（`careercrew_mcp`，把多模态 RAG 能力暴露为 ingest/search/query/status 工具，供外部 Agent 直连）。
 
 ### 设计理念 (Design Philosophy)
 
@@ -557,7 +557,7 @@ HITL 确认投递 (apply) ── interrupt
 
 **目标：** LangSmith 全链路追踪（替代自建 JSONL trace）+ React Web 前端（替代 Streamlit 主力），零自维护 trace schema。
 
-> **演进说明**：v0.3 spec 为"自建 TraceContext + JSON Lines + Streamlit Dashboard，不依赖 LangSmith"。落地中改为 LangSmith 承担全链路追踪（逐轮明细自动捕获 + 脱敏 + 按会话过滤），自建 JSONL trace 退役；前端主力从 Streamlit 切到 React Web（`web/`）；后续 Streamlit app/pages 与自建读取接口（`/api/runs`、前端轨迹面板）一并移除，追踪直接在 LangSmith 控制台查看（见 ADR-14 / ADR-15）。
+> **演进说明**：v0.3 spec 为"自建 TraceContext + JSON Lines + Streamlit Dashboard，不依赖 LangSmith"。落地中改为 LangSmith 承担全链路追踪（逐轮明细自动捕获 + 脱敏 + 按会话过滤），自建 JSONL trace 退役；前端主力从 Streamlit 切到 React Web（`careercrew_web/`）；后续 Streamlit app/pages 与自建读取接口（`/api/runs`、前端轨迹面板）一并移除，追踪直接在 LangSmith 控制台查看（见 ADR-14 / ADR-15）。
 
 #### 3.11.1 LangSmith 全链路追踪【MVP 核心】
 实现位置：`careercrew_core/tracing/langsmith.py`。
@@ -568,8 +568,8 @@ HITL 确认投递 (apply) ── interrupt
 - **读取侧**：`scripts/langsmith_smoke.py`（`--list` 只读列根 run）、`scripts/eval_langsmith.py`（业务级评估消费 run）。
 
 #### 3.11.2 React Web 前端【MVP 核心】
-实现位置：`web/`（React 19 + Vite + TypeScript + Tailwind + zustand + react-router）。
-- **后端**：`careercrew_api`（FastAPI），6 个路由模块：`data`（`/api/health`、`/api/config`、`/api/profile`、`/api/threads`、`/api/memory`）/ `chat` / `interview` / `resume` / `consult` / `knowledge`，SSE NDJSON 流式；生产模式 FastAPI 单端口托管 `web/dist`（SPA fallback）。
+实现位置：`careercrew_web/`（React 19 + Vite + TypeScript + Tailwind + zustand + react-router）。
+- **后端**：`careercrew_api`（FastAPI），6 个路由模块：`data`（`/api/health`、`/api/config`、`/api/profile`、`/api/threads`、`/api/memory`）/ `chat` / `interview` / `resume` / `consult` / `knowledge`，SSE NDJSON 流式；生产模式 FastAPI 单端口托管 `careercrew_web/dist`（SPA fallback）。
 - **运行时**：`careercrew_api/runtime.py` 进程级重组件单例（llm / embedding / store / reranker / MultimodalSearch / episodic / user_model）+ 会话级 agent / JobCycle（LRU 缓存，按 thread_id）。
 - **页面**：Chat / Consult（多 agent 会诊）/ Data（画像 / 记忆 / 知识库管理）/ Interview / Resume。
 - **Dashboard 状态（实施后定稿）**：Streamlit 的 `app.py` 与 `pages/*` 已移除，
@@ -586,9 +586,9 @@ HITL 确认投递 (apply) ── interrupt
 |----|------|------|
 | AI 层 | `careercrew_ai` | LLM 适配(init_chat_model) / embedding(BGE-M3) / reranker(含 VLM 视觉重排) / vector_store(Qdrant)；`create_agent` 内核 + middleware；agent prompts |
 | 核心层 | `careercrew_core` | LangGraph supervisor + 5 agent 节点 + 记忆 + 工具注册表 + state + 多模态 RAG + LangSmith tracing + evaluation |
-| API 层 | `careercrew_api` | FastAPI 后端：6 路由 + SSE 流式 + runtime 单例 + 生产托管 web/dist |
+| API 层 | `careercrew_api` | FastAPI 后端：6 路由 + SSE 流式 + runtime 单例 + 生产托管 careercrew_web/dist |
 | MCP 层 | `careercrew_mcp` | 多模态 RAG MCP Server（ingest / search / query / status），stdio 或 Streamable HTTP |
-| Web 层 | `web/` | React 单页应用（5 页面），Vite 构建，生产产物 web/dist 由 FastAPI 托管 |
+| Web 层 | `careercrew_web/` | React 单页应用（5 页面），Vite 构建，生产产物 careercrew_web/dist 由 FastAPI 托管 |
 
 > 详细目录树见 5.2。分层规则：`careercrew_ai` 不 import `careercrew_core`（避免循环）；`careercrew_core` 不碰渲染 / 协议；`careercrew_api` 复用 `careercrew_core/workflow` 的 JobCycle。
 
@@ -749,7 +749,7 @@ HITL 确认投递 (apply) ── interrupt
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          前端层 (React Web)                                  │
 │    ┌──────────────────────────────────────────────────────┐                 │
-│    │              React Web (web/) 5 页面 SPA + SSE 流式   │                 │
+│    │              React Web (careercrew_web/) 5 页面 SPA + SSE 流式   │                 │
 │    └───────────────────────────────────┬──────────────────┘                 │
 └────────────────────────────────────────┼───────────────────────────────────┘
                 │                         │ HTTP/SSE
@@ -757,7 +757,7 @@ HITL 确认投递 (apply) ── interrupt
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │            API 层 (careercrew_api) - FastAPI + runtime 单例                   │
 │  6 路由: data/chat/interview/resume/consult/knowledge + SSE NDJSON 流式       │
-│  runtime: 重组件进程级单例 + 会话级 agent/JobCycle(LRU) + 生产托管 web/dist  │
+│  runtime: 重组件进程级单例 + 会话级 agent/JobCycle(LRU) + 生产托管 careercrew_web/dist  │
 └─────────────────────────────┬───────────────────────────────────────────────┘
                               │
                 ┌────────────────────┴───────────────────┐
@@ -934,7 +934,7 @@ CareerCrew/
 │
 ├── careercrew_api/                      # API 层（FastAPI 后端）
 │   ├── __init__.py
-│   ├── main.py                         # create_app：CORS + /api 路由 + 托管 web/dist(SPA)
+│   ├── main.py                         # create_app：CORS + /api 路由 + 托管 careercrew_web/dist(SPA)
 │   ├── runtime.py                      # CareerCrewRuntime：重组件单例 + 会话级 agent/JobCycle
 │   ├── deps.py                         # FastAPI 依赖注入
 │   ├── schemas.py                      # 请求/响应模型
@@ -957,7 +957,7 @@ CareerCrew/
 │   ├── __main__.py                     # python -m careercrew_mcp 入口
 │   └── server.py                       # FastMCP：ingest_document/search/query/status
 │
-├── web/                                 # Web 层（React 单页应用）
+├── careercrew_web/                                 # Web 层（React 单页应用）
 │   ├── package.json                    # React 19 + Vite + TS + Tailwind + zustand + react-router
 │   ├── vite.config.ts
 │   └── src/
@@ -1045,7 +1045,7 @@ CareerCrew/
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `main.py` | FastAPI 应用 | CORS + 6 路由 + 托管 web/dist（SPA fallback） |
+| `main.py` | FastAPI 应用 | CORS + 6 路由 + 托管 careercrew_web/dist（SPA fallback） |
 | `runtime.py` | 运行时单例 | 重组件进程级单例 + 会话级 agent/JobCycle（LRU）+ LangSmith traced_call |
 | `routers/*.py` | 6 路由 | data / chat / interview / resume / consult / knowledge，SSE NDJSON |
 | `sse.py` | SSE 流式 | NDJSON 逐 token 推送 |
@@ -1064,12 +1064,12 @@ CareerCrew/
 | `server.py` | 多模态 RAG MCP Server | FastMCP：ingest_document / search / query / status，stdio 或 Streamable HTTP |
 | `__main__.py` | 启动入口 | `python -m careercrew_mcp`，`--http` / `--port` |
 
-#### 5.3.6 前端层 (`web/`)
+#### 5.3.6 前端层 (`careercrew_web/`)
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `web/src/pages/*.tsx` | React Web 5 页面 | Chat / Consult / Data / Interview / Resume |
-| `web/` 技术栈 | React 19 + Vite + TS + Tailwind + zustand + react-router | 生产产物 web/dist 由 FastAPI 托管 |
+| `careercrew_web/src/pages/*.tsx` | React Web 5 页面 | Chat / Consult / Data / Interview / Resume |
+| `careercrew_web/` 技术栈 | React 19 + Vite + TS + Tailwind + zustand + react-router | 生产产物 careercrew_web/dist 由 FastAPI 托管 |
 
 ### 5.4 数据流说明
 
@@ -1340,9 +1340,9 @@ langsmith:
 > - **D4 文档加载**：原 `markitdown_loader.py` → 实际 MinerU 系列（`mineru_loader.py` / `mineru_api_loader.py` / `mineru_common.py` / `loader_factory.py`，见 §3.7.4 / ADR-13）。
 >   - **D4 后续（v1.3）**：MinerU 解析默认切到云端 API（`provider=api`，`requests` 上传/轮询/下载），本地 `provider=local` 仅作可选回退；mineru 不再是 pyproject 依赖。
 > - **B2/L3 agent 内核与 trace**：原手写 `react/react_loop.py` + 自建 `traces.jsonl` → 实际 `agents/langchain_agent.py`（create_agent + middleware）+ LangSmith 追踪（见 §3.2 / §3.11 / ADR-1 / ADR-14）。
-> - **L4 Dashboard / 追踪查看**：原 Streamlit 主力 → 实际 React Web（`web/`）主力；Streamlit app/pages 已移除（data.py 保留）；原计划的 `/api/runs` 读取接口与前端轨迹面板也已移除，追踪直接在 LangSmith 控制台查看（见 §3.11.2 / ADR-14 / ADR-15）。
+> - **L4 Dashboard / 追踪查看**：原 Streamlit 主力 → 实际 React Web（`careercrew_web/`）主力；Streamlit app/pages 已移除（data.py 保留）；原计划的 `/api/runs` 读取接口与前端轨迹面板也已移除，追踪直接在 LangSmith 控制台查看（见 §3.11.2 / ADR-14 / ADR-15）。
 > - **知识库语料**：原 `data/knowledge/` 手写 seed → 已移除，知识库只含 `data/uploads/`（用户上传 + MCP/Web 上传）。
-> - **新增层**：排期未规划 `careercrew_api`（FastAPI）/ `careercrew_mcp`（MCP Server）/ `web/`（React），均为后期落地（见 §3.12 / §5.2）。
+> - **新增层**：排期未规划 `careercrew_api`（FastAPI）/ `careercrew_mcp`（MCP Server）/ `careercrew_web/`（React），均为后期落地（见 §3.12 / §5.2）。
 
 ### 阶段总览（大阶段 -> 目的）
 
@@ -2154,8 +2154,8 @@ export MINERU_API_KEY="xxx"                    # MinerU 云端解析（rag.loade
 
 ```bash
 conda run -n careercrew uvicorn careercrew_api.main:app --reload --port 8000  # FastAPI 后端
-cd web && npm run dev                                          # React 前端（Vite，:5173 代理 /api）
-npm run build                                                  # 构建生产产物 web/dist（FastAPI 单端口托管）
+cd careercrew_web && npm run dev                                          # React 前端（Vite，:5173 代理 /api）
+npm run build                                                  # 构建生产产物 careercrew_web/dist（FastAPI 单端口托管）
 conda run -n careercrew python -m careercrew_mcp               # 多模态 RAG MCP Server（stdio）
 conda run -n careercrew python scripts/ingest_knowledge.py     # 知识库摄取（多模态 pipeline）
 conda run -n careercrew python scripts/langsmith_smoke.py --list  # LangSmith 根 run 只读列出

@@ -25,7 +25,7 @@ Autonomously build project understanding. Do NOT ask user anything yet.
 
 1. Read `docs/DEV_SPEC.md` - project goals, architecture, tech stack, module design
 2. Read `config/settings.yaml` - configuration system（代码落地后）
-3. List 包目录树（`careercrew_ai` / `careercrew_core` / `careercrew_api` / `web/`）
+3. List 包目录树（`careercrew_ai` / `careercrew_core` / `careercrew_api` / `careercrew_web/`）
 4. Read key entry points: `careercrew_api/runtime.py`、`careercrew_api/main.py`
 5. List `tests/` - testing strategy overview
 
@@ -78,7 +78,7 @@ Build an internal mental model covering these **10 Knowledge Domains**, each con
 | D8.4 | 黄金轨迹回放：append-only 树的红利 | `tests/fixtures/golden_trajectories/` |
 | **D9** | **可观测性与 Dashboard** | |
 | D9.1 | 全链路追踪：LangSmith（脱敏上传，控制台查看） | `careercrew_core/tracing/langsmith.py` |
-| D9.2 | 数据看板：画像/记忆管理/记忆设置 | `web/src/pages/DataPage.tsx` |
+| D9.2 | 数据看板：画像/记忆管理/记忆设置 | `careercrew_web/src/pages/DataPage.tsx` |
 | D9.3 | 全链路追踪：LangSmith 控制台查看（脱敏上传） | `careercrew_core/tracing/langsmith.py` |
 | D9.4 | 记忆与评估指标：memory_hit_rate / compaction 无损率 | `docs/DEV_SPEC.md` §3.10 |
 | **D10** | **分层架构与工程化** | |
@@ -282,6 +282,6 @@ After persisting, ask the user (中文):
 | `.github/skills/project-learner/references/LEARNING_PROGRESS.md` | Persistent learning state (41 sub-topics) |
 | `docs/DEV_SPEC.md` | Project specification & architecture |
 | `config/settings.yaml` | Configuration reference（代码落地后） |
-| `careercrew_ai` / `careercrew_core` / `careercrew_api` / `web/` | 三层源码 + 前端 |
+| `careercrew_ai` / `careercrew_core` / `careercrew_api` / `careercrew_web/` | 三层源码 + 前端 |
 | `tests/` | Test suite |
 | `scripts/` | 运维/迁移脚本（知识库摄取、清理、评估） |

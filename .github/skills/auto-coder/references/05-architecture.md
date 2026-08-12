@@ -7,7 +7,7 @@
 │                          前端层 (React Web / FastAPI API)                    │
 │                                                                             │
 │    ┌──────────────────────┐              ┌──────────────────────┐           │
-│    │   web/ (React SPA)   │              │  careercrew_api       │           │
+│    │   careercrew_web/ (React SPA)   │              │  careercrew_api       │           │
 │    │  求职对话/会诊/面试等 │              │  SSE 流式 + 记忆/线程  │           │
 │    └──────────┬───────────┘              └──────────┬───────────┘           │
 │               │      HTTP / SSE       调用核心层       │                    │
@@ -175,12 +175,12 @@ CareerCrew/
 │
 ├── careercrew_api/                      # API 层（FastAPI + SSE + 记忆/线程管理）
 │   ├── __init__.py
-│   ├── main.py                         # 应用工厂 + /api 挂载 + 托管 web/dist
+│   ├── main.py                         # 应用工厂 + /api 挂载 + 托管 careercrew_web/dist
 │   ├── runtime.py                      # 重组件单例 + 会话级 agent/JobCycle 工厂
 │   ├── routers/                        # data/chat/interview/resume/consult/knowledge
 │   └── schemas.py                      # pydantic 请求/响应模型
 │
-├── web/                                 # 前端（React + Vite SPA）
+├── careercrew_web/                                 # 前端（React + Vite SPA）
 │   ├── src/pages/                      # Chat/Consult/Interview/Resume/Knowledge/Data
 │   ├── src/store/                      # chatStore / threadStore（zustand）
 │   └── src/components/                 # 通用 UI 组件
@@ -282,13 +282,13 @@ CareerCrew/
 |------|------|-----------|
 | `workflow/job_cycle.py` | 求职周期闭环编排 | 阶段流转 + 循环陪跑 |
 
-#### 5.3.4 API 层 (`careercrew_api`) 与前端 (`web/`)
+#### 5.3.4 API 层 (`careercrew_api`) 与前端 (`careercrew_web/`)
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
 | `runtime.py` | 重组件单例 + 会话工厂 | LLM/RAG/记忆/agent 组装 |
 | `routers/data.py` | 画像/记忆/线程/设置 API | Postgres 记忆 + 治理开关 |
-| `web/src/pages/DataPage.tsx` | 数据看板 | 画像 / 记忆管理 / 记忆设置 |
+| `careercrew_web/src/pages/DataPage.tsx` | 数据看板 | 画像 / 记忆管理 / 记忆设置 |
 
 ### 5.4 数据流说明
 

@@ -40,7 +40,7 @@
 
 ## 8. 评估与可观测性
 - **核心要点**：LangSmith 全链路追踪（脱敏上传，控制台查看）；Web 数据看板（画像/记忆/记忆设置）；答案级评估（简历匹配度/面试题质量，复用 Ragas）+ 业务级（转化率/通过率/offer，数据来自情景记忆事件统计）；高级方向轨迹级评估（LLM-as-judge + 黄金回放）。
-- **关键锚点**：`careercrew_core/evaluation/`、`web/src/pages/DataPage.tsx`。
+- **关键锚点**：`careercrew_core/evaluation/`、`careercrew_web/src/pages/DataPage.tsx`。
 - **常见露馅点**：把答案级和业务级评估混为一谈；答不出业务级评估数据来源；说不清 LangSmith 脱敏与记忆指标。
 
 ## 9. 分层架构与本地优先

@@ -1,7 +1,7 @@
-"""FastAPI 应用：CORS + /api 挂载 + 生产托管 web/dist（SPA fallback）。
+"""FastAPI 应用：CORS + /api 挂载 + 生产托管 careercrew_web/dist（SPA fallback）。
 
 开发：uvicorn careercrew_api.main:app --reload --port 8000（+ vite :5173 代理 /api）
-生产：npm run build -> uvicorn 单端口托管 web/dist（SPA fallback 到 index.html）
+生产：npm run build -> uvicorn 单端口托管 careercrew_web/dist（SPA fallback 到 index.html）
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from careercrew_api.routers import chat, consult, data, interview, knowledge, resume
 
-DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
+DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
 
 
 def create_app() -> FastAPI:
@@ -36,7 +36,7 @@ def create_app() -> FastAPI:
     app.include_router(consult.router, prefix="/api/consult", tags=["consult"])
     app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
 
-    # 生产模式：托管 web/dist（SPA fallback）
+    # 生产模式：托管 careercrew_web/dist（SPA fallback）
     if DIST.exists():
         # 静态资源（JS/CSS/图片）直接托管
         app.mount("/assets", StaticFiles(directory=str(DIST / "assets")), name="assets")

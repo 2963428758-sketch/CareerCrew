@@ -1,6 +1,6 @@
 ## 1. 项目概述
 
-CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端为 React Web（`web/`）+ FastAPI（`careercrew_api`）单端口托管，另提供 MCP Server（`careercrew_mcp`）。
+CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端为 React Web（`careercrew_web/`）+ FastAPI（`careercrew_api`）单端口托管，另提供 MCP Server（`careercrew_mcp`）。
 
 ### 设计理念 (Design Philosophy)
 

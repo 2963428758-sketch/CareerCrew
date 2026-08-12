@@ -148,7 +148,7 @@
 | L1 | 答案级评估（简历匹配度/面试题质量，集成 Ragas） | [ ] | | CompositeEvaluator |
 | L2 | 业务级评估（转化率/通过率/offer） | [ ] | | 情景记忆事件统计 |
 | L3 | 自建 trace 全链路打点 | [ ] | | agent_loop/hitl/memory_op |
-| L4 | Web 数据看板（画像/记忆/记忆设置） | [ ] | | web/src/pages/DataPage.tsx |
+| L4 | Web 数据看板（画像/记忆/记忆设置） | [ ] | | careercrew_web/src/pages/DataPage.tsx |
 | L5 | 测试 | [ ] | | |
 
 #### 阶段 M：高级亮点（选 1-2）
@@ -663,7 +663,7 @@
 - **验收标准**：LLM/工具/ReAct/HITL/RAG/记忆全链路在 LangSmith 控制台可见。
 
 ### L4：Web 数据看板
-- **修改文件**：`web/src/pages/DataPage.tsx`（画像/记忆/记忆设置）
+- **修改文件**：`careercrew_web/src/pages/DataPage.tsx`（画像/记忆/记忆设置）
 - **验收标准**：画像可编辑、记忆可浏览/删除、记忆设置可切换。
 
 ### L5：测试

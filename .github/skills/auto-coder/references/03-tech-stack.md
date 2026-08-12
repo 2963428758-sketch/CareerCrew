@@ -415,7 +415,7 @@ HITL 确认投递 (apply) ── interrupt
 - 逐轮明细直接在 LangSmith 控制台查看，无自建 trace schema。
 
 #### 3.11.2 Web 数据看板【MVP 核心】
-`web/src/pages/DataPage.tsx`：
+`careercrew_web/src/pages/DataPage.tsx`：
 - **画像**：用户能力画像 / 求职偏好（可编辑，写入语义记忆）。
 - **记忆**：语义事实 + 情景事件浏览 / 删除。
 - **记忆设置**：全局开关 + 用户级 enabled/generate/use 策略。
@@ -430,8 +430,8 @@ HITL 确认投递 (apply) ── interrupt
 |----|------|------|
 | AI 层 | `careercrew_ai` | LLM 适配 / embedding(BGE-M3) / reranker / vector_store / `create_agent` 执行链 / prompts |
 | 核心层 | `careercrew_core` | LangGraph supervisor + 6 agent 节点 + 记忆 + 工具注册表 + state + RAG + 求职周期工作流 |
-| API 层 | `careercrew_api` | FastAPI（SSE 流式 / 会诊 / 记忆与线程管理），生产托管 `web/dist` |
-| 前端 | `web/` | React + Vite SPA（求职对话 / 会诊 / 面试 / 简历 / 知识库 / 数据） |
+| API 层 | `careercrew_api` | FastAPI（SSE 流式 / 会诊 / 记忆与线程管理），生产托管 `careercrew_web/dist` |
+| 前端 | `careercrew_web/` | React + Vite SPA（求职对话 / 会诊 / 面试 / 简历 / 知识库 / 数据） |
 
 > 详细目录树见 5.2。
 

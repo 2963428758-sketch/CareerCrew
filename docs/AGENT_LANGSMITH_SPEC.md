@@ -209,8 +209,8 @@ TracesPanel **均已移除**（`5167be1`）——追踪明细直接在 LangSmith
   与 `serialize_run_summary` 作为核心 helper 保留（按 metadata 过滤根 run，limit 上限 200），
   仅供脚本消费：`scripts/langsmith_smoke.py --list`（只读列根 run）、
   `scripts/eval_langsmith.py --business`（把业务漏斗统计挂到最新根 run 的 feedback）。
-- 前端 `web/src/pages/DataPage.tsx` 无追踪 tab（当前三个 tab：画像 / 记忆 / 知识库）；
-  `web/src/types.ts` 不包含 `RunSummary/RunStep/RunDetail`。
+- 前端 `careercrew_web/src/pages/DataPage.tsx` 无追踪 tab（当前三个 tab：画像 / 记忆 / 知识库）；
+  `careercrew_web/src/types.ts` 不包含 `RunSummary/RunStep/RunDetail`。
 - `tests/api/conftest.py` 的 FakeRuntime 无 `list_runs` / `get_run_detail`；
   `test_data_api.py` 不含 `/api/runs` 用例；LangSmith 相关单测只覆盖
   `list_runs` 过滤与 `serialize_run_summary`（`tests/unit/test_langsmith_tracer.py`）。
