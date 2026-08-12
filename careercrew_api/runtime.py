@@ -234,6 +234,43 @@ class CareerCrewRuntime:
             ts.upsert(thread_id, title=title[:50], module=module,
                       pinned=bool(existing.get("pinned")))
 
+    def record_thread_messages(
+        self,
+        user_id: str,
+        thread_id: str,
+        user_text: str,
+        agent_text: str,
+        module: str = "chat",
+        sources: list[dict] | None = None,
+    ) -> int:
+        """写会话 transcript（user_message + agent_response）到情景记忆，供 /api/memory 恢复。
+
+        前端按 thread_id 从 /api/memory 恢复对话；本方法把一轮 user/agent 消息
+        追加到该 thread 的 episodic（append-only 链）。
+        sources（知识库依据来源）随 agent_response 一起存储，刷新后可恢复。
+        """
+        self._ensure_heavy()
+        from careercrew_core.memory.redaction import redact_secrets
+        from careercrew_core.memory.types import MemoryEntry
+
+        self._ensure_thread(thread_id, user_id, module=module, title=user_text[:50])
+        ep = self._get_episodic(thread_id, user_id)
+        n = 0
+        if user_text:
+            ep.write(MemoryEntry(
+                type="user_message", content=redact_secrets(user_text),
+            ))
+            n += 1
+        if agent_text:
+            content: dict | str = redact_secrets(agent_text)
+            if sources:
+                content = {"text": content, "sources": sources}
+            ep.write(MemoryEntry(
+                type="agent_response", content=content,
+            ))
+            n += 1
+        return n
+
     def get_threads(self, user_id: str = "u_001", module: str | None = None) -> list[dict]:
         """列出用户的所有对话线程（Postgres threads 表，按置顶+更新时间排序）。"""
         self._ensure_heavy()
@@ -246,14 +283,16 @@ class CareerCrewRuntime:
         return self.thread_store.upsert(thread_id, title=title, module=module)
 
     def touch_thread(self, thread_id: str, user_id: str = "u_001", title: str | None = None,
-                     pinned: bool | None = None, module: str = "chat") -> dict:
+                     pinned: bool | None = None, module: str | None = None) -> dict:
         """更新线程标题/置顶（PATCH）。"""
         self._ensure_heavy()
-        row = self.thread_store.get(thread_id) or {"title": "", "pinned": False}
+        row = self.thread_store.get(thread_id) or {
+            "title": "", "pinned": False, "module": "chat",
+        }
         return self.thread_store.upsert(
             thread_id,
             title=title if title is not None else row.get("title", ""),
-            module=module,
+            module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
         )
 
@@ -277,7 +316,7 @@ class CareerCrewRuntime:
             ra = self.new_resume_advisor(episodic=ep)
             cycle = JobCycle(
                 jm, ra, user_model_store=self.fact_store,
-                user_id=user_id, streaming=True,
+                user_id=user_id, streaming=True, history_loader=self._history_loader,
             )
             self._cycles[thread_id] = cycle
             if len(self._cycles) > self._max_cycles:
@@ -313,6 +352,13 @@ class CareerCrewRuntime:
                 "\n\n---\n*（搜索轮次已达上限，以上为已找到的匹配岗位。"
                 "如需更精准结果，可补充城市/薪资/方向等条件后继续对话。）*"
             )
+        try:
+            self.record_thread_messages(
+                user_id, thread_id, user_text=intent, agent_text=result,
+                module="matcher",
+            )
+        except Exception:
+            pass  # transcript 写入失败不阻塞主流程
         return result
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
@@ -337,9 +383,18 @@ class CareerCrewRuntime:
         ep = self._get_episodic(thread_id, user_id)
         cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
         result = cycle.run_resume(jd_text)
+        try:
+            self.record_thread_messages(
+                user_id, thread_id,
+                user_text=f"按这个 JD 定制简历：{jd_text[:200]}",
+                agent_text=result,
+                module="matcher",
+            )
+        except Exception:
+            pass
         return result
 
-    def run_knowledge_ask_stream(self, question: str, user_id: str,
+    def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None) -> str:
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
@@ -354,10 +409,12 @@ class CareerCrewRuntime:
             run_metadata={"endpoint": "knowledge.ask"},
             question=question,
             user_id=user_id,
+            thread_id=thread_id,
             cb=cb,
         )
 
     def _run_knowledge_ask_stream_impl(self, question: str, user_id: str,
+                                       thread_id: str = "knowledge",
                                        cb: Callable[[str], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, stage="knowledge")
         from langchain_core.messages import HumanMessage
@@ -380,22 +437,58 @@ class CareerCrewRuntime:
 
         agent = self.new_knowledge_advisor(cb, rag_sink=_sink)
         state = {
-            "thread_id": "knowledge", "user_id": user_id, "stage": "knowledge",
+            "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
             "user_intent": question,
+            # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前问题
             "messages": [HumanMessage(content=question)],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
         }
         agent.run(state)
         content = (agent.last_result.content or "").strip()
+        capped = _cap_sources(
+            sources,
+            limit=3,
+            min_score=0.1,
+            keep_paths=_read_image_paths(agent.last_result),
+        )
+        try:
+            self.record_thread_messages(
+                user_id, thread_id, user_text=question, agent_text=content,
+                module="knowledge", sources=capped,
+            )
+        except Exception:
+            pass  # transcript 写入失败不阻塞问答
         return {
             "content": content,
-            "sources": _cap_sources(
-                sources,
-                limit=3,
-                min_score=0.1,
-                keep_paths=_read_image_paths(agent.last_result),
-            ),
+            "sources": capped,
         }
+
+    def _thread_history_messages(self, user_id: str, thread_id: str,
+                                 max_rounds: int = 10) -> list:
+        """从 episodic 恢复该线程的历史对话（user_message/agent_response），供多轮上下文。
+
+        只取本线程、按时间序，最多保留最近 max_rounds 轮；内容为 dict 时取 text。
+        """
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        rows = self.memory_db.list_episodic(
+            user_id, thread_id=thread_id, type=None
+        )
+        msgs: list = []
+        for r in rows:
+            if r.get("type") not in ("user_message", "agent_response"):
+                continue
+            content = r.get("content")
+            if isinstance(content, dict) and "text" in content:
+                content = content["text"]
+            if not content:
+                continue
+            if r["type"] == "user_message":
+                msgs.append(HumanMessage(content=content))
+            else:
+                msgs.append(AIMessage(content=content))
+        # 保留最近 max_rounds 轮（user+agent 两条一轮）
+        return msgs[-(max_rounds * 2):]
 
     # ── agent 工厂（每次 new 一套，避免 last_result 并发串写）──
 
@@ -430,6 +523,23 @@ class CareerCrewRuntime:
         from careercrew_core.memory.vector_index import VectorIndex
 
         return VectorIndex(self.embedding, vs, episodic, user_id=user_id)
+
+    def _compaction_kwargs(self) -> dict:
+        """从配置构造 ContextCompactionMiddleware 参数（compaction 关闭时返回 None 标记）。"""
+        cfg = self.settings.memory.compaction
+        if not cfg.enabled:
+            return {}
+        return {
+            "token_threshold_ratio": cfg.token_threshold_ratio,
+            "retention_tokens": cfg.retention_tokens,
+        }
+
+    def _history_loader(self, user_id: str, thread_id: str):
+        """从 episodic 恢复该线程历史对话（供 BaseAgent.history_loader）。"""
+        try:
+            return self._thread_history_messages(user_id, thread_id)
+        except Exception:
+            return []
 
     def _make_tools(self, kind: str, episodic=None, rag_sink=None):
         """构造 agent 工具集。episodic 为 None 时用默认单例。"""
@@ -490,6 +600,8 @@ class CareerCrewRuntime:
         return JobMatcher(
             llm=self.llm, tools=self._make_tools("matcher", episodic=episodic),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+            history_loader=self._history_loader,
+            compaction=self._compaction_kwargs() or None,
         )
 
     def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -499,6 +611,8 @@ class CareerCrewRuntime:
         return ResumeAdvisor(
             llm=self.llm, tools=self._make_tools("resume", episodic=episodic),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+            history_loader=self._history_loader,
+            compaction=self._compaction_kwargs() or None,
         )
 
     def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None, prompt_path=None):
@@ -509,6 +623,8 @@ class CareerCrewRuntime:
             llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic),
             max_iterations=15, stream_callback=cb, prompt_path=prompt_path,
             memory_injector=self.memory_injector,
+            history_loader=self._history_loader,
+            compaction=self._compaction_kwargs() or None,
         )
 
     def new_knowledge_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
@@ -519,6 +635,8 @@ class CareerCrewRuntime:
         return KnowledgeAdvisor(
             llm=self.llm, tools=self._make_tools("knowledge", episodic=episodic, rag_sink=rag_sink),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+            history_loader=self._history_loader,
+            compaction=self._compaction_kwargs() or None,
         )
 
     def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
@@ -529,14 +647,18 @@ class CareerCrewRuntime:
 
             return SalaryNegotiator(
                 llm=self.llm, tools=self._make_tools("salary", episodic=episodic),
-                max_iterations=15, stream_callback=cb,
+                max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+                history_loader=self._history_loader,
+                compaction=self._compaction_kwargs() or None,
             )
         if name == "career_planner":
             from careercrew_core.agents.career_planner import CareerPlanner
 
             return CareerPlanner(
                 llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
-                max_iterations=15, stream_callback=cb,
+                max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+                history_loader=self._history_loader,
+                compaction=self._compaction_kwargs() or None,
             )
         if name == "job_matcher":
             return self.new_job_matcher(cb, episodic=episodic)
@@ -586,13 +708,20 @@ class CareerCrewRuntime:
         events = []
         for r in rows:
             content = r.get("content")
-            if isinstance(content, dict) and set(content) == {"text"}:
-                content = content["text"]
-            events.append({
+            sources = None
+            if isinstance(content, dict):
+                # 知识库 agent_response 存的是 {"text": ..., "sources": [...]}
+                if "text" in content:
+                    sources = content.get("sources")
+                    content = content["text"]
+            event: dict = {
                 "id": r["id"], "type": r["type"], "ts": r["ts"],
                 "parentId": r.get("parent_id"), "content": content,
                 "thread_id": r.get("thread_id"),
-            })
+            }
+            if sources:
+                event["sources"] = sources
+            events.append(event)
         merged: list[dict] = []
         for f in facts:
             if type and f["type"] != type:

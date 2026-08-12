@@ -46,7 +46,7 @@ def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_
         agent = rt.new_interviewer(cb)
         prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
         state = {
-            "thread_id": "interview", "user_id": req.user_id, "stage": "questions",
+            "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
             "user_intent": prompt,
             "messages": [HumanMessage(content=prompt)],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
@@ -62,7 +62,15 @@ def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
-            yield done_event("".join(content_parts))
+            content = "".join(content_parts)
+            try:
+                rt.record_thread_messages(
+                    req.user_id, req.thread_id, user_text=prompt, agent_text=content,
+                    module="interview",
+                )
+            except Exception:
+                pass
+            yield done_event(content)
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:
@@ -88,10 +96,20 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
         from langchain_core.messages import HumanMessage
 
         agent = rt.new_interviewer(cb, prompt_path=_CHAT_PROMPT_PATH)
+        # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
+        last_user = next(
+            (m.content for m in reversed(req.messages) if m.role == "user"),
+            "",
+        )
+        current = (
+            f"当前面试主题：{req.topic or '（未指定，随机出题）'}\n\n用户：{last_user}"
+            if last_user
+            else (req.topic or "请开始模拟面试")
+        )
         state = {
-            "thread_id": "interview", "user_id": req.user_id, "stage": "questions",
+            "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
             "user_intent": "chat",
-            "messages": [HumanMessage(content=_build_chat_prompt(req.topic, req.messages))],
+            "messages": [HumanMessage(content=current)],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
         }
         agent.run(state)
@@ -113,6 +131,16 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
 
                 parsed = _parse_score(content, 10)
                 extra = {"score": parsed["score"], "feedback": parsed["feedback"]}
+            try:
+                last_user = next(
+                    (m.content for m in reversed(req.messages) if m.role == "user"), req.topic
+                )
+                rt.record_thread_messages(
+                    req.user_id, req.thread_id, user_text=last_user, agent_text=content,
+                    module="interview",
+                )
+            except Exception:
+                pass
             yield done_event(content, **extra)
         except RuntimeInitError as e:
             yield error_event(str(e))

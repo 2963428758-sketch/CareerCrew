@@ -112,7 +112,7 @@ def patch_thread(thread_id: str, req: ThreadPatchRequest, user_id: str = Query("
     return rt.touch_thread(
         thread_id, user_id,
         title=req.title, pinned=req.pinned,
-        module=req.module or "chat",
+        module=req.module,
     )
 
 

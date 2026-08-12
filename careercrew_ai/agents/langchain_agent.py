@@ -22,7 +22,13 @@ from typing import Annotated, Any, NotRequired, TypedDict
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    BaseMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import BaseTool
 from langgraph.graph import add_messages
 
@@ -92,19 +98,112 @@ class MaxIterationsMiddleware(AgentMiddleware):
             )
 
 
+class ContextCompactionMiddleware(AgentMiddleware):
+    """上下文自动压缩：before_model 时 token 超阈值，把旧消息 LLM 总结后替换。
+
+    策略（对齐 careercrew_core.memory.compaction.Compactor）：
+    - 保留区：最近 retention_tokens 原封不动；
+    - 压缩区：更早的消息分块总结 -> 合并成一条 SystemMessage 摘要；
+    - 失败静默降级（LLM 异常时保留原文，不阻塞对话）。
+    """
+
+    def __init__(
+        self,
+        llm,
+        token_threshold_ratio: float = 0.7,
+        retention_tokens: int = 20000,
+        max_summary_chunk_tokens: int = 4000,
+    ) -> None:
+        super().__init__()
+        self._llm = llm
+        self._token_threshold_ratio = token_threshold_ratio
+        self._retention_tokens = retention_tokens
+        self._max_summary_chunk_tokens = max_summary_chunk_tokens
+
+    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        messages = list(state.get("messages") or [])
+        if not messages:
+            return None
+        limit = int(self._retention_tokens / self._token_threshold_ratio)
+        total = sum(_estimate_msg_tokens(m) for m in messages)
+        if total < limit * self._token_threshold_ratio:
+            return None
+        try:
+            compacted = self._compact(messages)
+            if compacted != messages:
+                return {"messages": compacted}
+        except Exception:
+            return None  # 压缩失败不阻塞
+        return None
+
+    def _compact(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+        kept: list[BaseMessage] = []
+        total = 0
+        for m in reversed(messages):
+            t = _estimate_msg_tokens(m)
+            if total + t <= self._retention_tokens:
+                kept.append(m)
+                total += t
+            else:
+                break
+        kept = list(reversed(kept))
+        compressibles = messages[: len(messages) - len(kept)]
+        if not compressibles:
+            return messages
+        summary = self._summarize(compressibles)
+        if not summary:
+            return messages
+        return [SystemMessage(content=f"[历史压缩摘要]\n{summary}")] + kept
+
+    def _summarize(self, messages: list[BaseMessage]) -> str:
+        chunks: list[list[BaseMessage]] = []
+        cur: list[BaseMessage] = []
+        total = 0
+        for m in messages:
+            t = _estimate_msg_tokens(m)
+            if total + t > self._max_summary_chunk_tokens and cur:
+                chunks.append(cur)
+                cur, total = [m], t
+            else:
+                cur.append(m)
+                total += t
+        if cur:
+            chunks.append(cur)
+        parts = []
+        for c in chunks:
+            text = "\n".join(f"{type(m).__name__}: {str(m.content)[:500]}" for m in c)
+            try:
+                resp = self._llm.invoke(f"把以下对话压缩成要点摘要（中文，不超过 200 字）：\n{text}")
+                parts.append(resp.content if isinstance(resp.content, str) else str(resp.content))
+            except Exception:
+                return ""  # LLM 失败 -> 不压缩（保留原文，不阻塞）
+        return "\n".join(f"- {p}" for p in parts if p)
+
+
+def _estimate_msg_tokens(msg: BaseMessage) -> int:
+    usage = getattr(msg, "usage_metadata", None)
+    if usage and usage.get("input_tokens"):
+        return int(usage["input_tokens"])
+    return len(str(msg.content)) // 4 + 4
+
+
 def build_agent(
     llm: BaseChatModel,
     tools: list[BaseTool] | None,
     system_prompt: str,
     max_iterations: int = 10,
+    extra_middleware: list[AgentMiddleware] | None = None,
 ):
     """编译 create_agent 图（tools=None 时等效单模型节点）。"""
+    middleware = [MaxIterationsMiddleware(max_iterations)]
+    if extra_middleware:
+        middleware.extend(extra_middleware)
     return create_agent(
         model=llm,
         tools=tools or None,
         system_prompt=system_prompt,
         state_schema=AgentExecState,
-        middleware=[MaxIterationsMiddleware(max_iterations)],
+        middleware=middleware,
     )
 
 

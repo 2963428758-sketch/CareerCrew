@@ -35,6 +35,8 @@ class Interviewer(BaseAgent):
         prompt_path: Path | None = None,
         stream_callback=None,
         memory_injector=None,
+        history_loader=None,
+        compaction=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
@@ -46,6 +48,8 @@ class Interviewer(BaseAgent):
             max_iterations=max_iterations,
             stream_callback=stream_callback,
             memory_injector=memory_injector,
+            history_loader=history_loader,
+            compaction=compaction,
         )
 
 

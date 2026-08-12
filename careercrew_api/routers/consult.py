@@ -50,7 +50,7 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
                     q.put({"type": "agent_start", "agent": name})
                     agent = rt.new_consult_agent(name, lambda t, n=name: q.put({"type": "chunk", "text": t, "agent": n}))
                     state = {
-                        "thread_id": "consult", "user_id": req.user_id, "stage": "review",
+                        "thread_id": req.thread_id, "user_id": req.user_id, "stage": "review",
                         "user_intent": req.question,
                         "messages": [HumanMessage(content=req.question)],
                         "pending_action": None, "agent_outputs": {}, "target_companies": [],
@@ -86,6 +86,14 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
                 for p in parts:
                     q.put({"type": "chunk", "text": p})
 
+                try:
+                    rt.record_thread_messages(
+                        req.user_id, req.thread_id,
+                        user_text=req.question, agent_text=synth,
+                        module="consult",
+                    )
+                except Exception:
+                    pass  # transcript 写入失败不阻塞会诊
                 q.put({"type": "done", "content": synth, "opinions": opinions})
             except Exception as e:
                 err["exc"] = e

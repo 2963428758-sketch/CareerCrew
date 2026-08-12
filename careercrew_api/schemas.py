@@ -36,6 +36,7 @@ class ResumeRequest(BaseModel):
 
 class QuestionRequest(BaseModel):
     topic: str = ""
+    thread_id: str = "interview"
     user_id: str = "u_001"
 
 
@@ -47,6 +48,7 @@ class InterviewChatMessage(BaseModel):
 class InterviewChatRequest(BaseModel):
     topic: str = ""
     messages: list[InterviewChatMessage] = []
+    thread_id: str = "interview"
     user_id: str = "u_001"
 
 
@@ -93,6 +95,7 @@ class UploadResponse(BaseModel):
 class ConsultRequest(BaseModel):
     question: str
     agents: list[str] = Field(default_factory=lambda: ["salary_negotiator", "career_planner"])
+    thread_id: str = "consult"
     user_id: str = "u_001"
 
 
@@ -101,4 +104,5 @@ class ConsultRequest(BaseModel):
 
 class KnowledgeAskRequest(BaseModel):
     question: str = Field(min_length=1)
+    thread_id: str = "knowledge"
     user_id: str = "u_001"

@@ -187,7 +187,8 @@ class PostgresMemoryDb(MemoryDb):
             "INSERT INTO episodic_events (id, user_id, thread_id, parent_id, type, content, ts) "
             "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s) "
             "ON CONFLICT (user_id, id) DO UPDATE SET parent_id=EXCLUDED.parent_id, "
-            "type=EXCLUDED.type, content=EXCLUDED.content, ts=EXCLUDED.ts",
+            "type=EXCLUDED.type, content=EXCLUDED.content, ts=EXCLUDED.ts, "
+            "thread_id=EXCLUDED.thread_id",
             (entry_id, user_id, thread_id, parent_id, type, _json_dumps(content), ts),
         )
         conn.commit()
@@ -275,8 +276,12 @@ class PostgresMemoryDb(MemoryDb):
 
     def next_episodic_id(self, user_id) -> str:
         conn = self._ensure()
+        # 用 MAX(id) 而不是 COUNT(*)：删除历史行后 COUNT 会回退，导致 id 重用、
+        # ON CONFLICT 覆盖旧行（thread_id 串线程）。MAX 保证单调不复用。
         row = conn.execute(
-            "SELECT COUNT(*) AS n FROM episodic_events WHERE user_id=%s", (user_id,)
+            "SELECT COALESCE(MAX((substring(id from 3))::int), 0) AS n "
+            "FROM episodic_events WHERE user_id=%s AND id ~ '^e_[0-9]+$'",
+            (user_id,),
         ).fetchone()
         return f"e_{int(row['n']) + 1:03d}"
 
@@ -501,8 +506,12 @@ class FakeMemoryDb(MemoryDb):
         return [dict(r) for r in reversed(chain)]
 
     def next_episodic_id(self, user_id) -> str:
-        n = sum(1 for (u, _) in self._episodic if u == user_id)
-        return f"e_{n + 1:03d}"
+        nums = [
+            int(k.split("_", 1)[1])
+            for (u, k) in self._episodic
+            if u == user_id and k.startswith("e_") and k[2:].isdigit()
+        ]
+        return f"e_{max(nums, default=0) + 1:03d}"
 
     def upsert_fact(self, user_id, name, type, description, content, source, confidence) -> dict:
         now = _now()

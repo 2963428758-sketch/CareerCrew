@@ -35,6 +35,8 @@ class BaseAgent:
         max_iterations: int = 10,
         stream_callback=None,  # 可选: 流式输出回调(text)->None, 用户不等
         memory_injector=None,  # 可选: Callable[[str, str], str | None]（user_id, query）-> preamble
+        history_loader=None,   # 可选: Callable[[str, str], list]（user_id, thread_id）-> 历史消息
+        compaction=None,       # 可选: dict(token_threshold_ratio/retention_tokens/max_summary_chunk_tokens)
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
@@ -43,11 +45,18 @@ class BaseAgent:
         self.max_iterations = max_iterations
         self.stream_callback = stream_callback
         self.memory_injector = memory_injector
+        self.history_loader = history_loader
+        extra_middleware = []
+        if compaction is not None:
+            from careercrew_ai.agents.langchain_agent import ContextCompactionMiddleware
+
+            extra_middleware.append(ContextCompactionMiddleware(llm, **compaction))
         self.agent = build_agent(
             llm=llm,
             tools=self._bindable_tools() or None,
             system_prompt=system_prompt,
             max_iterations=max_iterations,
+            extra_middleware=extra_middleware or None,
         )
         self.last_result: AgentResult | None = None  # 供 trace/调试取完整迭代记录
 
@@ -67,6 +76,15 @@ class BaseAgent:
             stage=state.get("stage", ""),
         )
         messages = list(state.get("messages", []))
+        if self.history_loader is not None:
+            try:
+                history = self.history_loader(
+                    state.get("user_id", ""), state.get("thread_id", "")
+                )
+                if history:
+                    messages = history + messages
+            except Exception:
+                pass  # 历史恢复失败不阻塞
         if self.memory_injector is not None:
             query = ""
             for m in reversed(messages):

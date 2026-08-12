@@ -94,3 +94,56 @@ def test_memory_delete_fact(client):
     resp = client.delete("/api/memory?kind=fact&name=profile.skills&user_id=u_001")
     assert resp.status_code == 200
     assert resp.json()["removed"] >= 1
+
+
+@pytest.mark.web
+def test_thread_transcript_restore_roundtrip(client, fake_runtime):
+    """record_thread_messages 写入后，/api/memory?thread_id= 可恢复 user_message/agent_response。"""
+    fake_runtime.record_thread_messages(
+        "u_001", "t-roundtrip", user_text="帮我找大模型岗位",
+        agent_text="匹配到字节跳动 0.95", module="matcher",
+    )
+    resp = client.get("/api/memory?thread_id=t-roundtrip&user_id=u_001")
+    assert resp.status_code == 200
+    entries = resp.json()
+    types = [e.get("type") for e in entries if e.get("kind") == "event"]
+    assert "user_message" in types
+    assert "agent_response" in types
+    user = next(e for e in entries if e.get("type") == "user_message")
+    assert user["content"] == "帮我找大模型岗位"
+
+
+@pytest.mark.web
+def test_knowledge_thread_stays_in_knowledge_module(client, fake_runtime):
+    """知识库会话 touch_thread 后 module 保持 knowledge，列表按模块隔离。"""
+    fake_runtime.touch_thread(
+        "k-tid-1", "u_001", title="什么是 RAG", module="knowledge",
+    )
+    knowledge_list = client.get("/api/threads?module=knowledge&user_id=u_001")
+    assert knowledge_list.status_code == 200
+    tids = [t["thread_id"] for t in knowledge_list.json()]
+    assert "k-tid-1" in tids
+    chat_list = client.get("/api/threads?module=chat&user_id=u_001")
+    assert all(t["thread_id"] != "k-tid-1" for t in chat_list.json())
+
+
+@pytest.mark.web
+def test_knowledge_sources_persist_after_restore(client, fake_runtime):
+    """知识库回答的 sources 随 transcript 存储，/api/memory 恢复后仍可解析。"""
+    fake_runtime.record_thread_messages(
+        "u_001", "k-src-1", user_text="LangChain 是什么",
+        agent_text="LangChain 是一个框架。", module="knowledge",
+        sources=[
+            {"doc": "note", "source": "data/uploads/note.md",
+             "score": 0.91, "text": "LangChain 定义"},
+        ],
+    )
+    resp = client.get("/api/memory?thread_id=k-src-1&user_id=u_001")
+    assert resp.status_code == 200
+    entries = resp.json()
+    agent = next(e for e in entries if e.get("type") == "agent_response")
+    assert agent["content"] == "LangChain 是一个框架。"
+    assert agent.get("sources") == [
+        {"doc": "note", "source": "data/uploads/note.md",
+         "score": 0.91, "text": "LangChain 定义"},
+    ]

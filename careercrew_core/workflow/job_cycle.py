@@ -27,6 +27,7 @@ class JobCycle:
         user_id: str = "u_001",
         streaming: bool = False,  # agent 输出已流式打出, 不重复完整打印
         thread_id: str = "m1",  # 情景记忆/追踪元数据用（API 按会话传入，CLI 默认 m1）
+        history_loader=None,  # 可选: Callable[[str, str], list]（user_id, thread_id）-> 历史消息
     ) -> None:
         self.job_matcher = job_matcher
         self.resume_advisor = resume_advisor
@@ -34,6 +35,7 @@ class JobCycle:
         self._user_id = user_id
         self._thread_id = thread_id
         self._streaming = streaming  # 流式模式: agent 内容已逐 token 打出, 不再重复打印
+        self._history_loader = history_loader
         self._messages: list = []  # 跨步骤对话历史
 
     def _profile_preamble(self) -> str | None:
@@ -80,7 +82,8 @@ class JobCycle:
             pass  # 刷新失败不阻塞匹配
 
     def _state(self, stage: str, text: str) -> dict:
-        msgs = list(self._messages)
+        # 有 history_loader 时历史由 BaseAgent 从 episodic 恢复，避免内存累积重复
+        msgs = [] if self._history_loader else list(self._messages)
         preamble = self._profile_preamble()
         if preamble:
             msgs.append(SystemMessage(content=preamble))

@@ -76,8 +76,15 @@ export default function KnowledgePage() {
         for (const entry of entries) {
           const type = String(entry.type || "")
           const content = String(entry.content || "")
+          const sources = Array.isArray(entry.sources)
+            ? (entry.sources as KnowledgeSource[])
+            : undefined
           if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
+          else if (type === "agent_response" && content) {
+            const msg: KnowledgeMessage = { id: nextId(), role: "assistant", content }
+            if (sources) msg.sources = sources
+            msgs.push(msg)
+          }
         }
         setMessages(msgs)
         jumpToLatest()

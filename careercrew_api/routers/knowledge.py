@@ -167,7 +167,9 @@ def ask_knowledge(
 
         def _run(cb):
             nonlocal result
-            result = rt.run_knowledge_ask_stream(req.question, req.user_id, cb)
+            result = rt.run_knowledge_ask_stream(
+                req.question, req.user_id, thread_id=req.thread_id, cb=cb
+            )
 
         try:
             yield stage_event("knowledge")

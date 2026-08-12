@@ -105,11 +105,33 @@ class FakeRuntime:
             cb(self.resume_output)
         return self.resume_output
 
-    def run_knowledge_ask_stream(self, question: str, user_id: str,
+    def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None) -> str:
         if cb:
             cb(self.knowledge_output)
         return {"content": self.knowledge_output, "sources": self.knowledge_sources}
+
+    def record_thread_messages(self, user_id: str, thread_id: str,
+                               user_text: str, agent_text: str,
+                               module: str = "chat",
+                               sources: list[dict] | None = None) -> int:
+        n = 0
+        if user_text:
+            self.memory_db.insert_episodic(
+                user_id, thread_id, f"t-{thread_id}-{n}", None,
+                "user_message", user_text, "",
+            )
+            n += 1
+        if agent_text:
+            content: dict | str = agent_text
+            if sources:
+                content = {"text": agent_text, "sources": sources}
+            self.memory_db.insert_episodic(
+                user_id, thread_id, f"t-{thread_id}-{n}", None,
+                "agent_response", content, "",
+            )
+            n += 1
+        return n
 
     def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None):
         class FakeAgent:
@@ -156,20 +178,34 @@ class FakeRuntime:
     def _get_episodic(self, thread_id: str, user_id: str = "u_001"):
         return None  # FakeRuntime 不需要真实 episodic
 
-    def get_threads(self, user_id: str = "u_001") -> list[dict]:
-        return [{"thread_id": "m1", "title": "测试对话", "entries": 3}]
+    def get_threads(self, user_id: str = "u_001", module: str | None = None) -> list[dict]:
+        rows = self.thread_store.list(module=module)
+        return [
+            {
+                "thread_id": r["thread_id"],
+                "title": r["title"],
+                "module": r["module"],
+                "pinned": r["pinned"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "entries": 0,
+            }
+            for r in rows
+        ]
 
     def register_thread(self, thread_id: str, user_id: str = "u_001",
                         module: str = "chat", title: str = "") -> dict:
         return self.thread_store.upsert(thread_id, title=title, module=module)
 
     def touch_thread(self, thread_id: str, user_id: str = "u_001", title: str | None = None,
-                     pinned: bool | None = None, module: str = "chat") -> dict:
-        row = self.thread_store.get(thread_id) or {"title": "", "pinned": False}
+                     pinned: bool | None = None, module: str | None = None) -> dict:
+        row = self.thread_store.get(thread_id) or {
+            "title": "", "pinned": False, "module": "chat",
+        }
         return self.thread_store.upsert(
             thread_id,
             title=title if title is not None else row.get("title", ""),
-            module=module,
+            module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
         )
 
@@ -187,11 +223,19 @@ class FakeRuntime:
             "source": f["source"], "confidence": f["confidence"], "version": f["version"],
         } for f in facts if not type or f["type"] == type]
         for r in rows:
-            merged.append({
+            content = r.get("content")
+            sources = None
+            if isinstance(content, dict) and "text" in content:
+                sources = content.get("sources")
+                content = content["text"]
+            event = {
                 "kind": "event", "id": r["id"], "type": r["type"], "ts": r["ts"],
-                "parentId": r.get("parent_id"), "content": r.get("content"),
+                "parentId": r.get("parent_id"), "content": content,
                 "thread_id": r.get("thread_id"),
-            })
+            }
+            if sources:
+                event["sources"] = sources
+            merged.append(event)
         merged.sort(key=lambda x: x.get("ts", ""))
         return merged
 

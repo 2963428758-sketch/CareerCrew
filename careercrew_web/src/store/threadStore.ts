@@ -130,15 +130,8 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       currentThreadByModule: { ...s.currentThreadByModule, [m]: tid },
       nonce: s.nonce + 1,
     }))
-    try {
-      await fetch("/api/threads", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: tid, module: m, title: "" }),
-      })
-    } catch {
-      // 后端契约未就绪时静默降级：客户端仍使用该 thread_id
-    }
+    // 延迟注册：空会话不写后端，首条消息时 touchThread(PATCH upsert) 才真正创建线程，
+    // 避免删除当前会话后列表冒出无标题的占位会话。
     return tid
   },
 
@@ -161,7 +154,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       await fetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: trimmed }),
+        body: JSON.stringify({ title: trimmed, module: m }),
       })
     } catch {
       // 后端未就绪时忽略，仅保留本地标题
