@@ -1,13 +1,12 @@
 """硅基流动 VL 多模态精排（R4/R8）：Qwen3-VL-Reranker-8B。
 
-候选含图片时，本地图片必须转 base64 data URI（不能传路径）。
-低频调用（每查询仅 top_m 候选），走 API 省本地显存；失败回退原序。
+实测硅基流动 /rerank 接口的 documents 只接受纯字符串：传多模态对象
+（text/image_url content 列表）会返回 HTTP 400，导致整次精排失败并
+静默回退到 RRF 融合分（≈0.03，观感上"相关度全是 0.03"）。
+故候选统一按文本精排；失败仍回退原序。
 """
 from __future__ import annotations
 
-import base64
-import mimetypes
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
@@ -17,18 +16,6 @@ from careercrew_ai.vector_store.base_vector_store import QueryResult
 
 if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
-
-
-def _data_uri(path: str) -> str | None:
-    p = Path(path)
-    if not p.exists():
-        return None
-    mime = mimetypes.guess_type(p.name)[0] or "image/png"
-    try:
-        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
-    except Exception:
-        return None
-    return f"data:{mime};base64,{b64}"
 
 
 class SiliconFlowVLReranker(BaseReranker):
@@ -47,13 +34,7 @@ class SiliconFlowVLReranker(BaseReranker):
         if not candidates:
             return []
         top_n = top_k if top_k is not None else len(candidates)
-        documents = []
-        for c in candidates:
-            content: list[dict] = [{"type": "text", "text": c.text or ""}]
-            uri = _data_uri(c.image_path) if c.image_path else None
-            if uri:
-                content.append({"type": "image_url", "image_url": {"url": uri}})
-            documents.append({"content": content})
+        documents = [c.text or "" for c in candidates]
         try:
             resp = requests.post(
                 f"{self._base_url}/rerank",

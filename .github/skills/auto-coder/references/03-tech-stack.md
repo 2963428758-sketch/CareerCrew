@@ -317,7 +317,7 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 **目标：** 高 stakes 决策必人工确认；高级方向细化授权粒度。
 
 #### 3.8.1 基础 HITL【MVP 核心】
-- **机制**：LangGraph `interrupt`。工具标 `requires_confirmation=true` 时，supervisor 暂停图执行，等待人工确认（CLI 输入 yes/no / 修改）后恢复。
+- **机制**：LangGraph `interrupt`。工具标 `requires_confirmation=true` 时，supervisor 暂停图执行，等待人工确认（Web 确认 / 修改）后恢复。
 - **必确认动作**：
   - 投递简历（`submit_application`）
   - 打招呼（`send_greeting`）
@@ -329,7 +329,7 @@ MVP 阶段投递与进度跟踪用 mock（不真实调用招聘平台），保�
 
 > ReAct 循环内触发 HITL 的实现约束（B2 / K2 落地，langgraph 1.x）：
 
-- **挂起**：ReAct 循环的工具执行器发现 `requires_confirmation=true` 时**不执行工具**，调用节点内 `interrupt()` 挂起整个图，payload = 待确认动作（工具名 + 参数 + 风险说明）。CLI 通过 `stream_mode="updates"` 收到 `__interrupt__` 事件后渲染确认 UI；**等待输入期间图处于挂起状态，不阻塞线程**。
+- **挂起**：agent 的工具执行器发现 `requires_confirmation=true` 时**不执行工具**，调用节点内 `interrupt()` 挂起整个图，payload = 待确认动作（工具名 + 参数 + 风险说明）。Web 通过 SSE 收到 `__interrupt__` 事件后渲染确认 UI；**等待输入期间图处于挂起状态，不阻塞线程**。
 - **恢复**：用户输入 yes / no / 修改后，以 `Command(resume=decision)` 继续执行，图从 interrupt 点恢复（checkpointer 已保存节点状态）。
 - **决策分支**：
   - `yes`：执行原工具，结果回喂 ReAct 循环继续。
@@ -408,31 +408,30 @@ HITL 确认投递 (apply) ── interrupt
 
 ### 3.11 可观测性与 Dashboard【MVP 核心 - 基础】
 
-**目标：** 自建全链路 trace + Streamlit 基础 Dashboard，不依赖 LangSmith。
+**目标：** LangSmith 全链路追踪 + React Web 数据看板。
 
 #### 3.11.1 全链路 Trace【MVP 核心】
-- 自建 `TraceContext` + JSON Lines 日志（`logs/traces.jsonl`）。
-- CareerCrew 新增打点：supervisor 路由决策、agent ReAct 每轮（thought/tool_call/tool_result）、HITL 触发与结果、记忆读写、compaction。
-- trace_type：`query` / `ingestion` / `agent_loop` / `hitl` / `memory_op` / `compaction`。
+- LangSmith 追踪：LLM/工具/ReAct/HITL/RAG/记忆全链路，默认脱敏上传（`careercrew_core/tracing/langsmith.py`）。
+- 逐轮明细直接在 LangSmith 控制台查看，无自建 trace schema。
 
-#### 3.11.2 Streamlit Dashboard【MVP 核心】
-基础三页面（CareerCrew MVP 自建并裁剪）：
-- **系统总览**：agent 配置、记忆统计、当前求职阶段。
-- **数据浏览**：User Model、情景记忆树浏览、候选 JD / 简历草稿。
-- **追踪查看**：agent ReAct 轨迹回放、HITL 历史、记忆检索命中。
+#### 3.11.2 Web 数据看板【MVP 核心】
+`web/src/pages/DataPage.tsx`：
+- **画像**：用户能力画像 / 求职偏好（可编辑，写入语义记忆）。
+- **记忆**：语义事实 + 情景事件浏览 / 删除。
+- **记忆设置**：全局开关 + 用户级 enabled/generate/use 策略。
 
 ---
 
 ### 3.12 分层目录结构【MVP 核心】
 
-四层文件夹组织，单向依赖（core 不碰渲染，UI 订阅 core 产出）：
+三层包组织 + 独立 Web 前端，单向依赖（core 只发事件不碰渲染）：
 
 | 层 | 包名 | 职责 |
 |----|------|------|
-| AI 层 | `careercrew_ai` | LLM 适配(init_chat_model)/embedding(BGE-M3)/reranker/vector_store；手写 ReAct 内核；agent prompts |
-| 核心层 | `careercrew_core` | LangGraph supervisor + 5 agent 节点 + 记忆 + 工具注册表 + state |
-| 产品层 | `careercrew_cli` | 求职周期工作流编排 + HITL 闸门 + CLI 入口 |
-| UI 层 | `careercrew_ui` | CLI 渲染 + Streamlit Dashboard |
+| AI 层 | `careercrew_ai` | LLM 适配 / embedding(BGE-M3) / reranker / vector_store / `create_agent` 执行链 / prompts |
+| 核心层 | `careercrew_core` | LangGraph supervisor + 6 agent 节点 + 记忆 + 工具注册表 + state + RAG + 求职周期工作流 |
+| API 层 | `careercrew_api` | FastAPI（SSE 流式 / 会诊 / 记忆与线程管理），生产托管 `web/dist` |
+| 前端 | `web/` | React + Vite SPA（求职对话 / 会诊 / 面试 / 简历 / 知识库 / 数据） |
 
 > 详细目录树见 5.2。
 
@@ -453,7 +452,7 @@ HITL 确认投递 (apply) ── interrupt
 - **轨迹级评估**：路由准确率 / 工具调用 precision/recall / `memory_hit_rate` / ReAct 效率 / Grounding / HITL 触发正确性 / 压缩无损性；LLM-as-judge + 黄金轨迹回放。
 - **Delegate 三级授权**：只读草稿 -> 代发待确认 -> 主动执行。
 - **Hooks 统一接口**：`before_tool_call`(HITL闸门) / `before_model`(记忆注入、context改写) / `before_compaction`(flush) / `after_compaction`。
-- **事件驱动 + 单向依赖**：core 只跑逻辑发事件不碰渲染，UI 订阅事件，一套 core 配 CLI + Dashboard 双前端。
+- **事件驱动 + 单向依赖**：core 只跑逻辑发事件不碰渲染，FastAPI 提供 API，React Web 独立前端。
 - **自建求职者端 MCP**：仿 boss-zhipin-mcp 的 Playwright+CDP（投递/进度跟踪/面经采集）。
 
 ### 3.14 关键设计决策记录（ADR）

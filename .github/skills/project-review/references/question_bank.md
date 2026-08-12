@@ -16,8 +16,8 @@
 ### 1-03 ⭐⭐ "高 stakes 决策"这个判断怎么影响了架构设计？
 **参考答案**：引出默认 HITL（投递/接 offer 等必确认）、记忆系统（避免重复犯错）、风险分级工具（requires_confirmation）。高 stakes 决策不允许全自动。
 
-### 1-04 ⭐ CareerCrew 的四层架构是什么？依赖方向？
-**参考答案**：careercrew_ai -> careercrew_core -> careercrew_cli -> careercrew_ui，单向依赖，core 只发事件不碰渲染，UI 订阅 core 产出。
+### 1-04 ⭐ CareerCrew 的分层架构是什么？依赖方向？
+**参考答案**：careercrew_ai -> careercrew_core -> careercrew_api，单向依赖，core 只发事件不碰渲染，web/ 独立前端。
 
 ### 1-05 ⭐⭐ 项目复用了 MODULAR-RAG-MCP-SERVER 哪些能力？为什么不从头写？
 **参考答案**：复用 Hybrid 检索+Rerank+MCP+llm_factory/trace/evaluator/BaseVectorStore。不重复造轮子，聚焦 CareerCrew 自己的核心创新（多 agent+记忆+HITL+工作流）。
@@ -194,11 +194,11 @@
 ### 8-03 ⭐⭐ 全链路 trace 复用了什么？扩展了哪些 trace_type？
 **参考答案**：复用 MODULAR-RAG TraceContext+JSON Lines。扩展 agent_loop/hitl/memory_op/compaction（在 query/ingestion 基础上）。
 
-### 8-04 ⭐ 为什么不依赖 LangSmith？
-**参考答案**：本地优先，零外部服务依赖；结构化日志+本地 Dashboard 足够且可控。
+### 8-04 ⭐ LangSmith 追踪怎么用？
+**参考答案**：LangSmith 全链路追踪（LLM/工具/ReAct/HITL/RAG/记忆），默认脱敏上传，控制台查看；记忆指标含 memory_hit_rate / compaction 无损率。
 
-### 8-05 ⭐⭐ Streamlit Dashboard 有哪几个页面？
-**参考答案**：系统总览/数据浏览（User Model+情景记忆树+候选数据）/追踪查看（ReAct 轨迹+HITL 历史）。
+### 8-05 ⭐⭐ Web 数据看板有哪几个 tab？
+**参考答案**：画像（可编辑）/ 记忆（语义事实+情景事件浏览/删除）/ 记忆设置（全局开关 + 用户级 enabled/generate/use）。
 
 ### 8-06 ⭐⭐⭐ （高级）轨迹级评估怎么做？黄金轨迹回放利用了什么？
 **参考答案**：路由准确率/工具调用 precision-recall/memory_hit_rate/ReAct 效率/Grounding/HITL 触发正确性/压缩无损性。LLM-as-judge + 黄金轨迹回放。回放利用 append-only 树（历史轨迹可完整重放比对）。

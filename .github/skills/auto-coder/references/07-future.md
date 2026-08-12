@@ -10,7 +10,7 @@
 - **轨迹级评估**：LLM-as-judge + 黄金回放。
 - **Delegate 三级授权**：细化闸门。
 - **Hooks 统一接口**：before_tool_call / before_model / before_compaction / after_compaction。
-- **事件驱动 + 单向依赖**：一套 core 配 CLI + Dashboard 双前端。
+- **事件驱动 + 单向依赖**：core 只发事件，FastAPI + React Web 独立前端。
 
 ### 长期愿景
 - **多用户**：checkpointer 换 Postgres、User Model 换 DB。

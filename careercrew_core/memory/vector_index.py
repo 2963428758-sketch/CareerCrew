@@ -1,6 +1,7 @@
-"""情景记忆向量索引（I1）。
+"""情景记忆向量索引。
 
-entry -> embed(BGE-M3) -> Qdrant(careercrew_episodic)；query -> 检索 -> 回 episodic 取完整条目。
+entry -> embed(BGE-M3) -> Qdrant(careercrew_episodic_v2)；query -> 检索 ->
+回 episodic 取完整条目。metadata 带 user_id，检索按用户隔离（多用户共享 collection）。
 """
 from __future__ import annotations
 
@@ -23,10 +24,12 @@ class VectorIndex:
         embedding: BaseEmbedding,
         store: BaseVectorStore,
         episodic: EpisodicMemory,
+        user_id: str = "u_001",
     ) -> None:
         self._embedding = embedding
         self._store = store
         self._episodic = episodic
+        self._user_id = user_id
 
     def index_entry(self, entry: MemoryEntry) -> None:
         text = _entry_text(entry)
@@ -35,7 +38,11 @@ class VectorIndex:
             VectorRecord(
                 id=entry.id, dense=emb.dense[0],
                 sparse=emb.sparse[0] if emb.sparse else None,
-                text=text, metadata={"type": entry.type},
+                text=text, metadata={
+                    "type": entry.type,
+                    "user_id": self._user_id,
+                    "thread_id": self._episodic.thread_id,
+                },
             )
         ])
 
@@ -50,7 +57,9 @@ class VectorIndex:
     def search(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
         emb = self._embedding.encode([query])
         results = self._store.query(
-            emb.dense[0], top_k=top_k, sparse=emb.sparse[0] if emb.sparse else None
+            emb.dense[0], top_k=top_k,
+            sparse=emb.sparse[0] if emb.sparse else None,
+            filters={"user_id": self._user_id},
         )
         hit_ids = {r.id for r in results}
         return [e for e in self._episodic._read_all() if e.id in hit_ids]

@@ -17,6 +17,8 @@ export function useChatStream() {
   const [doneContent, setDoneContent] = useState("")
   const [opinions, setOpinions] = useState<Record<string, string>>({})
   const [doneSources, setDoneSources] = useState<KnowledgeSource[]>([])
+  const [doneScore, setDoneScore] = useState<number | undefined>()
+  const [doneFeedback, setDoneFeedback] = useState<string | undefined>()
   const [errorMsg, setErrorMsg] = useState("")
   /** 流式中 2 秒无新 chunk → true（区分初始化 vs 工具调用） */
   const [thinking, setThinking] = useState(false)
@@ -31,6 +33,8 @@ export function useChatStream() {
     setDoneContent("")
     setOpinions({})
     setDoneSources([])
+    setDoneScore(undefined)
+    setDoneFeedback(undefined)
     setErrorMsg("")
     setThinking(false)
     setStatus("idle")
@@ -58,6 +62,8 @@ export function useChatStream() {
     setDoneContent("")
     setOpinions({})
     setDoneSources([])
+    setDoneScore(undefined)
+    setDoneFeedback(undefined)
     setErrorMsg("")
     setThinking(false)
     setStatus("streaming")
@@ -123,6 +129,8 @@ export function useChatStream() {
               setDoneContent(evt.content)
               if (evt.opinions) setOpinions(evt.opinions)
               if (evt.sources) setDoneSources(evt.sources)
+              if (evt.score !== undefined) setDoneScore(evt.score)
+              if (evt.feedback !== undefined) setDoneFeedback(evt.feedback)
               setStatus("done")
             } else if (evt.type === "error") {
               setErrorMsg(evt.message)
@@ -161,6 +169,8 @@ export function useChatStream() {
     doneContent,
     opinions,
     doneSources,
+    doneScore,
+    doneFeedback,
     errorMsg,
     /** 流式中 2 秒无新 chunk → true */
     thinking,

@@ -77,13 +77,20 @@ def valid_config() -> dict:
             "api_key": "sk-test-literal",
         },
         "supervisor": {
-            "checkpointer": {"backend": "sqlite", "path": "./data/db/checkpointer.db"},
+            "checkpointer": {
+                "backend": "memory",
+                "path": "./data/db/checkpointer.db",
+                "url": "",
+            },
             "max_consecutive_agent_turns": 10,
         },
         "memory": {
-            "episodic": {"transcript_dir": "./data/transcripts", "vectorize": True},
-            "user_model": {"path": "./data/user_model.json"},
+            "enabled": False,
+            "postgres": {"dsn": ""},
+            "episodic": {"collection": "careercrew_episodic_v2", "vectorize": False},
             "compaction": {"enabled": True, "token_threshold_ratio": 0.7, "retention_tokens": 20000},
+            "router": {"top_n": 5, "max_inject_tokens": 2000},
+            "consolidation": {"min_interval_hours": 24, "min_sessions": 5},
         },
         "tools": {
             "registry": {"internal": ["rag_query", "memory_search"], "mcp": ["mcp_jobs"]},

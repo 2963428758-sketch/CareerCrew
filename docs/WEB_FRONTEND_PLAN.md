@@ -99,7 +99,8 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 | GET | /api/memory | ?user_id&thread_id&type | 否 | **不传 thread_id=读所有线程合并按时间排序**;传=读单线程 |
 | POST | /api/chat/match | {intent, thread_id?, user_id?} | **是** | cycle.run_match(intent) |
 | POST | /api/chat/resume | {jd_text, thread_id?, user_id?} | **是** | cycle.run_resume(jd_text) |
-| POST | /api/interview/questions | {topic?, user_id?} | **是** | Interviewer 出题 |
+| POST | /api/interview/questions | {topic?, user_id?} | **是** | Interviewer 出题（批量模式） |
+| POST | /api/interview/chat | {topic?, messages?, user_id?} | **是** | **对话式模拟面试**：一轮一问；用户回答后 done 事件携带 score/feedback |
 | POST | /api/interview/score | {question, answer, max_score?} | 否 | score_answer() |
 | POST | /api/interview/record | {entries:[{q,a,score}]} | 否 | record_interview_qa() |
 | POST | /api/resume/upload | multipart file | 否 | 图片→read_image;txt/md→MarkdownLoader;pdf/doc/docx→**MinerU**(provider=api 云端或 local 本地);>200k 截断;解析失败返回 doc_type=error 不崩 |
@@ -122,7 +123,7 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 - **agent 身份色系**: job_matcher=青/ resume_advisor=琥珀/ interviewer=玫红/ salary_negotiator=紫/ career_planner=蓝;出现在消息标签、圆点、会诊选择器
 - **页面**:
   - **ChatPage**: 消息气泡(用户右/agent 左带身份标签),**MarkdownContent 渲染 markdown**(表格/标题/列表),JD 选择器(**仅内容含"匹配度/0.\d/公司"关键词才显示**),新对话按钮,流式完成后 bumpProfileNonce/bumpThreadNonce 通知看板/侧边栏刷新
-  - **InterviewPage**: 出题流式→多行答案→评分→记录
+  - **InterviewPage**: 对话式模拟面试（面试官一轮一问 → 作答 → 自动评分+黄金范例 → 追问；结束面试出总结；已评分条目保存到记忆）
   - **ResumePage**: 拖拽上传(整框可点击)→预览→AI 优化
   - **ConsultPage**: 并行 agent 观点卡 + 综合结论
   - **DataPage**: 画像(**可编辑**,PUT /api/profile,空值清空)/记忆(格式化展示,所有线程)/知识库(上传/列表/删除,**GET/POST/DELETE /api/knowledge**)

@@ -33,7 +33,7 @@ vector_store:
   api_key: ""
   collections:
     knowledge: careercrew_mm
-    episodic_memory: careercrew_episodic
+    episodic_memory: careercrew_episodic_v2
 
 # ── RAG 检索（自建） ──
 rag:
@@ -72,21 +72,29 @@ vlm:
 # ── LangGraph supervisor ──
 supervisor:
   checkpointer:
-    backend: sqlite
+    backend: postgres            # postgres（生产）| sqlite | memory
     path: ./data/db/checkpointer.db
+    url: "${DATABASE_URL}"
   max_consecutive_agent_turns: 10
 
 # ── 记忆系统 ──
 memory:
+  enabled: false                 # 默认关闭（Codex 式治理：显式开启才写入/注入）
+  postgres:
+    dsn: "${DATABASE_URL}"
   episodic:
-    transcript_dir: ./data/transcripts
+    collection: careercrew_episodic_v2
     vectorize: true
-  user_model:
-    path: ./data/user_model.json
   compaction:
     enabled: true
     token_threshold_ratio: 0.7   # token 占比阈值（用模型真实 usage）
     retention_tokens: 20000      # 保留区大小
+  router:
+    top_n: 5                     # LLM 路由每次最多选出的语义事实数
+    max_inject_tokens: 2000      # 自动注入总 token 预算
+  consolidation:
+    min_interval_hours: 24       # Auto Dream 式时间门控
+    min_sessions: 5              # 距上次合并至少新增会话数
 
 # ── 工具层 ──
 tools:
@@ -104,7 +112,7 @@ tools:
 hitl:
   default_policy: confirm        # 默认 HITL，仅低风险自动化
 
-# ── LangSmith 全链路追踪（替代自建 trace + Streamlit Dashboard） ──
+# ── LangSmith 全链路追踪 ──
 langsmith:
   enabled: true
   project: careercrew

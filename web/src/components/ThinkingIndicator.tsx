@@ -6,7 +6,6 @@ export function InitIndicator({ text = "正在初始化模型与向量库" }: { 
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
       <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
       <span>{text}</span>
-      <span className="text-xs text-muted-foreground/60">首次约 10-30 秒</span>
     </div>
   )
 }

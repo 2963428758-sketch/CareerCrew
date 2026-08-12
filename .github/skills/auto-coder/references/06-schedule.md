@@ -18,7 +18,7 @@
 | **D** 自建 RAG 流水线 | BGE-M3 + Contextual Chunking + Hybrid + Rerank 跑通 | MVP |
 | **E** 职位匹配官 | 第一个 agent 落地 | MVP |
 | **F** 简历顾问 | 第二个 agent + RAG 简历定制 | MVP |
-| **G** CLI + M1 闭环 | 部分求职闭环可跑通 | MVP |
+| **G** M1 闭环（match->resume） | 部分求职闭环可跑通 | MVP |
 | **H** 面试官 + 情景记忆 | 面试模拟 + 记忆写入 | MVP |
 | **I** 记忆按需检索 + compaction 基础版 | 记忆主动检索 + 压缩 | MVP |
 | **J** 谈判师 + 规划师 | 补齐 5 agent | MVP |
@@ -39,7 +39,7 @@
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| A1 | 四层目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [x] | 2026-07-30 | conda env + 依赖安装进 env |
+| A1 | 包目录骨架 + conda env `careercrew` + pyproject.toml + `pip install -e .` | [x] | 2026-07-30 | conda env + 依赖安装进 env |
 | A2 | 引入 pytest 并建立测试目录约定 | [x] | 2026-07-30 | tests/unit\|integration\|e2e\|fixtures |
 | A3 | 配置加载与校验（Settings） | [x] | 2026-07-30 | settings.yaml + load_settings + fail-fast |
 | A4 | AI 基础层（LLM 适配 + embedding/vector_store/reranker 抽象） | [x] | 2026-07-30 | init_chat_model + Base* 抽象+工厂 |
@@ -95,14 +95,13 @@
 | F4 | 简历匹配度评估（集成 evaluator） | [ ] | | 答案级评估 |
 | F5 | 测试 | [ ] | | |
 
-#### 阶段 G：CLI + M1 闭环
+#### 阶段 G：M1 闭环（match->resume）
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| G1 | CLI 渲染层 | [ ] | | careercrew_ui/cli/renderer.py |
-| G2 | 工作流编排（意向->匹配->简历 部分闭环） | [ ] | | job_cycle.py 部分流转 |
-| G3 | HITL 基础确认 | [ ] | | CLI yes/no 提示 |
-| G4 | M1 端到端冒烟 | [ ] | | test_match_resume_loop.py |
+| G1 | 工作流编排（意向->匹配->简历 部分闭环） | [ ] | | careercrew_core/workflow/job_cycle.py |
+| G2 | HITL 基础确认 | [ ] | | careercrew_core/supervisor/hitl.py |
+| G3 | M1 端到端冒烟 | [ ] | | test_match_resume_loop.py |
 
 #### 阶段 H：面试官 + 情景记忆
 
@@ -149,7 +148,7 @@
 | L1 | 答案级评估（简历匹配度/面试题质量，集成 Ragas） | [ ] | | CompositeEvaluator |
 | L2 | 业务级评估（转化率/通过率/offer） | [ ] | | 情景记忆事件统计 |
 | L3 | 自建 trace 全链路打点 | [ ] | | agent_loop/hitl/memory_op |
-| L4 | Streamlit Dashboard（总览/数据/追踪） | [ ] | | 三页面 |
+| L4 | Web 数据看板（画像/记忆/记忆设置） | [ ] | | web/src/pages/DataPage.tsx |
 | L5 | 测试 | [ ] | | |
 
 #### 阶段 M：高级亮点（选 1-2）
@@ -200,12 +199,12 @@
 
 ## 阶段 A：工程骨架与配置（目标：先可导入，再可测试）
 
-### A1：初始化四层目录树、conda 环境与最小可运行入口
-- **目标**：创建 5.2 节四层目录骨架 + conda env `careercrew` + `pyproject.toml`，`pip install -e .` 装项目依赖。
+### A1：初始化包目录、conda 环境与最小可运行入口
+- **目标**：创建 5.2 节包目录骨架 + conda env `careercrew` + `pyproject.toml`，`pip install -e .` 装项目依赖。
 - **修改文件**：
-  - `careercrew_ai/__init__.py`、`careercrew_core/__init__.py`、`careercrew_cli/__init__.py`、`careercrew_ui/__init__.py`
+  - `careercrew_ai/__init__.py`、`careercrew_core/__init__.py`、`careercrew_api/__init__.py`
   - 各子包 `__init__.py`（按目录树补齐）
-  - `careercrew_cli/app.py`（最小 CLI 入口占位）
+  - `careercrew_api/main.py`（FastAPI 应用工厂）
   - `config/settings.yaml`（最小可解析配置）
   - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest 等）、`README.md`、`.gitignore`
 - **环境与依赖**：
@@ -216,9 +215,9 @@
 - **验收标准**：
   - conda env `careercrew` 存在，`pip install -e .` 成功
   - 目录结构与 DEV_SPEC 5.2 一致
-  - 能导入四层包：`conda run -n careercrew python -c "import careercrew_ai, careercrew_core, careercrew_cli, careercrew_ui"`
+  - 能导入核心包：`conda run -n careercrew python -c "import careercrew_ai, careercrew_core, careercrew_api, careercrew_mcp"`
   - 关键依赖可导入：`conda run -n careercrew python -c "import langgraph, pymilvus, FlagEmbedding, sentence_transformers"`
-- **测试方法**：`conda run -n careercrew python -m compileall careercrew_ai careercrew_core careercrew_cli careercrew_ui`
+- **测试方法**：`conda run -n careercrew python -m compileall careercrew_ai careercrew_core careercrew_api careercrew_mcp`
 
 ### A2：引入 pytest 并建立测试目录约定
 - **目标**：建立 `tests/unit|integration|e2e|fixtures` 目录与 pytest 运行基座。
@@ -227,14 +226,14 @@
   - `tests/unit/test_smoke_imports.py`
   - `tests/fixtures/`（golden_routes.json 占位）
 - **实现类/函数**：无。
-- **验收标准**：`pytest -q` 可运行并通过；至少 1 个冒烟测试校验四层包 import。
+- **验收标准**：`pytest -q` 可运行并通过；至少 1 个冒烟测试校验核心包 import。
 - **测试方法**：`pytest -q tests/unit/test_smoke_imports.py`。
 
 ### A3：配置加载与校验（Settings）
 - **目标**：实现读取 `config/settings.yaml` 的配置加载器，启动时校验关键字段。
 - **修改文件**：
   - `careercrew_core/state/settings.py`（新增：Settings 数据结构 + load/validate）
-  - `careercrew_cli/app.py`（启动调 `load_settings()`，缺字段 fail-fast）
+  - `careercrew_api/runtime.py`（`_ensure_heavy` 调 `load_settings()`，缺字段 fail-fast）
   - `config/settings.yaml`（补齐字段：llm/embedding/rerank/vector_store/rag/supervisor/memory/tools/hitl/observability/dashboard）
   - `tests/unit/test_config_loading.py`
 - **实现类/函数**：
@@ -527,31 +526,23 @@
 
 ---
 
-## 阶段 G：CLI + M1 闭环（目标：部分求职闭环可跑通）
+## 阶段 G：M1 闭环（match->resume，目标：部分求职闭环可跑通）
 
-### G1：CLI 渲染层
-- **目标**：实现 CLI 对话渲染与 HITL 提示。
-- **修改文件**：
-  - `careercrew_ui/cli/renderer.py`
-  - `tests/unit/test_cli_renderer.py`
-- **实现类/函数**：`Renderer.render_message()` / `prompt_hitl(action)`
-- **验收标准**：agent 输出与 HITL 提示正确渲染。
-
-### G2：工作流编排（意向->匹配->简历 部分闭环）
+### G1：工作流编排（意向->匹配->简历 部分闭环）
 - **目标**：job_cycle.py 实现阶段流转（intent->planning->match->resume）。
 - **修改文件**：
-  - `careercrew_cli/workflow/job_cycle.py`
+  - `careercrew_core/workflow/job_cycle.py`
   - `tests/integration/test_match_resume_loop.py`
 - **实现类/函数**：`JobCycle.run(intent)` -> 流转至简历
 - **验收标准**：意向输入 -> 画像 -> 匹配 -> 简历草稿 链路跑通。
 
-### G3：HITL 基础确认
-- **目标**：CLI yes/no 确认基础。
-- **修改文件**：`careercrew_cli/hitl/gates.py`
-- **实现类/函数**：`confirm(action) -> bool`
+### G2：HITL 基础确认
+- **目标**：高风险动作确认基础。
+- **修改文件**：`careercrew_core/supervisor/hitl.py`
+- **实现类/函数**：`confirm(action) -> bool`（interrupt 闸门）
 - **验收标准**：可确认/拒绝。
 
-### G4：M1 端到端冒烟
+### G3：M1 端到端冒烟
 - **目标**：M1 闭环 E2E。
 - **修改文件**：`tests/e2e/test_match_resume_loop.py`
 - **验收标准**：E2E 通过。
@@ -648,7 +639,7 @@
 - **验收标准**：interrupt 暂停 + 恢复正确。
 
 ### K3：投递/打招呼/接 offer 闸门
-- **修改文件**：`careercrew_cli/hitl/gates.py`
+- **修改文件**：`careercrew_core/supervisor/hitl.py`
 - **验收标准**：四类闸门均触发确认。
 
 ### K4：测试
@@ -667,17 +658,17 @@
 - **修改文件**：`careercrew_core/evaluation/business_eval.py`（统计情景记忆事件）
 - **验收标准**：转化率/通过率/offer 统计。
 
-### L3：自建 trace 全链路打点
-- **修改文件**：各 agent / supervisor / memory 模块（注入 trace 打点）
-- **验收标准**：agent_loop/hitl/memory_op/compaction trace 落 logs/traces.jsonl。
+### L3：LangSmith 全链路追踪
+- **修改文件**：`careercrew_core/tracing/langsmith.py`（根 run + metadata 挂载）
+- **验收标准**：LLM/工具/ReAct/HITL/RAG/记忆全链路在 LangSmith 控制台可见。
 
-### L4：Streamlit Dashboard
-- **修改文件**：`careercrew_ui/dashboard/`（app + 三页面）
-- **验收标准**：总览/数据/追踪三页面可用。
+### L4：Web 数据看板
+- **修改文件**：`web/src/pages/DataPage.tsx`（画像/记忆/记忆设置）
+- **验收标准**：画像可编辑、记忆可浏览/删除、记忆设置可切换。
 
 ### L5：测试
-- **修改文件**：`tests/unit/test_evaluation.py`、`tests/integration/test_dashboard_smoke.py`
-- **验收标准**：评估 + Dashboard 冒烟通过。
+- **修改文件**：`tests/unit/test_evaluation.py`
+- **验收标准**：评估测试通过。
 
 ---
 

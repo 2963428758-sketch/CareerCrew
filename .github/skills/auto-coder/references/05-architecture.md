@@ -4,21 +4,21 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          前端层 (CLI / Dashboard)                            │
+│                          前端层 (React Web / FastAPI API)                    │
 │                                                                             │
 │    ┌──────────────────────┐              ┌──────────────────────┐           │
-│    │   CLI (careercrew_ui)│              │ Streamlit Dashboard  │           │
-│    │  交互渲染 + HITL 提示 │              │ 系统总览/数据/追踪    │           │
+│    │   web/ (React SPA)   │              │  careercrew_api       │           │
+│    │  求职对话/会诊/面试等 │              │  SSE 流式 + 记忆/线程  │           │
 │    └──────────┬───────────┘              └──────────┬───────────┘           │
-│               │          订阅事件 / 调用产品层            │                    │
+│               │      HTTP / SSE       调用核心层       │                    │
 └───────────────┼───────────────────────────────────────┼─────────────────────┘
                 │                                       │
                 ▼                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                  产品层 (careercrew_cli) - 工作流 + HITL                      │
+│              careercrew_core - 工作流 + HITL + 编排 + Agent                  │
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                    求职周期工作流编排 (Workflow)                        │  │
+│  │                    求职周期工作流编排 (workflow/job_cycle.py)          │  │
 │  │   intent->planning->match->resume->interview->negotiate->apply->track │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────┐                                                    │
@@ -71,8 +71,8 @@
 │ init_chat_model     │ │ BGE-M3 + Rerank     │ │  Milvus Lite (KB+记忆)   │
 │ Embedding/Reranker  │ │ Hybrid + RRF        │ │  SQLite checkpointer     │
 │ agent prompts        │ │ + bge-reranker-v2   │ │  JSONL transcripts       │
-│                      │ │ + Milvus/Chroma     │ │  user_model.json         │
-└──────────────────────┘ └─────────────────────┘ │  traces.jsonl            │
+│                      │ │ + Qdrant            │ │  Postgres 记忆库         │
+└──────────────────────┘ └─────────────────────┘ │  LangSmith               │
                                                   └──────────────────────────┘
 ```
 
@@ -169,28 +169,21 @@ CareerCrew/
 │           ├── mcp_client.py           # MCP client（发现+注册 mcp-jobs/Google MCP）
 │           └── mock_apply.py           # MVP 投递/进度跟踪 mock
 │
-├── careercrew_cli/                      # 产品层（工作流 + HITL + 入口）
+├── careercrew_core/workflow/            # 求职周期工作流闭环（原 CLI 版迁移）
 │   ├── __init__.py
-│   ├── workflow/                        # 求职周期工作流闭环
-│   │   ├── __init__.py
-│   │   └── job_cycle.py                # intent->...->review->循环 编排
-│   ├── hitl/                            # 人工闸门
-│   │   ├── __init__.py
-│   │   └── gates.py                    # 投递/打招呼/接offer/谈薪话术 闸门
-│   └── app.py                           # CLI 入口（命令分发）
+│   └── job_cycle.py                    # intent->...->review->循环 编排（API 复用）
 │
-├── careercrew_ui/                       # UI 层（CLI 渲染 + Streamlit）
+├── careercrew_api/                      # API 层（FastAPI + SSE + 记忆/线程管理）
 │   ├── __init__.py
-│   ├── cli/                             # CLI 渲染
-│   │   ├── __init__.py
-│   │   └── renderer.py                 # 对话渲染 + HITL 提示
-│   └── dashboard/                       # Streamlit Dashboard
-│       ├── __init__.py
-│       ├── app.py                      # Streamlit 入口
-│       └── pages/
-│           ├── overview.py             # 系统总览
-│           ├── data_browser.py         # User Model / 情景记忆树 / 候选数据
-│           └── traces.py               # agent ReAct 轨迹 / HITL 历史
+│   ├── main.py                         # 应用工厂 + /api 挂载 + 托管 web/dist
+│   ├── runtime.py                      # 重组件单例 + 会话级 agent/JobCycle 工厂
+│   ├── routers/                        # data/chat/interview/resume/consult/knowledge
+│   └── schemas.py                      # pydantic 请求/响应模型
+│
+├── web/                                 # 前端（React + Vite SPA）
+│   ├── src/pages/                      # Chat/Consult/Interview/Resume/Knowledge/Data
+│   ├── src/store/                      # chatStore / threadStore（zustand）
+│   └── src/components/                 # 通用 UI 组件
 │
 ├── config/                              # 配置文件
 │   └── settings.yaml                    # 主配置（agent prompts 唯一位置：careercrew_ai/prompts/）
@@ -200,13 +193,9 @@ CareerCrew/
 │   │   ├── milvus/                      # Milvus Lite 嵌入式（KB + 情景记忆向量）
 │   │   ├── checkpointer.db              # LangGraph SQLite checkpointer
 │   │   └── (chroma 兜底目录)
-│   ├── transcripts/                     # 情景记忆 JSONL（{user_id}/{thread_id}.jsonl）
-│   │   └── {user_id}/
-│   ├── user_model.json                  # 长期 User Model
 │   └── knowledge/                       # 知识库原始文档（八股/面经/JD/简历范本）
 │
 ├── logs/                                # 日志
-│   ├── traces.jsonl                     # 全链路 trace（自建格式）
 │   └── app.log
 │
 ├── tests/                               # 测试
@@ -239,8 +228,8 @@ CareerCrew/
 │
 ├── scripts/
 │   ├── ingest_knowledge.py              # 知识库摄取（自建 pipeline）
-│   ├── run_cli.py                       # CLI 启动
-│   └── start_dashboard.py               # Dashboard 启动
+│   ├── cleanup_old_memory.py            # 旧记忆数据清理（一次性迁移）
+│   └── eval_langsmith.py                # LangSmith 评估
 │
 ├── pyproject.toml                       # 依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest
 └── README.md
@@ -287,23 +276,19 @@ CareerCrew/
 | `tools/internal/*` | 内部函数工具 | rag_query / memory_search / memory_write / profile_update |
 | `tools/mcp/mcp_client.py` | MCP 工具发现与注册 | mcp-jobs / Google MCP |
 
-#### 5.3.3 产品层 (`careercrew_cli`)
+#### 5.3.3 工作流 (`careercrew_core/workflow`)
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
 | `workflow/job_cycle.py` | 求职周期闭环编排 | 阶段流转 + 循环陪跑 |
-| `hitl/gates.py` | 人工闸门 | 投递/打招呼/接offer/谈薪话术 |
-| `app.py` | CLI 入口 | 命令分发 |
 
-#### 5.3.4 UI 层 (`careercrew_ui`)
+#### 5.3.4 API 层 (`careercrew_api`) 与前端 (`web/`)
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `cli/renderer.py` | CLI 对话渲染 | HITL 提示、agent 输出格式化 |
-| `dashboard/app.py` | Streamlit 入口 | 多页面导航 |
-| `dashboard/pages/overview.py` | 系统总览 | agent 配置 + 记忆统计 + 当前阶段 |
-| `dashboard/pages/data_browser.py` | 数据浏览 | User Model / 情景记忆树 / 候选数据 |
-| `dashboard/pages/traces.py` | 追踪查看 | ReAct 轨迹回放 / HITL 历史 |
+| `runtime.py` | 重组件单例 + 会话工厂 | LLM/RAG/记忆/agent 组装 |
+| `routers/data.py` | 画像/记忆/线程/设置 API | Postgres 记忆 + 治理开关 |
+| `web/src/pages/DataPage.tsx` | 数据看板 | 画像 / 记忆管理 / 记忆设置 |
 
 ### 5.4 数据流说明
 
@@ -490,15 +475,10 @@ tools:
 hitl:
   default_policy: confirm        # 默认 HITL，仅低风险自动化
 
-# 可观测性（自建 trace）
-observability:
-  enabled: true
-  log_file: ./logs/traces.jsonl
-
-# Dashboard
-dashboard:
-  enabled: true
-  port: 8501
+langsmith:
+  enabled: true                  # LangSmith 全链路追踪（替代自建 trace）
+  project: careercrew
+  api_key: "${LANGSMITH_API_KEY}"
   traces_dir: ./logs
 ```
 
@@ -518,7 +498,7 @@ dashboard:
 | 组件 | 失败场景 | 降级策略 |
 |------|---------|---------|
 | LLM（硅基流动） | 超时 / 限流 / 5xx | 指数退避重试 ≤3 次；仍失败抛可读错误（含 trace_id），不吞异常 |
-| LLM | API key 错 / 余额不足 / 模型名不存在 | A3 配置校验只做 key 非空等静态检查（`create_llm` 构造不触网）；模型名 / 余额 / 连通性探活由 `careercrew config --check` 落地（G 阶段 CLI 完善时补）；首次 invoke 前的运行时错误按"重试 → 可读错误（含 trace_id）"处理 |
+| LLM | API key 错 / 余额不足 / 模型名不存在 | A3 配置校验只做 key 非空等静态检查（`create_llm` 构造不触网）；模型名 / 余额 / 连通性探活由 `careercrew_api/runtime.py` 初始化探活；首次 invoke 前的运行时错误按"重试 → 可读错误"处理 |
 | LLM | 单次运行 token 超 `max_tokens_per_run` 预算 | 停止当前 run + 告警 + trace 记录，防止成本失控 |
 | BGE-M3 编码 | 模型加载失败 / 编码异常 | 跳过该块 + 记录警告，不阻塞整批 ingestion |
 | Milvus | 连接失败 / 查询超时 | 切 Chroma 兜底（`backend=chroma`）；无兜底则返回空结果 + 错误日志 |

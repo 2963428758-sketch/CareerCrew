@@ -35,6 +35,7 @@ def test_state_constructable() -> None:
 
 
 def test_get_checkpointer_sqlite(tmp_path: Path, valid_config_data: dict) -> None:
+    valid_config_data["supervisor"]["checkpointer"]["backend"] = "sqlite"
     valid_config_data["supervisor"]["checkpointer"]["path"] = str(tmp_path / "cp.db")
     settings = Settings.model_validate(valid_config_data)
     cp = get_checkpointer(settings)
@@ -49,7 +50,7 @@ def test_get_checkpointer_memory(valid_config_data: dict) -> None:
 
 
 def test_get_checkpointer_unknown_backend(valid_config_data: dict) -> None:
-    valid_config_data["supervisor"]["checkpointer"]["backend"] = "postgres"
+    valid_config_data["supervisor"]["checkpointer"]["backend"] = "redis"
     settings = Settings.model_validate(valid_config_data)
     with pytest.raises(NotImplementedError):
         get_checkpointer(settings)

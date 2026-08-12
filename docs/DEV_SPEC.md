@@ -19,7 +19,7 @@
 
 ## 1. 项目概述
 
-CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端有三套入口：**CLI**（本地优先、轻量）、**Web**（FastAPI 后端 `careercrew_api` + React 单页应用 `web/`，SSE 流式，生产模式 FastAPI 单端口托管 `web/dist`）、**MCP Server**（`careercrew_mcp`，把多模态 RAG 能力暴露为 ingest/search/query/status 工具，供外部 Agent 直连）。早期 Streamlit Dashboard 已移除 app/pages，`careercrew_ui/dashboard/data.py` 仅保留为 /api 提供数据读取 helper。
+CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端有两套入口：**Web**（FastAPI 后端 `careercrew_api` + React 单页应用 `web/`，SSE 流式，生产模式 FastAPI 单端口托管 `web/dist`）、**MCP Server**（`careercrew_mcp`，把多模态 RAG 能力暴露为 ingest/search/query/status 工具，供外部 Agent 直连）。
 
 ### 设计理念 (Design Philosophy)
 
@@ -587,12 +587,10 @@ HITL 确认投递 (apply) ── interrupt
 | AI 层 | `careercrew_ai` | LLM 适配(init_chat_model) / embedding(BGE-M3) / reranker(含 VLM 视觉重排) / vector_store(Qdrant)；`create_agent` 内核 + middleware；agent prompts |
 | 核心层 | `careercrew_core` | LangGraph supervisor + 5 agent 节点 + 记忆 + 工具注册表 + state + 多模态 RAG + LangSmith tracing + evaluation |
 | API 层 | `careercrew_api` | FastAPI 后端：6 路由 + SSE 流式 + runtime 单例 + 生产托管 web/dist |
-| 产品层 | `careercrew_cli` | 求职周期工作流编排 + HITL 闸门 + CLI 入口（JobCycle 被 api 复用） |
 | MCP 层 | `careercrew_mcp` | 多模态 RAG MCP Server（ingest / search / query / status），stdio 或 Streamable HTTP |
-| UI 层 | `careercrew_ui` | CLI 渲染 + dashboard 数据读取 helper（Streamlit app/pages 已移除） |
 | Web 层 | `web/` | React 单页应用（5 页面），Vite 构建，生产产物 web/dist 由 FastAPI 托管 |
 
-> 详细目录树见 5.2。分层规则：`careercrew_ai` 不 import `careercrew_core`（避免循环）；`careercrew_core` 不碰渲染 / 协议；`careercrew_api` 复用 `careercrew_cli` 的 JobCycle 组装逻辑（去掉 Renderer 依赖）。
+> 详细目录树见 5.2。分层规则：`careercrew_ai` 不 import `careercrew_core`（避免循环）；`careercrew_core` 不碰渲染 / 协议；`careercrew_api` 复用 `careercrew_core/workflow` 的 JobCycle。
 
 ---
 
@@ -749,12 +747,11 @@ HITL 确认投递 (apply) ── interrupt
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          前端层 (CLI / Web)                                  │
-│    ┌──────────────────────┐  ┌──────────────────────┐                       │
-│    │   CLI (careercrew_ui)│  │  React Web (web/)    │                       │
-│    │  交互渲染 + HITL 提示 │  │ 5 页面 SPA + SSE 流式│                       │
-│    └──────────┬───────────┘  └──────────┬───────────┘                       │
-└───────────────┼─────────────────────────┼──────────────────────────────────┘
+│                          前端层 (React Web)                                  │
+│    ┌──────────────────────────────────────────────────────┐                 │
+│    │              React Web (web/) 5 页面 SPA + SSE 流式   │                 │
+│    └───────────────────────────────────┬──────────────────┘                 │
+└────────────────────────────────────────┼───────────────────────────────────┘
                 │                         │ HTTP/SSE
                 ▼                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -763,15 +760,15 @@ HITL 确认投递 (apply) ── interrupt
 │  runtime: 重组件进程级单例 + 会话级 agent/JobCycle(LRU) + 生产托管 web/dist  │
 └─────────────────────────────┬───────────────────────────────────────────────┘
                               │
-                ┌─────────────┴─────────────┐
-                ▼                           ▼
-┌─────────────────────────────────────────┐  (MCP 层 careercrew_mcp：多模态
-│  产品层 (careercrew_cli) - 工作流 + HITL │   RAG 工具 ingest/search/query/
-│  job_cycle: intent->...->review->循环    │   status，stdio/HTTP，供外部 Agent)
-│  HITL 闸门: interrupt/确认/拒绝/修改     │
-└───────────────────┬─────────────────────┘
-                    │
-                    ▼
+                ┌────────────────────┴───────────────────┐
+                ▼                                        ▼
+┌─────────────────────────────────────────────────────┐  (MCP 层 careercrew_mcp：多模态
+│  careercrew_core/workflow - 工作流 + HITL            │   RAG 工具 ingest/search/query/
+│  job_cycle: intent->...->review->循环                │   status，stdio/HTTP，供外部 Agent)
+│  HITL 闸门: interrupt/确认/拒绝/修改                 │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │              核心层 (careercrew_core) - 编排 + Agent + 记忆 + 工具 + RAG      │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
@@ -951,29 +948,14 @@ CareerCrew/
 │       ├── consult.py                 # /api/consult（多 agent 会诊）
 │       └── knowledge.py               # /api/knowledge（入库/删除/状态）
 │
-├── careercrew_cli/                      # 产品层（工作流 + HITL + CLI 入口）
+├── careercrew_core/workflow/            # 求职周期工作流闭环（被 api 复用）
 │   ├── __init__.py
-│   ├── app.py                          # CLI 入口（命令分发 + _build_job_cycle，被 api 复用）
-│   ├── workflow/                        # 求职周期工作流闭环
-│   │   ├── __init__.py
-│   │   └── job_cycle.py                # intent->...->review->循环 编排
-│   └── hitl/                            # 人工闸门
-│       ├── __init__.py
-│       └── gates.py                    # 投递/打招呼/接offer/谈薪话术 闸门
+│   └── job_cycle.py                    # intent->...->review->循环 编排
 │
 ├── careercrew_mcp/                      # MCP 层（多模态 RAG MCP Server）
 │   ├── __init__.py
 │   ├── __main__.py                     # python -m careercrew_mcp 入口
 │   └── server.py                       # FastMCP：ingest_document/search/query/status
-│
-├── careercrew_ui/                       # UI 层（CLI 渲染 + dashboard 数据读取 helper）
-│   ├── __init__.py
-│   ├── cli/
-│   │   ├── __init__.py
-│   │   └── renderer.py                 # 对话渲染 + HITL 提示
-│   └── dashboard/                       # 数据读取 helper（Streamlit app/pages 已移除）
-│       ├── __init__.py
-│       └── data.py                     # get_settings_summary / get_user_model / get_episodic_entries
 │
 ├── web/                                 # Web 层（React 单页应用）
 │   ├── package.json                    # React 19 + Vite + TS + Tailwind + zustand + react-router
@@ -1069,13 +1051,11 @@ CareerCrew/
 | `sse.py` | SSE 流式 | NDJSON 逐 token 推送 |
 | `schemas.py` / `deps.py` | 请求响应模型 / 依赖注入 | pydantic |
 
-#### 5.3.4 产品层 (`careercrew_cli`)
+#### 5.3.4 工作流 (`careercrew_core/workflow`)
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `workflow/job_cycle.py` | 求职周期闭环编排 | 阶段流转 + 循环陪跑（被 api 复用） |
-| `hitl/gates.py` | 人工闸门 | 投递/打招呼/接offer/谈薪话术 |
-| `app.py` | CLI 入口 | 命令分发 + `_build_job_cycle` |
+| `careercrew_core/workflow/job_cycle.py` | 求职周期闭环编排 | 阶段流转 + 循环陪跑（被 api 复用） |
 
 #### 5.3.5 MCP 层 (`careercrew_mcp`)
 
@@ -1084,12 +1064,10 @@ CareerCrew/
 | `server.py` | 多模态 RAG MCP Server | FastMCP：ingest_document / search / query / status，stdio 或 Streamable HTTP |
 | `__main__.py` | 启动入口 | `python -m careercrew_mcp`，`--http` / `--port` |
 
-#### 5.3.6 前端层 (`careercrew_ui` 备用 + `web/` 主力)
+#### 5.3.6 前端层 (`web/`)
 
 | 模块 | 职责 | 关键技术点 |
 |------|------|-----------|
-| `careercrew_ui/cli/renderer.py` | CLI 对话渲染 | HITL 提示、agent 输出格式化 |
-| `careercrew_ui/dashboard/` | 数据读取 helper（Streamlit app/pages 已移除） | get_settings_summary / get_user_model / get_episodic_entries（/api 复用） |
 | `web/src/pages/*.tsx` | React Web 5 页面 | Chat / Consult / Data / Interview / Resume |
 | `web/` 技术栈 | React 19 + Vite + TS + Tailwind + zustand + react-router | 生产产物 web/dist 由 FastAPI 托管 |
 
@@ -1558,12 +1536,12 @@ langsmith:
 
 ## 阶段 A：工程骨架与配置（目标：先可导入，再可测试）
 
-### A1：初始化四层目录树、conda 环境与最小可运行入口
-- **目标**：创建 5.2 节四层目录骨架 + conda env `careercrew` + `pyproject.toml`，`pip install -e .` 装项目依赖。
+### A1：初始化包目录、conda 环境与最小可运行入口
+- **目标**：创建 5.2 节包目录骨架 + conda env `careercrew` + `pyproject.toml`，`pip install -e .` 装项目依赖。
 - **修改文件**：
-  - `careercrew_ai/__init__.py`、`careercrew_core/__init__.py`、`careercrew_cli/__init__.py`、`careercrew_ui/__init__.py`
+  - `careercrew_ai/__init__.py`、`careercrew_core/__init__.py`、`careercrew_api/__init__.py`
   - 各子包 `__init__.py`（按目录树补齐）
-  - `careercrew_cli/app.py`（最小 CLI 入口占位）
+  - `careercrew_api/main.py`（FastAPI 应用工厂）
   - `config/settings.yaml`（最小可解析配置）
   - `pyproject.toml`（依赖：langgraph / langchain / langchain-openai / pymilvus / FlagEmbedding / modelscope / markitdown / ragas / pytest 等）、`README.md`、`.gitignore`
 - **环境与依赖**：
@@ -1574,9 +1552,9 @@ langsmith:
 - **验收标准**：
   - conda env `careercrew` 存在，`pip install -e .` 成功
   - 目录结构与 DEV_SPEC 5.2 一致
-  - 能导入四层包：`conda run -n careercrew python -c "import careercrew_ai, careercrew_core, careercrew_cli, careercrew_ui"`
-  - 关键依赖可导入：`conda run -n careercrew python -c "import langgraph, pymilvus, FlagEmbedding, sentence_transformers"`
-- **测试方法**：`conda run -n careercrew python -m compileall careercrew_ai careercrew_core careercrew_cli careercrew_ui`
+  - 能导入核心包：`conda run -n careercrew python -c "import careercrew_ai, careercrew_core, careercrew_api, careercrew_mcp"`
+  - 关键依赖可导入：`conda run -n careercrew python -c "import langgraph, qdrant_client, FlagEmbedding, sentence_transformers"`
+- **测试方法**：`conda run -n careercrew python -m compileall careercrew_ai careercrew_core careercrew_api careercrew_mcp`
 
 ### A2：引入 pytest 并建立测试目录约定
 - **目标**：建立 `tests/unit|integration|e2e|fixtures` 目录与 pytest 运行基座。
@@ -1585,15 +1563,15 @@ langsmith:
   - `tests/unit/test_smoke_imports.py`
   - `tests/fixtures/`（golden_routes.json 占位）
 - **实现类/函数**：无。
-- **验收标准**：`pytest -q` 可运行并通过；至少 1 个冒烟测试校验四层包 import。
+- **验收标准**：`pytest -q` 可运行并通过；至少 1 个冒烟测试校验核心包 import。
 - **测试方法**：`pytest -q tests/unit/test_smoke_imports.py`。
 
 ### A3：配置加载与校验（Settings）
 - **目标**：实现读取 `config/settings.yaml` 的配置加载器，启动时校验关键字段。
 - **修改文件**：
   - `careercrew_core/state/settings.py`（新增：Settings 数据结构 + load/validate）
-  - `careercrew_cli/app.py`（启动调 `load_settings()`，缺字段 fail-fast）
-  - `config/settings.yaml`（补齐字段：llm/embedding/rerank/vector_store/rag/supervisor/memory/tools/hitl/observability/dashboard）
+  - `careercrew_api/runtime.py`（`_ensure_heavy` 调 `load_settings()`，缺字段 fail-fast）
+  - `config/settings.yaml`（补齐字段：llm/embedding/rerank/vector_store/rag/vlm/supervisor/memory/tools/hitl/langsmith）
   - `tests/unit/test_config_loading.py`
 - **实现类/函数**：
   - `Settings`（dataclass：结构与最小校验，不做网络/IO）
@@ -2175,7 +2153,6 @@ export MINERU_API_KEY="xxx"                    # MinerU 云端解析（rag.loade
 ### 9.3 运行
 
 ```bash
-conda run -n careercrew python -m careercrew_cli.app          # CLI 求职顾问
 conda run -n careercrew uvicorn careercrew_api.main:app --reload --port 8000  # FastAPI 后端
 cd web && npm run dev                                          # React 前端（Vite，:5173 代理 /api）
 npm run build                                                  # 构建生产产物 web/dist（FastAPI 单端口托管）

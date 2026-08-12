@@ -132,7 +132,30 @@ def test_salary_query_source_exception(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_make_tools_registers_salary_query_for_salary_and_planner() -> None:
     from careercrew_api.runtime import CareerCrewRuntime
 
-    fake = SimpleNamespace(episodic=None, multimodal_search=object(), user_model=object())
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.router import MemoryRouter
+    from careercrew_core.memory.semantic import SemanticFactStore
+
+    settings = SimpleNamespace(
+        memory=SimpleNamespace(
+            episodic=SimpleNamespace(vectorize=False),
+            router=SimpleNamespace(top_n=5, max_inject_tokens=2000),
+        ),
+        vector_store=SimpleNamespace(
+            backend="fake",
+            collections={"episodic_memory": "careercrew_episodic_v2"},
+        ),
+    )
+    memory_db = FakeMemoryDb()
+    rt = CareerCrewRuntime()
+    rt.episodic = None
+    rt.multimodal_search = object()
+    rt.memory_db = memory_db
+    rt.fact_store = SemanticFactStore(memory_db, user_id="u_001")
+    rt.memory_router = MemoryRouter()
+    rt.settings = settings
+    rt.embedding = None
+    rt._episodic_vector_store = None
     for kind in ("salary", "planner"):
-        reg = CareerCrewRuntime._make_tools(fake, kind)
+        reg = rt._make_tools(kind)
         assert reg.has("salary_query")

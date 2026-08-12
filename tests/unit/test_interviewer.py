@@ -4,6 +4,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, HumanMessage
 
 from careercrew_core.agents.interviewer import Interviewer, _parse_score, record_interview_qa, score_answer
+from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.tools.internal.rag_query import make_rag_query_tool
 from careercrew_core.tools.internal.memory_write import make_memory_write_tool
@@ -58,8 +59,8 @@ def test_interviewer_generates_questions_with_rag() -> None:
     assert agent.last_result.tool_calls_total == 1
 
 
-def test_record_interview_qa(tmp_path) -> None:
-    em = EpisodicMemory(tmp_path / "t.jsonl")
+def test_record_interview_qa() -> None:
+    em = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     n = record_interview_qa(em, [
         {"q": "RAG 怎么减幻觉", "a": "检索知识库", "score": 8},
         {"q": "什么是 Agent", "a": "能调工具", "score": 9},

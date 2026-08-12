@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
@@ -19,6 +19,7 @@ router = APIRouter()
 
 _MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data" / "uploads"
+_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 _MAX_JOBS = 50
 
 # 进程内上传任务表（单进程部署；多 worker 需换外部存储/队列）
@@ -187,3 +188,16 @@ def ask_knowledge(
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/image")
+def knowledge_image(path: str) -> FileResponse:
+    """返回知识库图片文件（页面图 / 对象裁剪图），供前端标注来源时内嵌与放大查看。
+
+    安全约束：路径必须解析到 data/ 目录内且为真实文件，防止目录穿越读取任意文件。
+    """
+    root = _DATA_ROOT.resolve()
+    p = Path(path).resolve()
+    if not p.is_relative_to(root) or not p.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(p)

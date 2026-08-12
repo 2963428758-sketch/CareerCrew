@@ -14,8 +14,8 @@
 | HITL 闸门 | interrupt 怎么恢复状态一致？哪些动作必确认？Delegate 三级？ | 高 stakes 决策默认 HITL，LangGraph interrupt 实现投递/接 offer 闸门 |
 | 工具层 | MCP 与内部函数怎么统一？requires_confirmation 怎么标记？ | 统一工具注册表，MCP+内部函数同 schema，风险分级触发 HITL |
 | 评估 | 答案级 vs 业务级 vs 轨迹级？业务数据从哪来？黄金回放？ | 答案级(Ragas)+业务级(转化率)+轨迹级(黄金回放) 三层评估闭环 |
-| 可观测 | 为什么不用 LangSmith？trace schema？怎么定位坏 case？ | 自建全链路 trace(JSON Lines)+Streamlit Dashboard，零外部依赖可观测 |
-| 工程化 | 四层依赖方向？TDD 分层？conda env？CI？ | 四层单向依赖架构 + TDD 分层测试，单元覆盖≥80% |
+| 可观测 | LangSmith 追踪怎么脱敏？怎么定位坏 case？记忆指标有哪些？ | LangSmith 全链路（LLM/工具/ReAct/HITL/RAG/记忆）脱敏上传，控制台查看 |
+| 工程化 | 依赖方向？TDD 分层？conda env？CI？ | ai->core->api 单向依赖 + Web 前端，TDD 分层测试，单元覆盖≥80% |
 
 > 每完成一个模块：用 `project-review` / `project-learner` 自测掌握度，用 `resume-writer` 沉淀简历 bullet，用 `interview-prep` 模拟面试。
 

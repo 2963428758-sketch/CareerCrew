@@ -34,6 +34,7 @@ class Interviewer(BaseAgent):
         max_iterations: int = 8,
         prompt_path: Path | None = None,
         stream_callback=None,
+        memory_injector=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
@@ -44,6 +45,7 @@ class Interviewer(BaseAgent):
             tools=tools,
             max_iterations=max_iterations,
             stream_callback=stream_callback,
+            memory_injector=memory_injector,
         )
 
 
@@ -68,11 +70,11 @@ def _parse_score(content: str, max_score: int) -> dict:
     return {"score": round(score, 1), "feedback": feedback}
 
 
-def record_interview_qa(episodic, entries: list[dict]) -> int:
+def record_interview_qa(episodic, entries: list[dict], vector_index=None) -> int:
     """写 interview_qa 到情景记忆（H4）。entries: [{q, a, score}, ...]"""
     from careercrew_core.tools.internal.memory_write import make_memory_write_tool
 
-    tool = make_memory_write_tool(episodic)
+    tool = make_memory_write_tool(episodic, vector_index=vector_index)
     for e in entries:
         tool.invoke({"type": "interview_qa", "content": e})
     return len(entries)

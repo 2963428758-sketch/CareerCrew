@@ -135,6 +135,7 @@ class VLMSettings(BaseModel):
 class CheckpointerSettings(BaseModel):
     backend: str
     path: str
+    url: str = ""  # postgres 后端用（DATABASE_URL）；sqlite/memory 忽略
 
 
 class SupervisorSettings(BaseModel):
@@ -142,13 +143,15 @@ class SupervisorSettings(BaseModel):
     max_consecutive_agent_turns: int = 10
 
 
+class PostgresSettings(BaseModel):
+    """Postgres 记忆库连接（生产唯一持久化后端）。"""
+
+    dsn: str = ""
+
+
 class EpisodicSettings(BaseModel):
-    transcript_dir: str
+    collection: str = "careercrew_episodic_v2"  # Qdrant 情景记忆 collection
     vectorize: bool
-
-
-class UserModelSettings(BaseModel):
-    path: str
 
 
 class CompactionSettings(BaseModel):
@@ -157,10 +160,29 @@ class CompactionSettings(BaseModel):
     retention_tokens: int
 
 
+class MemoryRouterSettings(BaseModel):
+    """LLM 路由检索配置（Claude Code 式：从事实清单选 top-N，非向量）。"""
+
+    top_n: int = 5
+    max_inject_tokens: int = 2000  # 自动注入总 token 预算
+
+
+class ConsolidationSettings(BaseModel):
+    """后台 consolidation 门控（Auto Dream 式）。"""
+
+    min_interval_hours: int = 24
+    min_sessions: int = 5
+
+
 class MemorySettings(BaseModel):
+    """记忆子系统配置。enabled=false 时记忆默认关闭（Codex 式治理）。"""
+
+    enabled: bool = False
+    postgres: PostgresSettings = PostgresSettings()
     episodic: EpisodicSettings
-    user_model: UserModelSettings
     compaction: CompactionSettings
+    router: MemoryRouterSettings = MemoryRouterSettings()
+    consolidation: ConsolidationSettings = ConsolidationSettings()
 
 
 class RegistrySettings(BaseModel):
@@ -244,8 +266,6 @@ def _resolve_paths(settings: Settings) -> Settings:
     settings.embedding.model_path = _resolve_path(settings.embedding.model_path)
     settings.rag.loaders.output_dir = _resolve_path(settings.rag.loaders.output_dir)
     settings.supervisor.checkpointer.path = _resolve_path(settings.supervisor.checkpointer.path)
-    settings.memory.episodic.transcript_dir = _resolve_path(settings.memory.episodic.transcript_dir)
-    settings.memory.user_model.path = _resolve_path(settings.memory.user_model.path)
     return settings
 
 

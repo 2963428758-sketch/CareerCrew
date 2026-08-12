@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
-import { Database, User, Brain, Building2, Wallet, MapPin, Pencil, Check, X } from "lucide-react"
+import { User, Brain, Building2, Wallet, MapPin, Pencil, Check, X, Trash2, Settings } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 import { useChatStore } from "@/store/chatStore"
 
 export default function DataPage() {
@@ -14,23 +15,32 @@ export default function DataPage() {
       <header className="flex h-16 shrink-0 items-center border-b px-6">
         <div>
           <h1 className="font-display text-xl font-semibold">数据看板</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">用户画像、情景记忆与知识库</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">用户画像、记忆与记忆治理</p>
         </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto max-w-4xl">
-          <Tabs defaultValue="profile">
-            <TabsList>
-              <TabsTrigger value="profile" className="gap-1.5"><User className="h-3 w-3" />画像</TabsTrigger>
-              <TabsTrigger value="memory" className="gap-1.5"><Brain className="h-3 w-3" />记忆</TabsTrigger>
-            </TabsList>
-            <TabsContent value="profile"><ProfilePanel /></TabsContent>
-            <TabsContent value="memory"><MemoryPanel /></TabsContent>
-          </Tabs>
+          <DataSettingsContent />
         </div>
       </div>
     </div>
+  )
+}
+
+/** 设置面板内容（画像 / 记忆 / 记忆设置），供侧边栏"设置"弹窗与数据看板页共用。 */
+export function DataSettingsContent() {
+  return (
+    <Tabs defaultValue="profile">
+      <TabsList>
+        <TabsTrigger value="profile" className="gap-1.5"><User className="h-3 w-3" />画像</TabsTrigger>
+        <TabsTrigger value="memory" className="gap-1.5"><Brain className="h-3 w-3" />记忆</TabsTrigger>
+        <TabsTrigger value="settings" className="gap-1.5"><Settings className="h-3 w-3" />记忆设置</TabsTrigger>
+      </TabsList>
+      <TabsContent value="profile"><ProfilePanel /></TabsContent>
+      <TabsContent value="memory"><MemoryPanel /></TabsContent>
+      <TabsContent value="settings"><MemorySettingsPanel /></TabsContent>
+    </Tabs>
   )
 }
 
@@ -66,7 +76,7 @@ interface ProfileData {
   preferences?: { salary_min?: number | null; salary_max?: number | null; city?: string[]; work_mode?: string }
 }
 
-function ProfilePanel() {
+export function ProfilePanel() {
   const nonce = useChatStore((s) => s.profileNonce)
   const url = `/api/profile?v=${nonce}`
   const { data, loading, error } = useFetch<ProfileData>(url)
@@ -262,19 +272,64 @@ function IconField({ icon: Icon, label, value }: { icon: React.ComponentType<{ c
 
 // ── 记忆面板 ──
 
-interface MemoryEntry {
-  id?: string
-  type?: string
+interface MemoryItem {
+  kind: "fact" | "event"
+  id: string
+  type: string
   ts?: string
   content?: string | Record<string, unknown>
+  name?: string
+  description?: string
+  source?: string
+  confidence?: number
+  version?: number
   parentId?: string | null
+  thread_id?: string
 }
 
-function MemoryPanel() {
-  const { data, loading, error } = useFetch<MemoryEntry[]>("/api/memory")
+export function MemoryPanel() {
+  const [data, setData] = useState<MemoryItem[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [deleting, setDeleting] = useState<string>("")
+
+  const load = () => {
+    setLoading(true)
+    setError("")
+    fetch("/api/memory")
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => null)
+          throw new Error(body?.detail || `HTTP ${r.status}`)
+        }
+        return r.json()
+      })
+      .then((d: MemoryItem[]) => setData(d))
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(load, [])
+
+  const remove = async (item: MemoryItem) => {
+    setDeleting(item.id)
+    try {
+      const params = new URLSearchParams({ kind: item.kind })
+      if (item.kind === "fact") params.set("name", item.id)
+      else params.set("entry_id", item.id)
+      const resp = await fetch(`/api/memory?${params.toString()}`, { method: "DELETE" })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      load()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setDeleting("")
+    }
+  }
+
   if (loading) return <Skeleton className="h-48 w-full" />
   if (error) return <ErrorCard msg={error} />
-  if (!data || data.length === 0) return <EmptyCard text="暂无情景记忆数据" />
+  if (!data || data.length === 0) return <EmptyCard text="暂无记忆数据（记忆默认关闭，可在「记忆设置」开启）" />
 
   const typeColors: Record<string, string> = {
     session_start: "#64748B",
@@ -282,28 +337,208 @@ function MemoryPanel() {
     job_match: "#0D9488",
     application: "#D97706",
     offer: "#16A34A",
+    review: "#2563EB",
     note: "#78716C",
+    profile: "#0D9488",
+    preference: "#D97706",
+    target_company: "#7C3AED",
+    mastery: "#BE185D",
   }
 
   return (
     <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">语义事实（技能/偏好/目标公司）与情景事件（面试/投递/offer）。删除后不可恢复。</p>
       {data.map((entry, i) => {
         const type = entry.type || "unknown"
         const color = typeColors[type] || "#78716C"
         return (
-          <Card key={entry.id || i}>
+          <Card key={`${entry.kind}-${entry.id || i}`}>
             <CardContent className="p-3">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                <Badge variant="secondary" className="text-[11px]">{type}</Badge>
+                <Badge variant="secondary" className="text-[11px]">
+                  {entry.kind === "fact" ? "事实" : "事件"} · {type}
+                </Badge>
                 {entry.ts && <span className="text-[11px] text-muted-foreground">{entry.ts.slice(0, 19).replace("T", " ")}</span>}
+                {entry.kind === "fact" && entry.source && (
+                  <span className="text-[11px] text-muted-foreground">来源：{entry.source}</span>
+                )}
+                <button
+                  onClick={() => remove(entry)}
+                  disabled={deleting === entry.id}
+                  className="ml-auto rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  title="删除"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
+              {entry.kind === "fact" && entry.description && (
+                <p className="mb-1 text-xs text-muted-foreground">{entry.description}</p>
+              )}
               <MemoryContent content={entry.content} />
             </CardContent>
           </Card>
         )
       })}
     </div>
+  )
+}
+
+// ── 记忆设置面板（全局开关 + 用户级策略）──
+
+interface MemorySettingsData {
+  enabled: boolean
+  feature_enabled: boolean
+  global: { enabled: boolean; generate: boolean; use: boolean }
+}
+
+interface MemoryPolicyData {
+  global: { enabled: boolean; generate: boolean; use: boolean }
+  user: { user_id: string; enabled: boolean; generate: boolean; use: boolean }
+  effective: { enabled: boolean; generate: boolean; use: boolean }
+}
+
+export function MemorySettingsPanel() {
+  const [settings, setSettings] = useState<MemorySettingsData | null>(null)
+  const [policy, setPolicy] = useState<MemoryPolicyData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [saveError, setSaveError] = useState("")
+
+  const load = () => {
+    setLoading(true)
+    setError("")
+    Promise.all([
+      fetch("/api/settings/memory").then((r) => r.json()),
+      fetch("/api/memory/policy?user_id=u_001").then((r) => r.json()),
+    ])
+      .then(([s, p]) => {
+        setSettings(s as MemorySettingsData)
+        setPolicy(p as MemoryPolicyData)
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(load, [])
+
+  const put = async (url: string, body: Record<string, unknown>) => {
+    const resp = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      const b = await resp.json().catch(() => null)
+      throw new Error(b?.detail || `HTTP ${resp.status}`)
+    }
+    return resp.json()
+  }
+
+  // 点击开关即保存：乐观更新本地状态，成功后用服务端返回（含生效值）回填
+  const updateGlobalEnabled = async (v: boolean) => {
+    if (!settings) return
+    setSaveError("")
+    setSettings({ ...settings, enabled: v })
+    try {
+      const s = await put("/api/settings/memory", { enabled: v })
+      setSettings(s as MemorySettingsData)
+    } catch (e) {
+      setSaveError((e as Error).message)
+      load()
+    }
+  }
+
+  const updateUserPolicy = async (patch: Partial<MemoryPolicyData["user"]>) => {
+    if (!policy) return
+    setSaveError("")
+    const next = { ...policy, user: { ...policy.user, ...patch } }
+    setPolicy(next)
+    try {
+      const p = await put("/api/memory/policy?user_id=u_001", {
+        enabled: next.user.enabled,
+        generate: next.user.generate,
+        use: next.user.use,
+      })
+      setPolicy(p as MemoryPolicyData)
+    } catch (e) {
+      setSaveError((e as Error).message)
+      load()
+    }
+  }
+
+  if (loading) return <Skeleton className="h-48 w-full" />
+  if (error) return <ErrorCard msg={error} />
+  if (!settings || !policy) return null
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-sm font-semibold">全局记忆开关</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <ToggleRow
+            label="启用记忆（全局）"
+            desc="关闭时记忆完全不写入/不注入；开启后仍需用户级策略允许。"
+            checked={settings.enabled}
+            onChange={(v) => updateGlobalEnabled(v)}
+          />
+          {saveError && <p className="text-xs font-medium text-destructive">保存失败：{saveError}</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-sm font-semibold">我的记忆策略</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <ToggleRow
+            label="允许记忆"
+            desc="开启后允许写入与注入本用户记忆。"
+            checked={policy.user.enabled}
+            onChange={(v) => updateUserPolicy({ enabled: v })}
+          />
+          <ToggleRow
+            label="生成记忆"
+            desc="是否把本用户对话沉淀为记忆。"
+            checked={policy.user.generate}
+            onChange={(v) => updateUserPolicy({ generate: v })}
+          />
+          <ToggleRow
+            label="使用记忆"
+            desc="是否在会话中自动注入本用户历史记忆。"
+            checked={policy.user.use}
+            onChange={(v) => updateUserPolicy({ use: v })}
+          />
+          {saveError && <p className="text-xs font-medium text-destructive">保存失败：{saveError}</p>}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function ToggleRow({ label, desc, checked, onChange }: {
+  label: string
+  desc: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className="flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+    >
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-xs text-muted-foreground">{desc}</p>
+      </div>
+      <span className={cn(
+        "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+        checked ? "bg-primary" : "bg-muted"
+      )}>
+        <span className={cn(
+          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform",
+          checked ? "translate-x-4" : "translate-x-0.5"
+        )} />
+      </span>
+    </button>
   )
 }
 
@@ -342,7 +577,7 @@ function EmptyCard({ text }: { text: string }) {
   return (
     <Card>
       <CardContent className="flex items-center justify-center p-12 text-muted-foreground">
-        <Database className="mr-2 h-4 w-4" />{text}
+        <Brain className="mr-2 h-4 w-4" />{text}
       </CardContent>
     </Card>
   )

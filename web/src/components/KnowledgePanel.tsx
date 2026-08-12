@@ -156,8 +156,8 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
               onChange={(e) => setFiles(e.target.files)}
               className="h-9 max-w-sm text-sm"
             />
-            <Button size="sm" onClick={handleUpload} disabled={uploading || !files || files.length === 0}>
-              <Upload className="mr-1 h-3.5 w-3.5" />
+            <Button size="sm" className="gap-1.5" onClick={handleUpload} disabled={uploading || !files || files.length === 0}>
+              <Upload className="h-3.5 w-3.5" />
               {uploading ? "解析入库中…" : "上传入库"}
             </Button>
           </div>
@@ -200,7 +200,8 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-semibold">
-            库内文档 {status ? <span className="font-normal text-muted-foreground">（共 {status.points} 个向量点）</span> : null}
+            库内文档
+            {status && <span className="ml-1 font-normal text-muted-foreground">（{status.docs.length} 份）</span>}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -216,11 +217,11 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
             <div className="space-y-1.5">
               {status.docs.map((doc) => (
                 <div key={doc.doc} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
-                  <BookOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  <BookOpen className="h-4 w-4 shrink-0 text-primary" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{doc.doc}</p>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      {doc.source.split(/[\\/]/).pop() || doc.source} · {doc.points} 点
+                      {doc.source.split(/[\\/]/).pop() || doc.source}
                     </p>
                   </div>
                   <button

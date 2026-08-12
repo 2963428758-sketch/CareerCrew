@@ -1,11 +1,12 @@
-"""I2-I4 compaction 基础版测试。"""
+"""compaction 基础版 + Pre-compaction Memory Flush 测试。"""
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from careercrew_core.memory.compaction import Compactor
+from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
-from careercrew_core.memory.user_model import UserModelStore
+from careercrew_core.memory.semantic import SemanticFactStore
 
 
 class FakeLLM:
@@ -28,9 +29,9 @@ def test_should_compact_under_threshold() -> None:
     assert c.should_compact(_long_messages(3)) is False
 
 
-def test_compact_keeps_recent_and_writes_entry(tmp_path) -> None:
+def test_compact_keeps_recent_and_writes_entry() -> None:
     c = Compactor(FakeLLM(), token_threshold_ratio=0.5, retention_tokens=30)
-    em = EpisodicMemory(tmp_path / "t.jsonl")
+    em = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     msgs = _long_messages(20)
     new_msgs, entry = c.compact(msgs, em)
     # 保留区 + 压缩摘要
@@ -44,26 +45,27 @@ def test_compact_keeps_recent_and_writes_entry(tmp_path) -> None:
     assert new_msgs[-1].content == msgs[-1].content
 
 
-def test_compact_under_threshold_noop(tmp_path) -> None:
+def test_compact_under_threshold_noop() -> None:
     c = Compactor(FakeLLM(), token_threshold_ratio=0.9, retention_tokens=100000)
-    em = EpisodicMemory(tmp_path / "t.jsonl")
+    em = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     msgs = _long_messages(3)
     new_msgs, entry = c.compact(msgs, em)
     assert new_msgs == msgs
     assert entry is None
 
 
-def test_compact_flushes_to_user_model(tmp_path) -> None:
-    """M2: 压缩前 flush 关键信息到 User Model。"""
+def test_compact_flushes_to_semantic_facts() -> None:
+    """M2: 压缩前 flush 关键信息到语义事实。"""
     class FlushLLM:
         def invoke(self, prompt):
             from langchain_core.messages import AIMessage
             return AIMessage(content='{"skills": ["Python", "RAG"], "target_companies": ["字节"], "preferences": {"salary_min": 30, "city": ["北京"]}}')
 
-    um = UserModelStore(tmp_path / "um.json")
+    db = FakeMemoryDb()
+    um = SemanticFactStore(db, user_id="u1")
     c = Compactor(FlushLLM(), token_threshold_ratio=0.5, retention_tokens=30,
                   user_model_store=um, user_id="u1")
-    em = EpisodicMemory(tmp_path / "t.jsonl")
+    em = EpisodicMemory(db, user_id="u1", thread_id="t1")
     c.compact(_long_messages(20), em)
     model = um.load("u1")
     assert "Python" in model.profile.skills
@@ -72,17 +74,18 @@ def test_compact_flushes_to_user_model(tmp_path) -> None:
     assert "北京" in model.preferences.city
 
 
-def test_compact_flush_failure_does_not_block(tmp_path) -> None:
+def test_compact_flush_failure_does_not_block() -> None:
     """M2: flush LLM 输出非法 JSON 时不阻塞压缩。"""
     class BadLLM:
         def invoke(self, prompt):
             from langchain_core.messages import AIMessage
             return AIMessage(content="不是 JSON，随便说")
 
-    um = UserModelStore(tmp_path / "um.json")
+    db = FakeMemoryDb()
+    um = SemanticFactStore(db, user_id="u1")
     c = Compactor(BadLLM(), token_threshold_ratio=0.5, retention_tokens=30,
                   user_model_store=um, user_id="u1")
-    em = EpisodicMemory(tmp_path / "t.jsonl")
+    em = EpisodicMemory(db, user_id="u1", thread_id="t1")
     new_msgs, entry = c.compact(_long_messages(20), em)
     assert entry is not None  # 压缩仍完成
     assert um.load("u1").profile.skills == []  # User Model 未写坏

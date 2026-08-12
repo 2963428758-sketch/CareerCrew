@@ -6,7 +6,7 @@ export type StreamEvent =
   | { type: "chunk"; text: string; agent?: string }
   | { type: "agent_start"; agent: string }
   | { type: "agent_end"; agent: string }
-  | { type: "done"; content: string; opinions?: Record<string, string>; sources?: KnowledgeSource[] }
+  | { type: "done"; content: string; opinions?: Record<string, string>; sources?: KnowledgeSource[]; score?: number; feedback?: string }
   | { type: "error"; message: string }
 
 export type StreamStatus = "idle" | "streaming" | "done" | "error"
@@ -36,16 +36,18 @@ export interface KnowledgeSource {
   text: string
   image_path?: string
   page?: number | null
+  /** 该来源的图片被顾问实际读取用于作答（替代低文本相关度展示）。 */
+  used_image?: boolean
 }
 
 
 /** 会诊 agent 选项。 */
 export const CONSULT_AGENTS = [
+  { id: "salary_negotiator", label: "薪资谈判师", color: "#7C3AED" },
+  { id: "career_planner", label: "职业规划师", color: "#2563EB" },
   { id: "job_matcher", label: "职位匹配官", color: "#0D9488" },
   { id: "resume_advisor", label: "简历顾问", color: "#D97706" },
   { id: "interviewer", label: "面试官", color: "#BE185D" },
-  { id: "salary_negotiator", label: "薪资谈判师", color: "#7C3AED" },
-  { id: "career_planner", label: "职业规划师", color: "#2563EB" },
 ] as const
 
 /** Agent 身份色系：消息标签 + 左边框 + 会诊卡片标识。 */

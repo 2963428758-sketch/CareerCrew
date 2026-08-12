@@ -42,6 +42,33 @@ class FakeRuntime:
         self.knowledge_docs: list[dict] = [
             {"doc": "note", "source": "data/uploads/note.md", "points": 3}
         ]
+        from careercrew_core.memory.db import FakeMemoryDb
+        from careercrew_core.memory.injection import MemoryInjector
+        from careercrew_core.memory.policy import MemoryPolicyStore
+        from careercrew_core.memory.router import MemoryRouter
+        from careercrew_core.memory.semantic import SemanticFactStore
+        from careercrew_core.memory.threads import ThreadStore
+
+        self.memory_db = FakeMemoryDb()
+        self.fact_store = SemanticFactStore(self.memory_db, user_id="u_001")
+        self.policy_store = MemoryPolicyStore(self.memory_db)
+        self.thread_store = ThreadStore(self.memory_db, user_id="u_001")
+        self.memory_router = MemoryRouter()
+        self.memory_injector = MemoryInjector(
+            db=self.memory_db, policy_store=self.policy_store,
+            router=self.memory_router, feature_enabled=False,
+        )
+        self.settings = type("S", (), {
+            "memory": type("M", (), {
+                "enabled": False,
+                "router": type("R", (), {"top_n": 5, "max_inject_tokens": 2000}),
+                "consolidation": type("C", (), {"min_interval_hours": 24, "min_sessions": 5}),
+                "episodic": type("E", (), {"vectorize": False}),
+            }),
+        })()
+
+    def _ensure_heavy(self) -> None:
+        return None
 
     def health_info(self) -> dict:
         return {
@@ -104,7 +131,7 @@ class FakeRuntime:
                     cb(self.resume_output)
         return FakeAgent()
 
-    def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None):
+    def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None, prompt_path=None):
         class FakeAgent:
             def __init__(self_inner):
                 self_inner.last_result = type("R", (), {"content": self.interview_output})()
@@ -131,6 +158,89 @@ class FakeRuntime:
 
     def get_threads(self, user_id: str = "u_001") -> list[dict]:
         return [{"thread_id": "m1", "title": "测试对话", "entries": 3}]
+
+    def register_thread(self, thread_id: str, user_id: str = "u_001",
+                        module: str = "chat", title: str = "") -> dict:
+        return self.thread_store.upsert(thread_id, title=title, module=module)
+
+    def touch_thread(self, thread_id: str, user_id: str = "u_001", title: str | None = None,
+                     pinned: bool | None = None, module: str = "chat") -> dict:
+        row = self.thread_store.get(thread_id) or {"title": "", "pinned": False}
+        return self.thread_store.upsert(
+            thread_id,
+            title=title if title is not None else row.get("title", ""),
+            module=module,
+            pinned=pinned if pinned is not None else bool(row.get("pinned")),
+        )
+
+    def delete_thread(self, thread_id: str, user_id: str = "u_001") -> dict:
+        n = self.thread_store.delete_all_for_thread(thread_id)
+        return {"deleted": n > 0, "thread_id": thread_id, "removed": n}
+
+    def memory_list(self, user_id: str = "u_001", thread_id: str | None = None,
+                    type: str = "") -> list[dict]:
+        facts = [f.model_dump() for f in self.fact_store.list_facts()]
+        rows = self.memory_db.list_episodic(user_id, thread_id=thread_id, type=type or None)
+        merged = [{
+            "kind": "fact", "id": f["name"], "type": f["type"], "ts": f["modified_at"],
+            "content": f["content"], "name": f["name"], "description": f["description"],
+            "source": f["source"], "confidence": f["confidence"], "version": f["version"],
+        } for f in facts if not type or f["type"] == type]
+        for r in rows:
+            merged.append({
+                "kind": "event", "id": r["id"], "type": r["type"], "ts": r["ts"],
+                "parentId": r.get("parent_id"), "content": r.get("content"),
+                "thread_id": r.get("thread_id"),
+            })
+        merged.sort(key=lambda x: x.get("ts", ""))
+        return merged
+
+    def memory_delete(self, user_id: str = "u_001", kind: str = "",
+                      name: str | None = None, entry_id: str | None = None,
+                      thread_id: str | None = None, type: str = "") -> int:
+        removed = 0
+        if kind in ("", "fact") and name:
+            removed += self.fact_store.delete_fact(name)
+        if kind in ("", "event"):
+            removed += self.memory_db.delete_episodic(
+                user_id, entry_id=entry_id, thread_id=thread_id, type=type or None
+            )
+        return removed
+
+    def memory_policy_get(self, user_id: str = "u_001") -> dict:
+        g = self.policy_store.global_policy()
+        u = self.policy_store.user_policy(user_id)
+        return {
+            "global": g.model_dump(exclude={"user_id"}),
+            "user": u.model_dump(),
+            "effective": self.policy_store.effective(user_id, False).model_dump(),
+        }
+
+    def memory_policy_set(self, user_id: str = "u_001", enabled: bool | None = None,
+                          generate: bool | None = None, use: bool | None = None) -> dict:
+        self.policy_store.set_user(user_id, enabled=enabled, generate=generate, use=use)
+        return self.memory_policy_get(user_id)
+
+    def memory_settings_get(self) -> dict:
+        g = self.policy_store.global_policy()
+        return {
+            "enabled": bool(g.enabled),
+            "feature_enabled": False,
+            "global": g.model_dump(exclude={"user_id"}),
+            "router_top_n": 5,
+            "max_inject_tokens": 2000,
+        }
+
+    def memory_settings_set(self, enabled: bool | None = None,
+                            generate: bool | None = None, use: bool | None = None) -> dict:
+        self.policy_store.set_global(enabled=bool(enabled) if enabled is not None else False,
+                                     generate=generate, use=use)
+        return self.memory_settings_get()
+
+    def memory_consolidate(self, user_id: str = "u_001", force: bool = False) -> dict:
+        from careercrew_core.memory.consolidation import Consolidator
+
+        return Consolidator(self.memory_db, min_sessions=1).consolidate(user_id, force=force)
 
     @property
     def llm(self):

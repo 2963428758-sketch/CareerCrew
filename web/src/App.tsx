@@ -1,8 +1,12 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
-import { useEffect, useState, type ComponentType } from "react"
-import { MessageSquare, GraduationCap, FileText, Users, Database, Trash2, MessageCircle, BookOpen, Target } from "lucide-react"
+import { useEffect, useRef, useState, type ComponentType } from "react"
+import {
+  BookOpen, ChevronDown, Copy, FileText, GraduationCap, MessageCircle,
+  MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useChatStore } from "@/store/chatStore"
+import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
+import { SettingsDialog } from "@/components/SettingsDialog"
 import ChatPage from "@/pages/ChatPage"
 import InterviewPage from "@/pages/InterviewPage"
 import ResumePage from "@/pages/ResumePage"
@@ -18,7 +22,6 @@ const NAV = [
   { to: "/resume", label: "简历优化", icon: FileText },
   { to: "/knowledge", label: "知识库问答", icon: BookOpen },
   { to: "/consult", label: "会诊", icon: Users },
-  { to: "/data", label: "数据看板", icon: Database },
 ]
 
 const PAGES: Record<string, ComponentType> = {
@@ -33,6 +36,7 @@ const PAGES: Record<string, ComponentType> = {
 
 export default function App() {
   const location = useLocation()
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -78,8 +82,15 @@ export default function App() {
         {/* 对话历史 */}
         <ThreadList />
 
-        <div className="mt-auto p-3">
+        <div className="mt-auto flex items-center justify-between gap-1 border-t border-sidebar-border py-1 pl-1 pr-2">
           <HealthDot />
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="rounded-md p-2 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
+            title="设置"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
         </div>
       </nav>
 
@@ -90,70 +101,235 @@ export default function App() {
           </div>
         ))}
       </main>
+
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   )
 }
 
 function ThreadList() {
-  const [threads, setThreads] = useState<Record<string, unknown>[]>([])
-  const { selectedThreadId, setSelectedThreadId, threadNonce } = useChatStore()
   const navigate = useNavigate()
+  const location = useLocation()
+  const module = moduleOfPath(location.pathname)
+  const {
+    threadsByModule, currentThreadByModule, loading, error, copiedThreadId, nonce,
+    setActiveModule, fetchThreads, selectThread, renameThread, togglePin, deleteThread, copyThreadId,
+  } = useThreadStore()
 
-  const fetchThreads = () => {
-    fetch("/api/threads")
-      .then((r) => r.json())
-      .then((d) => setThreads(d))
-      .catch(() => {})
+  useEffect(() => {
+    if (module) {
+      setActiveModule(module)
+      fetchThreads(module)
+    }
+  }, [module, nonce, fetchThreads, setActiveModule])
+
+  if (!module) return null
+
+  const threads = threadsByModule[module] ?? []
+  const currentId = currentThreadByModule[module]
+  const moduleMeta = CHAT_MODULES.find((m) => m.key === module)!
+
+  const handleSelectModule = (m: ThreadModule) => {
+    setActiveModule(m)
+    navigate(CHAT_MODULES.find((x) => x.key === m)!.path)
   }
 
-  useEffect(() => { fetchThreads() }, [threadNonce])
-
-  const handleClick = (tid: string) => {
-    setSelectedThreadId(tid)
-    navigate("/")
+  const handleSelect = (tid: string) => {
+    selectThread(module, tid)
+    navigate(moduleMeta.path)
   }
 
-  const handleDelete = (e: React.MouseEvent, threadId: string) => {
-    e.stopPropagation()
+  const handleDelete = (tid: string) => {
     if (!window.confirm("确定删除这个对话吗？删除后该对话的记忆将无法恢复。")) return
-    fetch(`/api/threads/${threadId}`, { method: "DELETE" })
-      .then(() => fetchThreads())
+    deleteThread(module, tid)
   }
-
-  if (threads.length === 0) return null
 
   return (
     <div className="mt-2 flex-1 overflow-y-auto border-t border-sidebar-border px-3 py-2">
       <p className="mb-1.5 px-1 text-[11px] font-medium text-sidebar-text/70">对话历史</p>
+      <ModuleDropdown module={module} onSelect={handleSelectModule} />
+      {loading ? (
+        <p className="px-1 py-1 text-[11px] text-sidebar-text/60">加载中…</p>
+      ) : error ? (
+        <p className="px-1 py-1 text-[11px] text-red-400/80">会话加载失败</p>
+      ) : threads.length === 0 ? (
+        <p className="px-1 py-1 text-[11px] text-sidebar-text/60">暂无会话</p>
+      ) : (
       <div className="space-y-0.5">
-        {threads.map((thread) => {
-          const tid = String(thread.thread_id || "")
-          const title = String(thread.title || tid)
-          const count = Number(thread.entries || 0)
-          const isActive = selectedThreadId === tid
-          return (
-            <div
-              key={tid}
-              className={cn(
-                "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[12px] transition-colors",
-                isActive ? "bg-sidebar-hover text-white" : "text-sidebar-text hover:bg-sidebar-hover/50 hover:text-white/90"
-              )}
-              onClick={() => handleClick(tid)}
-            >
-              <MessageCircle className="h-3 w-3 shrink-0 opacity-60" />
-              <span className="flex-1 truncate">{title}</span>
-              {count > 0 && <span className="shrink-0 text-[10px] opacity-50">{count}</span>}
-              <button
-                className="shrink-0 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                onClick={(e) => handleDelete(e, tid)}
-              >
-                <Trash2 className="h-3 w-3" />
-              </button>
-            </div>
-          )
-        })}
+        {threads.map((thread) => (
+          <ThreadRow
+            key={thread.thread_id}
+            module={module}
+            thread={thread}
+            isActive={currentId === thread.thread_id}
+            copied={copiedThreadId === thread.thread_id}
+            onSelect={() => handleSelect(thread.thread_id)}
+            onRename={(title) => renameThread(module, thread.thread_id, title)}
+            onTogglePin={(pinned) => togglePin(module, thread.thread_id, pinned)}
+            onDelete={() => handleDelete(thread.thread_id)}
+            onCopy={() => copyThreadId(thread.thread_id)}
+          />
+        ))}
       </div>
+      )}
     </div>
+  )
+}
+
+function ModuleDropdown({ module, onSelect }: { module: ThreadModule; onSelect: (m: ThreadModule) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const label = CHAT_MODULES.find((m) => m.key === module)?.label || module
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", onDown)
+    return () => document.removeEventListener("mousedown", onDown)
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative mb-1.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[12px] text-sidebar-text transition-colors hover:bg-sidebar-hover/50 hover:text-white/90"
+      >
+        <span className="truncate">{label}</span>
+        <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 z-40 mt-1 overflow-hidden rounded-md border border-sidebar-border bg-[#1E242E] py-1 shadow-xl">
+          {CHAT_MODULES.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => {
+                onSelect(m.key)
+                setOpen(false)
+              }}
+              className={cn(
+                "block w-full px-2.5 py-1.5 text-left text-[12px] transition-colors",
+                m.key === module
+                  ? "bg-sidebar-hover text-white"
+                  : "text-sidebar-text hover:bg-sidebar-hover/50 hover:text-white/90"
+              )}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ThreadRow({ module: _module, thread, isActive, copied, onSelect, onRename, onTogglePin, onDelete, onCopy }: {
+  module: ThreadModule
+  thread: ThreadItem
+  isActive: boolean
+  copied: boolean
+  onSelect: () => void
+  onRename: (title: string) => void
+  onTogglePin: (pinned: boolean) => void
+  onDelete: () => void
+  onCopy: () => void
+}) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [draft, setDraft] = useState(thread.title)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener("mousedown", onDown)
+    return () => document.removeEventListener("mousedown", onDown)
+  }, [menuOpen])
+
+  const commitRename = () => {
+    const title = draft.trim()
+    if (title && title !== thread.title) onRename(title)
+    setRenaming(false)
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <div
+        className={cn(
+          "group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] transition-colors",
+          isActive ? "bg-sidebar-hover text-white" : "text-sidebar-text hover:bg-sidebar-hover/50 hover:text-white/90"
+        )}
+        onClick={() => {
+          setMenuOpen(false)
+          onSelect()
+        }}
+      >
+        <MessageCircle className={cn("h-3 w-3 shrink-0 opacity-60", thread.pinned && "text-sidebar-text-active")} />
+        {renaming ? (
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename()
+              if (e.key === "Escape") setRenaming(false)
+            }}
+            onBlur={commitRename}
+            onClick={(e) => e.stopPropagation()}
+            className="min-w-0 flex-1 rounded border border-sidebar-border bg-sidebar px-1.5 py-0.5 text-[12px] text-white outline-none"
+          />
+        ) : (
+          <>
+            {thread.pinned && <Pin className="h-3 w-3 shrink-0 text-sidebar-text-active" />}
+            <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+            <button
+              className="shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-sidebar-hover group-hover:opacity-100"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen((o) => !o)
+              }}
+              title="更多操作"
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </>
+        )}
+      </div>
+
+      {menuOpen && !renaming && (
+        <div className="absolute right-0 top-5 z-40 w-36 overflow-hidden rounded-md border border-sidebar-border bg-[#1E242E] py-1 shadow-xl">
+          <MenuItem icon={Pin} label={thread.pinned ? "取消置顶" : "置顶"} onClick={() => { setMenuOpen(false); onTogglePin(!thread.pinned) }} />
+          <MenuItem icon={Pencil} label="重命名" onClick={() => { setMenuOpen(false); setRenaming(true); setDraft(thread.title) }} />
+          <MenuItem icon={Copy} label={copied ? "已复制 ✓" : "复制会话 ID"} onClick={onCopy} />
+          <MenuItem icon={Trash2} label="删除" danger onClick={() => { setMenuOpen(false); onDelete() }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MenuItem({ icon: Icon, label, onClick, danger }: {
+  icon: ComponentType<{ className?: string }>
+  label: string
+  onClick: () => void
+  danger?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
+        danger
+          ? "text-red-400 hover:bg-red-500/10"
+          : "text-sidebar-text hover:bg-sidebar-hover hover:text-white"
+      )}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </button>
   )
 }
 

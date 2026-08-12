@@ -39,6 +39,17 @@ class QuestionRequest(BaseModel):
     user_id: str = "u_001"
 
 
+class InterviewChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = ""
+
+
+class InterviewChatRequest(BaseModel):
+    topic: str = ""
+    messages: list[InterviewChatMessage] = []
+    user_id: str = "u_001"
+
+
 class ScoreRequest(BaseModel):
     question: str
     answer: str

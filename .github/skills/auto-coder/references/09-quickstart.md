@@ -25,8 +25,7 @@ export SILICONFLOW_API_KEY="sk-xxx"            # Git Bash
 ### 9.3 运行
 
 ```bash
-conda run -n careercrew python -m careercrew_cli.app          # CLI 求职顾问
-conda run -n careercrew python scripts/start_dashboard.py     # Streamlit Dashboard
+conda run -n careercrew uvicorn careercrew_api.main:app --reload --port 8000   # Web 前端 + API
 conda run -n careercrew python scripts/ingest_knowledge.py data/knowledge/   # 知识库摄取
 ```
 

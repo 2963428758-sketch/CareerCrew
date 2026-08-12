@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from careercrew_core.evaluation.answer_eval import CompositeEvaluator
 from careercrew_core.evaluation.business_eval import BusinessEvaluator
+from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.memory.types import MemoryEntry
 
@@ -29,8 +30,8 @@ def test_composite_interview_with_llm() -> None:
     assert r["score"] == 8.0
 
 
-def test_business_eval_stats(tmp_path) -> None:
-    em = EpisodicMemory(tmp_path / "t.jsonl")
+def test_business_eval_stats() -> None:
+    em = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     em.write(MemoryEntry(type="application", content={"company": "A", "status": "submitted"}))
     em.write(MemoryEntry(type="application", content={"company": "B", "status": "submitted"}))
     em.write(MemoryEntry(type="interview_qa", content={"q": "q", "score": 8}))

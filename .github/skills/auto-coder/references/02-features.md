@@ -50,14 +50,13 @@
 意向 -> 规划师建画像+目标公司池 -> 匹配官搜新 JD -> 命中 -> 简历顾问定制 -> 面试官模拟+记录 -> 谈判师准备策略 -> HITL 确认投递 -> 跟踪 -> 复盘写入记忆 -> 循环。一个完整的、可 dogfood 的求职陪跑闭环。
 
 ### 全链路可观测 + 评估闭环
-- **可观测性**：自建全链路 trace（JSON Lines，TraceContext 机制）+ Streamlit 基础 Dashboard（系统总览 / 数据浏览 / 追踪查看）。不依赖 LangSmith。
+- **可观测性**：LangSmith 全链路追踪（LLM/工具/ReAct/HITL/RAG/记忆，默认脱敏上传），Web 数据看板（画像 / 记忆管理 / 记忆设置）。
 - **评估**：答案级（简历匹配度 / 面试题质量，集成 Ragas）+ 业务级（投递->面试转化率、面试通过率、拿 offer dogfood）。高级方向补轨迹级评估。
 
 ### 本地优先 (Local-First)
 - LLM 走硅基流动（OpenAI 兼容 API）：`langchain init_chat_model` + 薄 `create_llm(settings)` 适配，`base_url` 配置切换。
 - Embedding 本地 BGE-M3（dense+sparse+colbert，FlagEmbedding）；Rerank 走硅基流动 rerank API。
-- 向量库 Milvus Lite 嵌入式，Chroma 兜底。
-- checkpointer SQLite，情景记忆 JSONL，User Model JSON。
-- 本地服务零依赖（Milvus Lite/SQLite/JSONL）；LLM/Rerank 走 API。
+- 向量库 Qdrant（dense+sparse，本地 Docker）；记忆统一 Postgres（本地 Docker）。
+- LLM/Rerank 走 API。
 
 ---

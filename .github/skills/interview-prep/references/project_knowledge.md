@@ -30,20 +30,20 @@
 
 ## 6. HITL 闸门
 - **核心要点**：默认 HITL（高 stakes 决策）；投递/打招呼/接 offer/谈薪话术必确认（LangGraph interrupt）；恢复可确认/拒绝/修改；高级方向 Delegate 三级授权（只读草稿/代发待确认/主动执行）。
-- **关键锚点**：`careercrew_core/supervisor/hitl.py`、`careercrew_cli/hitl/gates.py`。
+- **关键锚点**：`careercrew_core/supervisor/hitl.py`。
 - **常见露馅点**：说不清 interrupt 后状态存哪、怎么恢复一致；答不出哪些动作必确认。
 
 ## 7. 求职周期工作流
 - **核心要点**：9 阶段闭环（意向->规划->匹配->简历->面试->谈判->投递[HITL]->跟踪->复盘->循环）；supervisor 路由；阶段切换可由用户驱动或 agent 产出触发；拿 offer 即 dogfood 验收。
-- **关键锚点**：`careercrew_cli/workflow/job_cycle.py`。
+- **关键锚点**：`careercrew_core/workflow/job_cycle.py`。
 - **常见露馅点**：答不出阶段顺序；说不清哪些阶段必 HITL。
 
 ## 8. 评估与可观测性
-- **核心要点**：复用 MODULAR-RAG 全链路 trace（JSON Lines），扩展 trace_type（agent_loop/hitl/memory_op/compaction）；Streamlit 三页面（总览/数据/追踪）；答案级评估（简历匹配度/面试题质量，复用 Ragas）+ 业务级（转化率/通过率/offer，数据来自情景记忆事件统计）；高级方向轨迹级评估（LLM-as-judge + 黄金回放）。
-- **关键锚点**：`careercrew_ui/dashboard/`、`careercrew_core/evaluation/`、`logs/traces.jsonl`。
-- **常见露馅点**：把答案级和业务级评估混为一谈；答不出业务级评估数据来源；说不清不依赖 LangSmith 的本地可观测方案。
+- **核心要点**：LangSmith 全链路追踪（脱敏上传，控制台查看）；Web 数据看板（画像/记忆/记忆设置）；答案级评估（简历匹配度/面试题质量，复用 Ragas）+ 业务级（转化率/通过率/offer，数据来自情景记忆事件统计）；高级方向轨迹级评估（LLM-as-judge + 黄金回放）。
+- **关键锚点**：`careercrew_core/evaluation/`、`web/src/pages/DataPage.tsx`。
+- **常见露馅点**：把答案级和业务级评估混为一谈；答不出业务级评估数据来源；说不清 LangSmith 脱敏与记忆指标。
 
 ## 9. 分层架构与本地优先
-- **核心要点**：四层单向依赖（careercrew_ai -> careercrew_core -> careercrew_cli -> careercrew_ui），core 只发事件不碰渲染；本地优先（Milvus Lite + SQLite + JSONL + JSON，零外部服务）；LLM 可插拔复用 llm_factory。
-- **关键锚点**：`DEV_SPEC.md` §3.12、§5.2 目录树。
-- **常见露馅点**：答不清四层依赖方向；说不清本地优先的具体体现。
+- **核心要点**：三层单向依赖（careercrew_ai -> careercrew_core -> careercrew_api），web 前端独立；本地优先（Postgres/Qdrant 本地 Docker，LLM/Rerank 走 API）；LLM 可插拔复用 llm_factory。
+- **关键锚点**：`docs/DEV_SPEC.md` §3.12、§5.2 目录树。
+- **常见露馅点**：答不清依赖方向；说不清本地优先的具体体现。

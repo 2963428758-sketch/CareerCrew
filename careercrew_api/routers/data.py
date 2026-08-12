@@ -1,13 +1,44 @@
-"""data 路由：health / config / profile / threads / memory。"""
+"""data 路由：health / config / profile / threads / memory / settings / policy。"""
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import HealthResponse
 
 router = APIRouter()
+
+
+class ProfileUpdateRequest(BaseModel):
+    fields: dict[str, Any]
+
+
+class ThreadCreateRequest(BaseModel):
+    thread_id: str
+    module: str = "chat"
+    title: str = ""
+
+
+class ThreadPatchRequest(BaseModel):
+    title: str | None = None
+    pinned: bool | None = None
+    module: str | None = None
+
+
+class MemoryPolicyRequest(BaseModel):
+    enabled: bool | None = None
+    generate: bool | None = None
+    use: bool | None = None
+
+
+class MemorySettingsRequest(BaseModel):
+    enabled: bool | None = None
+    generate: bool | None = None
+    use: bool | None = None
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -26,87 +57,124 @@ def health(rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> HealthResponse:
 
 @router.get("/config")
 def config() -> dict:
-    """复用 dashboard get_settings_summary()。"""
-    from careercrew_ui.dashboard.data import get_settings_summary
+    """读 settings 汇总（llm / embedding / rerank / vector_store / rag）。"""
+    from careercrew_core.state.settings import load_settings
 
-    return get_settings_summary()
+    s = load_settings()
+    return {
+        "llm": s.llm.model, "embedding": s.embedding.provider,
+        "rerank": s.rerank.backend, "vector_store": s.vector_store.backend,
+        "rag": s.rag.retrieval.mode,
+    }
 
 
 @router.get("/profile")
-def profile(user_id: str = Query("u_001")) -> dict:
-    from careercrew_ui.dashboard.data import get_user_model
+def profile(user_id: str = Query("u_001"),
+            rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """从语义事实聚合 UserModel 投影（走 runtime 记忆库，生产为 Postgres）。"""
+    rt._ensure_heavy()
+    from careercrew_core.memory.semantic import SemanticFactStore
 
-    return get_user_model(user_id)
+    store = SemanticFactStore(rt.memory_db, user_id)
+    return store.load(user_id).model_dump()
 
 
 @router.put("/profile")
-def update_profile(fields: dict, user_id: str = Query("u_001")) -> dict:
-    """更新用户画像字段（白名单约束）。"""
-    from careercrew_core.memory.user_model import UserModelStore
-    from careercrew_core.state.settings import load_settings
-
-    settings = load_settings()
-    store = UserModelStore(settings.memory.user_model.path)
+def update_profile(req: ProfileUpdateRequest, user_id: str = Query("u_001"),
+                   rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """更新用户画像字段（白名单约束，写入语义事实）。"""
+    rt._ensure_heavy()
     try:
-        model = store.update(user_id, fields)
+        model = rt.fact_store.update(user_id, req.fields, source="api")
         return model.model_dump()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/threads")
-def threads(user_id: str = Query("u_001"), rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> list[dict]:
-    """列出用户的所有对话线程（每个 thread = 一个对话 = 一个情景记忆文件）。"""
-    return rt.get_threads(user_id)
+def threads(module: str | None = Query(None), user_id: str = Query("u_001"),
+            rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> list[dict]:
+    """列出用户的所有对话线程（Postgres threads 表）。"""
+    return rt.get_threads(user_id, module=module)
+
+
+@router.post("/threads")
+def create_thread(req: ThreadCreateRequest, user_id: str = Query("u_001"),
+                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """登记新会话线程。"""
+    return rt.register_thread(req.thread_id, user_id, module=req.module, title=req.title)
+
+
+@router.patch("/threads/{thread_id}")
+def patch_thread(thread_id: str, req: ThreadPatchRequest, user_id: str = Query("u_001"),
+                 rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """更新线程标题 / 置顶 / 模块。"""
+    return rt.touch_thread(
+        thread_id, user_id,
+        title=req.title, pinned=req.pinned,
+        module=req.module or "chat",
+    )
 
 
 @router.delete("/threads/{thread_id}")
-def delete_thread(thread_id: str, user_id: str = Query("u_001")) -> dict:
-    """删除指定对话线程的记忆文件。"""
-    from pathlib import Path
-    from careercrew_core.state.settings import load_settings
-
-    settings = load_settings()
-    base = Path(settings.memory.episodic.transcript_dir).resolve()
-    path = (base / user_id / f"{thread_id}.jsonl").resolve()
-    if not path.is_relative_to(base):
-        raise HTTPException(status_code=400, detail="非法 thread_id")
-    if path.exists():
-        path.unlink()
-        return {"deleted": True, "thread_id": thread_id}
-    return {"deleted": False, "thread_id": thread_id}
+def delete_thread(thread_id: str, user_id: str = Query("u_001"),
+                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """删除指定对话线程（情景事件 + 线程元数据）。"""
+    return rt.delete_thread(thread_id, user_id)
 
 
 @router.get("/memory")
-def memory(user_id: str = Query("u_001"), thread_id: str | None = Query(None), type: str = Query("")) -> list[dict]:
-    """读取情景记忆条目。
+def memory(user_id: str = Query("u_001"), thread_id: str | None = Query(None),
+           type: str = Query(""), rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> list[dict]:
+    """读取语义事实 + 情景事件（可过滤）。"""
+    return rt.memory_list(user_id, thread_id=thread_id, type=type)
 
-    传 thread_id：只读该线程；不传：读取该用户所有线程的记忆（合并按时间排序）。
-    """
-    from pathlib import Path
 
-    from careercrew_core.memory.episodic import EpisodicMemory
-    from careercrew_core.state.settings import load_settings
+@router.delete("/memory")
+def delete_memory(kind: str = Query(""), name: str | None = Query(None),
+                  entry_id: str | None = Query(None), thread_id: str | None = Query(None),
+                  type: str = Query(""), user_id: str = Query("u_001"),
+                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """删除语义事实（kind=fact&name）或情景事件（kind=event&entry_id）。"""
+    removed = rt.memory_delete(
+        user_id, kind=kind, name=name, entry_id=entry_id, thread_id=thread_id, type=type
+    )
+    return {"deleted": removed, "removed": removed}
 
-    settings = load_settings()
-    transcript_dir = Path(settings.memory.episodic.transcript_dir) / user_id
 
-    if thread_id:
-        base = Path(settings.memory.episodic.transcript_dir).resolve()
-        target = (base / user_id / f"{thread_id}.jsonl").resolve()
-        if not target.is_relative_to(base):
-            raise HTTPException(status_code=400, detail="非法 thread_id")
-        files = [target]
-    else:
-        # 所有线程合并
-        files = sorted(transcript_dir.glob("*.jsonl"))
+@router.get("/memory/policy")
+def memory_policy(user_id: str = Query("u_001"),
+                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """用户级记忆策略（enabled/generate/use + 生效值）。"""
+    return rt.memory_policy_get(user_id)
 
-    entries = []
-    for f in files:
-        if f.exists():
-            entries.extend(e.model_dump() for e in EpisodicMemory(f)._read_all())
-    entries.sort(key=lambda e: e.get("ts", ""))
 
-    if type:
-        entries = [e for e in entries if e.get("type") == type]
-    return entries
+@router.put("/memory/policy")
+def update_memory_policy(req: MemoryPolicyRequest, user_id: str = Query("u_001"),
+                         rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """更新用户级记忆策略。"""
+    return rt.memory_policy_set(
+        user_id, enabled=req.enabled, generate=req.generate, use=req.use
+    )
+
+
+@router.get("/settings/memory")
+def memory_settings(rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """全局记忆设置（特性开关 + 全局策略）。"""
+    return rt.memory_settings_get()
+
+
+@router.put("/settings/memory")
+def update_memory_settings(req: MemorySettingsRequest,
+                           rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """更新全局记忆开关（持久化到 memory_global_policy）。"""
+    return rt.memory_settings_set(
+        enabled=req.enabled, generate=req.generate, use=req.use
+    )
+
+
+@router.post("/memory/consolidate")
+def consolidate(user_id: str = Query("u_001"), force: bool = Query(False),
+                rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """手动触发后台 consolidation（测试/运维用）。"""
+    return rt.memory_consolidate(user_id, force=force)

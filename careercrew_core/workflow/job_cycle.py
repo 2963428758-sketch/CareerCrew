@@ -5,6 +5,8 @@
 UX 修复：
 - 对话历史跨步骤携带（ResumeAdvisor 能看到 JobMatcher 环节用户提供的背景/简历，避免重复问）
 - UserModel 画像注入（已有画像则不重复问）
+
+（原 CLI 版的 Renderer 交互输出已随 CLI 移除，本模块由 careercrew_api.runtime 以 streaming 模式使用。）
 """
 from __future__ import annotations
 
@@ -14,7 +16,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from careercrew_core.agents.job_matcher import JobMatcher
 from careercrew_core.agents.resume_advisor import ResumeAdvisor
-from careercrew_ui.cli.renderer import Renderer
 
 
 class JobCycle:
@@ -22,7 +23,6 @@ class JobCycle:
         self,
         job_matcher: JobMatcher,
         resume_advisor: ResumeAdvisor,
-        renderer: Renderer | None = None,
         user_model_store=None,  # UserModelStore（画像注入 + 持久化）
         user_id: str = "u_001",
         streaming: bool = False,  # agent 输出已流式打出, 不重复完整打印
@@ -30,11 +30,10 @@ class JobCycle:
     ) -> None:
         self.job_matcher = job_matcher
         self.resume_advisor = resume_advisor
-        self.renderer = renderer or Renderer()
         self._user_model_store = user_model_store
         self._user_id = user_id
         self._thread_id = thread_id
-        self._streaming = streaming  # 流式模式: agent 内容已逐 token 打出, 不再重复 show_agent
+        self._streaming = streaming  # 流式模式: agent 内容已逐 token 打出, 不再重复打印
         self._messages: list = []  # 跨步骤对话历史
 
     def _profile_preamble(self) -> str | None:
@@ -123,32 +122,11 @@ class JobCycle:
     ) -> str:
         """M1 闭环：匹配 -> 选 JD -> 简历。select_jd 注入 JD 选择（测试 mock），默认交互。"""
         self._user_id = user_id
-        self.renderer.banner()
-        self.renderer.show_user(intent)
-        self.renderer.show_status("匹配官正在检索岗位并评估匹配度...")
-        if self._streaming:
-            # 流式模式: 先打 agent 标签, 内容由 stream_callback 逐 token 打出, 结束收尾换行
-            self.renderer.show_agent_label("job_matcher")
-            match_out = self.run_match(intent)
-            self.renderer.stream_end()
-        else:
-            match_out = self.run_match(intent)
-            self.renderer.show_agent("job_matcher", match_out)
+        match_out = self.run_match(intent)
 
-        jd = select_jd(match_out) if select_jd else self._prompt_jd()
+        jd = select_jd(match_out) if select_jd else None
         if not jd:
             return match_out
 
-        self.renderer.show_status("简历顾问正在按所选 JD 定制简历...")
-        if self._streaming:
-            self.renderer.show_agent_label("resume_advisor")
-            resume_out = self.run_resume(jd)
-            self.renderer.stream_end()
-        else:
-            resume_out = self.run_resume(jd)
-            self.renderer.show_agent("resume_advisor", resume_out)
+        resume_out = self.run_resume(jd)
         return resume_out
-
-    def _prompt_jd(self) -> str | None:
-        jd = self.renderer.prompt_choice("  输入要定制简历的目标 JD（回车跳过）: ").strip()
-        return jd or None

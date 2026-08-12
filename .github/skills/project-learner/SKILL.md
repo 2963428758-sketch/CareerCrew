@@ -23,10 +23,10 @@ Discovery -> Check History -> User Intent -> Select Domain -> Select Sub-topic
 
 Autonomously build project understanding. Do NOT ask user anything yet.
 
-1. Read `DEV_SPEC.md` - project goals, architecture, tech stack, module design
+1. Read `docs/DEV_SPEC.md` - project goals, architecture, tech stack, module design
 2. Read `config/settings.yaml` - configuration system（代码落地后）
-3. List 四层包目录树（`careercrew_ai` / `careercrew_core` / `careercrew_cli` / `careercrew_ui`）
-4. Read key entry points: `careercrew_cli/app.py`、`scripts/run_cli.py`（代码落地后）
+3. List 包目录树（`careercrew_ai` / `careercrew_core` / `careercrew_api` / `web/`）
+4. Read key entry points: `careercrew_api/runtime.py`、`careercrew_api/main.py`
 5. List `tests/` - testing strategy overview
 
 Build an internal mental model covering these **10 Knowledge Domains**, each containing **3-5 Sub-topics** (知识点), totaling **~41 interview knowledge points**:
@@ -64,26 +64,26 @@ Build an internal mental model covering these **10 Knowledge Domains**, each con
 | D5.4 | Collection 隔离：知识库 vs 情景记忆 | `config/settings.yaml` |
 | **D6** | **HITL 闸门** | |
 | D6.1 | 基础 HITL：LangGraph interrupt 机制与恢复 | `careercrew_core/supervisor/hitl.py` |
-| D6.2 | 必确认动作：投递/打招呼/接 offer/谈薪话术 | `careercrew_cli/hitl/gates.py` |
+| D6.2 | 必确认动作：投递/打招呼/接 offer/谈薪话术 | `careercrew_core/supervisor/hitl.py` |
 | D6.3 | 状态一致性：interrupt 后 pending_action 与 checkpointer | `careercrew_core/state/`、`supervisor/hitl.py` |
-| D6.4 | Delegate 三级授权（高级）：只读草稿/代发/主动执行 | `DEV_SPEC.md` §3.8 |
+| D6.4 | Delegate 三级授权（高级）：只读草稿/代发/主动执行 | `docs/DEV_SPEC.md` §3.8 |
 | **D7** | **求职周期工作流** | |
-| D7.1 | 9 阶段闭环：意向->...->复盘->循环 | `careercrew_cli/workflow/job_cycle.py` |
-| D7.2 | 阶段切换：用户驱动 vs agent 产出触发 | `careercrew_cli/workflow/job_cycle.py` |
+| D7.1 | 9 阶段闭环：意向->...->复盘->循环 | `careercrew_core/workflow/job_cycle.py` |
+| D7.2 | 阶段切换：用户驱动 vs agent 产出触发 | `careercrew_core/workflow/job_cycle.py` |
 | D7.3 | dogfood：拿 offer 即验收 | `tests/e2e/test_dogfood_cycle.py` |
 | **D8** | **评估体系** | |
 | D8.1 | 答案级评估：简历匹配度/面试题质量（复用 Ragas） | `careercrew_core/evaluation/answer_eval.py` |
 | D8.2 | 业务级评估：转化率/通过率/offer（事件统计） | `careercrew_core/evaluation/business_eval.py` |
-| D8.3 | 轨迹级评估（高级）：路由准确率/工具 precision-recall/memory_hit_rate | `DEV_SPEC.md` §3.10 |
+| D8.3 | 轨迹级评估（高级）：路由准确率/工具 precision-recall/memory_hit_rate | `docs/DEV_SPEC.md` §3.10 |
 | D8.4 | 黄金轨迹回放：append-only 树的红利 | `tests/fixtures/golden_trajectories/` |
 | **D9** | **可观测性与 Dashboard** | |
-| D9.1 | 全链路 trace：复用 MODULAR-RAG + 扩展 trace_type | `logs/traces.jsonl`、`careercrew_core/`（trace 注入） |
-| D9.2 | Streamlit 三页面：总览/数据/追踪 | `careercrew_ui/dashboard/` |
-| D9.3 | ReAct 轨迹回放：thought/tool_call/tool_result | `careercrew_ui/dashboard/pages/traces.py` |
-| D9.4 | 本地优先可观测：不依赖 LangSmith | `DEV_SPEC.md` §3.11 |
+| D9.1 | 全链路追踪：LangSmith（脱敏上传，控制台查看） | `careercrew_core/tracing/langsmith.py` |
+| D9.2 | 数据看板：画像/记忆管理/记忆设置 | `web/src/pages/DataPage.tsx` |
+| D9.3 | 全链路追踪：LangSmith 控制台查看（脱敏上传） | `careercrew_core/tracing/langsmith.py` |
+| D9.4 | 记忆与评估指标：memory_hit_rate / compaction 无损率 | `docs/DEV_SPEC.md` §3.10 |
 | **D10** | **分层架构与工程化** | |
-| D10.1 | 四层单向依赖：ai->core->cli->ui，core 发事件不碰渲染 | `DEV_SPEC.md` §3.12、§5.2 |
-| D10.2 | 本地优先：Milvus Lite/SQLite/JSONL/JSON 零外部服务 | `config/settings.yaml` |
+| D10.1 | 三层单向依赖：ai->core->api，web 前端独立 | `docs/DEV_SPEC.md` §3.12、§5.2 |
+| D10.2 | 本地优先：Postgres/Qdrant 本地 Docker，LLM/Rerank 走 API | `config/settings.yaml` |
 | D10.3 | TDD 分层测试：单元/集成/E2E 金字塔 | `tests/` |
 | D10.4 | LLM 可插拔：复用 llm_factory | `careercrew_ai/llm/llm_adapter.py` |
 
@@ -232,7 +232,7 @@ Provide targeted study resources (中文):
 - [file_path](file_path) - 说明关键逻辑
 
 ### 📄 相关文档
-- [DEV_SPEC.md 对应章节](DEV_SPEC.md) - 设计原理
+- [DEV_SPEC 对应章节](docs/DEV_SPEC.md) - 设计原理
 
 ### 💡 建议学习路径
 1. 先阅读 [file] 理解 [what]
@@ -280,8 +280,8 @@ After persisting, ask the user (中文):
 | File | Purpose |
 |------|---------|
 | `.github/skills/project-learner/references/LEARNING_PROGRESS.md` | Persistent learning state (41 sub-topics) |
-| `DEV_SPEC.md` | Project specification & architecture |
+| `docs/DEV_SPEC.md` | Project specification & architecture |
 | `config/settings.yaml` | Configuration reference（代码落地后） |
-| `careercrew_ai` / `careercrew_core` / `careercrew_cli` / `careercrew_ui` | 四层源码 |
+| `careercrew_ai` / `careercrew_core` / `careercrew_api` / `web/` | 三层源码 + 前端 |
 | `tests/` | Test suite |
-| `scripts/` | CLI entry points（代码落地后） |
+| `scripts/` | 运维/迁移脚本（知识库摄取、清理、评估） |

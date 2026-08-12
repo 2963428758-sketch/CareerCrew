@@ -4,14 +4,15 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, HumanMessage
 
 from careercrew_core.agents.career_planner import CareerPlanner
-from careercrew_core.memory.user_model import UserModelStore
+from careercrew_core.memory.db import FakeMemoryDb
+from careercrew_core.memory.semantic import SemanticFactStore
 from careercrew_core.tools.internal.profile_update import make_profile_update_tool
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 from tests.fakes import FakeChatModel
 
 
-def test_planner_updates_profile(tmp_path) -> None:
-    um = UserModelStore(tmp_path / "um.json")
+def test_planner_updates_profile() -> None:
+    um = SemanticFactStore(FakeMemoryDb(), user_id="u1")
     reg = ToolRegistry()
     reg.register(ToolSpec(tool=make_profile_update_tool(um, user_id="u1")))
     agent = CareerPlanner(

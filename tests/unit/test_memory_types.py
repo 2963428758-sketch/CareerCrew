@@ -1,8 +1,10 @@
-"""C1 记忆核心数据类型测试。"""
+"""记忆核心数据类型测试。"""
 from __future__ import annotations
 
 from careercrew_core.memory.types import (
     MemoryEntry,
+    MemoryPolicy,
+    SemanticFact,
     TreeNode,
     UserPreferences,
     UserProfile,
@@ -54,3 +56,18 @@ def test_tree_node() -> None:
     node = TreeNode(entry=root_entry, children=[TreeNode(entry=child_entry)])
     assert node.entry.id == "e_001"
     assert node.children[0].entry.id == "e_002"
+
+
+def test_semantic_fact_defaults() -> None:
+    f = SemanticFact(user_id="u1", name="preferences.city", type="preference")
+    assert f.content == {}
+    assert f.confidence == 1.0
+    assert f.version == 1
+    assert f.source == ""
+
+
+def test_memory_policy_defaults() -> None:
+    p = MemoryPolicy(user_id="u1")
+    assert p.enabled is False
+    assert p.generate is True
+    assert p.use is True

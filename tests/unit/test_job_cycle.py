@@ -1,8 +1,7 @@
 """G2 JobCycle 工作流测试（注入 fake agent）。"""
 from __future__ import annotations
 
-from careercrew_cli.workflow.job_cycle import JobCycle
-from careercrew_ui.cli.renderer import Renderer
+from careercrew_core.workflow.job_cycle import JobCycle
 
 
 class FakeAgent:
@@ -18,7 +17,7 @@ class FakeAgent:
 def test_job_cycle_full_flow() -> None:
     jm = FakeAgent("匹配到字节 0.95 / 腾讯 0.85")
     ra = FakeAgent("定制简历完成，匹配度 0.97")
-    cycle = JobCycle(jm, ra, renderer=Renderer())
+    cycle = JobCycle(jm, ra)
 
     def select_jd(match_out: str) -> str:
         assert "字节" in match_out
@@ -33,7 +32,7 @@ def test_job_cycle_full_flow() -> None:
 def test_job_cycle_skip_resume() -> None:
     jm = FakeAgent("匹配结果")
     ra = FakeAgent("简历")
-    cycle = JobCycle(jm, ra, renderer=Renderer())
+    cycle = JobCycle(jm, ra)
     out = cycle.run("帮我找工作", select_jd=lambda _out: None)  # 跳过简历
     assert out == "匹配结果"
     assert ra.run_calls == 0
@@ -41,14 +40,14 @@ def test_job_cycle_skip_resume() -> None:
 
 def test_run_match_only() -> None:
     jm = FakeAgent("匹配结果")
-    cycle = JobCycle(jm, FakeAgent("x"), renderer=Renderer())
+    cycle = JobCycle(jm, FakeAgent("x"))
     assert cycle.run_match("我的方向是大模型") == "匹配结果"
     assert jm.run_calls == 1
 
 
 def test_run_resume_only() -> None:
     ra = FakeAgent("简历完成")
-    cycle = JobCycle(FakeAgent("x"), ra, renderer=Renderer())
+    cycle = JobCycle(FakeAgent("x"), ra)
     assert cycle.run_resume("某 JD 内容") == "简历完成"
     assert ra.run_calls == 1
 
@@ -64,7 +63,7 @@ def test_job_cycle_carries_conversation() -> None:
         def run(self, state):
             seen.append(list(state["messages"]))
 
-    cycle = JobCycle(RecAgent(), RecAgent(), renderer=Renderer())
+    cycle = JobCycle(RecAgent(), RecAgent())
     cycle.run_match("我要找 java 工作")
     cycle.run_resume("某 JD")
     assert len(seen) == 2
@@ -73,11 +72,12 @@ def test_job_cycle_carries_conversation() -> None:
     assert any("按这个 JD 定制简历" in str(m.content) for m in resume_msgs)
 
 
-def test_job_cycle_injects_profile_preamble(tmp_path) -> None:
+def test_job_cycle_injects_profile_preamble() -> None:
     """UserModel 画像注入：有画像则 agent 上下文带画像。"""
-    from careercrew_core.memory.user_model import UserModelStore
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.semantic import SemanticFactStore
 
-    um = UserModelStore(tmp_path / "um.json")
+    um = SemanticFactStore(FakeMemoryDb(), user_id="u1")
     um.update("u1", {"profile.skills": ["Java", "Spring"], "profile.direction": "Java 后端"})
     seen = []
 
@@ -88,17 +88,18 @@ def test_job_cycle_injects_profile_preamble(tmp_path) -> None:
         def run(self, state):
             seen.append(list(state["messages"]))
 
-    cycle = JobCycle(RecAgent(), RecAgent(), renderer=Renderer(), user_model_store=um, user_id="u1")
+    cycle = JobCycle(RecAgent(), RecAgent(), user_model_store=um, user_id="u1")
     cycle.run_match("帮我找工作")
     msgs = seen[0]
     assert any("[用户画像]" in str(m.content) and "Java" in str(m.content) for m in msgs)
 
 
-def test_run_match_syncs_profile_from_intent(tmp_path) -> None:
+def test_run_match_syncs_profile_from_intent() -> None:
     """用户最新消息的明确字段刷新画像：旧方向被新方向覆盖，避免历史画像带偏。"""
-    from careercrew_core.memory.user_model import UserModelStore
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.semantic import SemanticFactStore
 
-    um = UserModelStore(tmp_path / "um.json")
+    um = SemanticFactStore(FakeMemoryDb(), user_id="u1")
     um.update("u1", {"profile.direction": "Java 后端", "profile.skills": ["Java"]})
 
     class FakeLLM:
@@ -114,17 +115,18 @@ def test_run_match_syncs_profile_from_intent(tmp_path) -> None:
         def run(self, state):
             self.run_calls += 1
 
-    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), renderer=Renderer(), user_model_store=um, user_id="u1")
+    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), user_model_store=um, user_id="u1")
     cycle.run_match("我是大模型应用方向")
     m = um.load("u1")
     assert m.profile.direction == "大模型应用"  # 新方向覆盖旧 Java 方向
 
 
-def test_run_match_keeps_profile_when_no_new_field(tmp_path) -> None:
+def test_run_match_keeps_profile_when_no_new_field() -> None:
     """消息里没给新字段时画像保持原样（不误清）。"""
-    from careercrew_core.memory.user_model import UserModelStore
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.semantic import SemanticFactStore
 
-    um = UserModelStore(tmp_path / "um.json")
+    um = SemanticFactStore(FakeMemoryDb(), user_id="u1")
     um.update("u1", {"profile.direction": "大模型应用"})
 
     class FakeLLM:
@@ -138,6 +140,6 @@ def test_run_match_keeps_profile_when_no_new_field(tmp_path) -> None:
         def run(self, state):
             pass
 
-    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), renderer=Renderer(), user_model_store=um, user_id="u1")
+    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), user_model_store=um, user_id="u1")
     cycle.run_match("帮我找工作")
     assert um.load("u1").profile.direction == "大模型应用"

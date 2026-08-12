@@ -1,4 +1,4 @@
-"""read_image 工具：用视觉模型（硅基流动 GLM-4.5V）读取图片内容（简历截图/作品集）。
+"""read_image 工具：用视觉模型（配置 vlm.model，默认 Qwen3-VL 系列）读取图片内容（简历截图/作品集）。
 
 关键设计：视觉模型（Qwen3-VL/GLM-4.5V）不兼容 function calling，故视觉做成工具供
 agent 按需调（ReAct 主 LLM 保持 tool-calling 文本模型）。vision_caller 注入便于测试。
@@ -10,19 +10,24 @@ from pathlib import Path
 
 from langchain_core.tools import BaseTool, tool
 
-# 视觉模型默认（硅基流动）；可换 Qwen3-VL 系列
+# 视觉模型兜底（未配置 settings 时）；配置了 settings 时优先用 settings.vlm.model
 DEFAULT_VISION_MODEL = "GLM-4.5V"
 
 
-def make_read_image_tool(settings, vision_caller=None, model: str = DEFAULT_VISION_MODEL) -> BaseTool:
+def make_read_image_tool(settings, vision_caller=None, model: str | None = None) -> BaseTool:
     """构造 read_image 工具。vision_caller(image_b64, prompt) -> str。"""
+    resolved_model = (
+        model
+        or (getattr(settings, "vlm", None).model if settings else None)
+        or DEFAULT_VISION_MODEL
+    )
 
     def _default_call(image_b64: str, prompt: str) -> str:
         from openai import OpenAI
 
         client = OpenAI(base_url=settings.llm.base_url, api_key=settings.llm.api_key)
         resp = client.chat.completions.create(
-            model=model,
+            model=resolved_model,
             messages=[{
                 "role": "user",
                 "content": [

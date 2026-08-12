@@ -1,11 +1,10 @@
-"""记忆核心数据类型（C1）。
+"""记忆核心数据类型。
 
-MemoryEntry：情景记忆条目（append-only JSONL 一行），id + parentId 构成树。
-UserModel：长期用户画像（结构化，跨会话）。
+MemoryEntry：情景记忆条目（append-only），id + parentId 构成树。
+SemanticFact：语义记忆事实（带来源/置信度/版本，跨会话）。
+MemoryPolicy：Codex 式治理开关（生成/使用分离）。
+UserModel：长期用户画像投影（由语义事实聚合，兼容旧前端契约）。
 TreeNode：树节点（entry + children），供树遍历。
-
-append-only 树的红利：会话只增不改，任何历史轨迹可完整回放 -- 轨迹级评估（黄金轨迹
-回放）的基础（DEV_SPEC 3.3.2）。
 """
 from __future__ import annotations
 
@@ -18,6 +17,8 @@ MEMORY_TYPES = {
     "job_match",       # 职位匹配命中
     "application",     # 投递
     "offer",           # offer
+    "salary_talk",     # 谈薪
+    "review",          # 复盘
     "compaction",      # 压缩条目（I 阶段）
     "note",            # 其他备注
 }
@@ -38,6 +39,31 @@ class TreeNode(BaseModel):
 
     entry: MemoryEntry
     children: list["TreeNode"] = Field(default_factory=list)
+
+
+class SemanticFact(BaseModel):
+    """语义记忆事实：关于用户的稳定信息，带来源/置信度/版本。"""
+
+    user_id: str
+    name: str  # 唯一键（如 profile.skills / preference.salary_min）
+    type: str  # profile | preference | target_company | mastery | note
+    description: str = ""  # 一行摘要，供 LLM 路由选择
+    content: dict = Field(default_factory=dict)
+    source: str = ""  # 来源（agent / 会话 / consolidation）
+    confidence: float = 1.0
+    version: int = 1
+    created_at: str = ""
+    modified_at: str = ""
+
+
+class MemoryPolicy(BaseModel):
+    """Codex 式记忆治理：全局 + 用户级生成/使用分离开关。"""
+
+    user_id: str = ""
+    enabled: bool = False
+    generate: bool = True
+    use: bool = True
+    updated_at: str = ""
 
 
 class UserProfile(BaseModel):

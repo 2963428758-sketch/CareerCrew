@@ -48,3 +48,39 @@ def test_questions_default_topic(client):
     """topic 留空 -> 随机出题。"""
     resp = client.post("/api/interview/questions", json={})
     assert resp.status_code == 200
+
+
+@pytest.mark.web
+def test_chat_first_question(client, fake_runtime):
+    """对话式面试（无历史）：stage + chunk + done，不带评分。"""
+    fake_runtime.interview_output = "请讲讲你对 RAG 的理解"
+    resp = client.post("/api/interview/chat", json={"topic": "RAG", "messages": []})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    assert events[0]["type"] == "stage"
+    chunks = [e for e in events if e["type"] == "chunk"]
+    assert "".join(c["text"] for c in chunks) == fake_runtime.interview_output
+    done = events[-1]
+    assert done["type"] == "done"
+    assert "score" not in done
+
+
+@pytest.mark.web
+def test_chat_score_extracted(client, fake_runtime):
+    """用户回答后 -> done 事件携带 score/feedback。"""
+    fake_runtime.interview_output = (
+        "## 分数：8.5/10\n### 诊断\n- 结构清晰\n### 下一题\n请说说缓存一致性"
+    )
+    resp = client.post("/api/interview/chat", json={
+        "topic": "RAG",
+        "messages": [
+            {"role": "assistant", "content": "请讲讲你对 RAG 的理解"},
+            {"role": "user", "content": "RAG 是检索增强生成…"},
+        ],
+    })
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["score"] == 8.5
+    assert "结构清晰" in done["feedback"]

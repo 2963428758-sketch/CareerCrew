@@ -13,7 +13,7 @@ description: "基于 CareerCrew 项目生成定制化简历项目经历。结合
 
 1. 读取 [references/resume_principles.md](references/resume_principles.md) - 四段式结构、技术标签、亮点挖掘策略、常见误区
 2. 读取 [references/project_highlights.md](references/project_highlights.md) - 10 大技术亮点（含话术方向和量化角度）
-3. 按需深读 `DEV_SPEC.md` 对应章节或源码补充模块细节
+3. 按需深读 `docs/DEV_SPEC.md` 对应章节或源码补充模块细节
 
 ### Phase 2: 用户画像采集
 

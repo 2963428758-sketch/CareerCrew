@@ -26,10 +26,14 @@ export function MultilineInput({
 }: MultilineInputProps) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
-  // auto-grow
+  // auto-grow：空值时保持 CSS 最小高度（长占位符换行会把 scrollHeight 撑高，不能算进去）
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    if (!el.value) {
+      el.style.height = ""
+      return
+    }
     el.style.height = "auto"
     el.style.height = Math.min(el.scrollHeight, 240) + "px"
   }, [value])
@@ -49,6 +53,7 @@ export function MultilineInput({
       onKeyDown={handleKeyDown}
       placeholder={placeholder}
       disabled={disabled}
+      rows={1}
       className={cn("resize-none min-h-[44px] max-h-[240px]", className)}
     />
   )

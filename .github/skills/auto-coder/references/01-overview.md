@@ -1,6 +1,6 @@
 ## 1. 项目概述
 
-CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。Demo 入口以 CLI 优先（本地优先、轻量、零外部服务依赖），后续叠加 Streamlit 展示页。
+CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用户整个求职周期**：职位匹配、简历定制、面试模拟、薪资谈判、职业规划。区别于单点工具（只做简历或只做面试），它是一个**有长期记忆、能调用真实招聘平台与工具、带人工闸门**的多 agent 系统。前端为 React Web（`web/`）+ FastAPI（`careercrew_api`）单端口托管，另提供 MCP Server（`careercrew_mcp`）。
 
 ### 设计理念 (Design Philosophy)
 
@@ -20,7 +20,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - 自建 RAG（BGE-M3 三合一 + Contextual Chunking + bge-reranker）
 
 #### 2️⃣ 开箱即用与深度扩展并重 (Plug-and-Play & Extensible)
-- **开箱即用**：CLI 优先，本地服务零依赖（Milvus Lite 嵌入式），LLM/Rerank 走硅基流动 API，`pip install` 即可跑通求职闭环。
+- **开箱即用**：Web 优先，Postgres/Qdrant 跑在本地 Docker（通用容器），LLM/Rerank 走硅基流动 API，`pip install` 即可跑通求职闭环。
 - **深度扩展**：MVP 跑通主流程后，高级方向（Hermes 完整记忆 / Loop Engineering / 轨迹级评估 / 自建 MCP）提供清晰升级路径。
 - **分层标注**：spec 中每项技术明确标注【MVP 核心】或【高级方向】，避免"把高级内容当必做"。
 

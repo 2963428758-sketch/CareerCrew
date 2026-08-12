@@ -34,6 +34,7 @@ class BaseAgent:
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 10,
         stream_callback=None,  # 可选: 流式输出回调(text)->None, 用户不等
+        memory_injector=None,  # 可选: Callable[[str, str], str | None]（user_id, query）-> preamble
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
@@ -41,6 +42,7 @@ class BaseAgent:
         self.tools = tools or []
         self.max_iterations = max_iterations
         self.stream_callback = stream_callback
+        self.memory_injector = memory_injector
         self.agent = build_agent(
             llm=llm,
             tools=self._bindable_tools() or None,
@@ -65,6 +67,20 @@ class BaseAgent:
             stage=state.get("stage", ""),
         )
         messages = list(state.get("messages", []))
+        if self.memory_injector is not None:
+            query = ""
+            for m in reversed(messages):
+                if getattr(m, "type", "") == "human" or m.__class__.__name__ == "HumanMessage":
+                    query = str(m.content or "")
+                    break
+            try:
+                preamble = self.memory_injector(state.get("user_id", ""), query)
+            except Exception:
+                preamble = None
+            if preamble:
+                from langchain_core.messages import SystemMessage
+
+                messages = [SystemMessage(content=preamble)] + messages
         result = run_agent(
             self.agent, messages, self.stream_callback, self.max_iterations
         )

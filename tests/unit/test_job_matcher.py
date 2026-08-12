@@ -4,6 +4,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, HumanMessage
 
 from careercrew_core.agents.job_matcher import JobMatcher, extract_profile_from_intent, score_jd_match
+from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.tools.internal.memory_write import make_memory_write_tool
 from careercrew_core.tools.internal.search_jobs import search_jobs
@@ -66,13 +67,13 @@ def _tc(name, args, id_="1"):
     return {"name": name, "args": args, "id": id_, "type": "tool_call"}
 
 
-def test_job_matcher_writes_job_match(tmp_path) -> None:
+def test_job_matcher_writes_job_match() -> None:
     llm = FakeChatModel([
         AIMessage(content="", tool_calls=[_tc("search_jobs", {"direction": "大模型应用", "top_k": 3}, "c1")]),
         AIMessage(content="", tool_calls=[_tc("memory_write", {"type": "job_match", "content": {"company": "字节", "title": "大模型工程师", "score": 0.9}}, "c2")]),
         AIMessage(content="匹配到字节跳动"),
     ])
-    episodic = EpisodicMemory(tmp_path / "t.jsonl")
+    episodic = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     reg = ToolRegistry()
     reg.register(ToolSpec(tool=search_jobs))
     reg.register(ToolSpec(tool=make_memory_write_tool(episodic)))

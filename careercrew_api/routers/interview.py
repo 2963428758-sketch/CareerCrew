@@ -1,8 +1,9 @@
-"""interview 路由：出题流式 + 评分 + 记录。"""
+"""interview 路由：出题流式 + 对话式模拟面试 + 评分 + 记录。"""
 from __future__ import annotations
 
 import json
 from collections.abc import Generator
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -10,6 +11,8 @@ from fastapi.responses import StreamingResponse
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import (
+    InterviewChatMessage,
+    InterviewChatRequest,
     QuestionRequest,
     RecordRequest,
     RecordResponse,
@@ -19,6 +22,10 @@ from careercrew_api.schemas import (
 from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
 
 router = APIRouter()
+
+_CHAT_PROMPT_PATH = (
+    Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "interviewer_chat.txt"
+)
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -56,6 +63,57 @@ def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                     content_parts.append(evt["text"])
                 yield line
             yield done_event("".join(content_parts))
+        except RuntimeInitError as e:
+            yield error_event(str(e))
+        except Exception as e:
+            yield error_event(str(e))
+
+    return _ndjson_response(gen())
+
+
+def _build_chat_prompt(topic: str, messages: list[InterviewChatMessage]) -> str:
+    """把主题 + 对话历史拼成单轮 human 消息（对话式模拟面试）。"""
+    parts = [f"当前面试主题：{topic or '（未指定，随机出题）'}"]
+    for m in messages:
+        who = "用户" if m.role == "user" else "面试官"
+        parts.append(f"{who}：{m.content}")
+    return "\n\n".join(parts)
+
+
+@router.post("/chat")
+def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+    """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
+
+    def run_fn(cb):
+        from langchain_core.messages import HumanMessage
+
+        agent = rt.new_interviewer(cb, prompt_path=_CHAT_PROMPT_PATH)
+        state = {
+            "thread_id": "interview", "user_id": req.user_id, "stage": "questions",
+            "user_intent": "chat",
+            "messages": [HumanMessage(content=_build_chat_prompt(req.topic, req.messages))],
+            "pending_action": None, "agent_outputs": {}, "target_companies": [],
+        }
+        agent.run(state)
+
+    def gen() -> Generator[str, None, None]:
+        try:
+            yield stage_event("questions")
+            content_parts: list[str] = []
+            for line in stream_agent(run_fn, timeout=120.0):
+                evt = json.loads(line)
+                if evt["type"] == "chunk":
+                    content_parts.append(evt["text"])
+                yield line
+            content = "".join(content_parts)
+            extra: dict = {}
+            # 用户刚答完一题 -> 从输出解析分数/反馈，随 done 事件下发（首题/总结不带）
+            if req.messages and req.messages[-1].role == "user" and "分数" in content:
+                from careercrew_core.agents.interviewer import _parse_score
+
+                parsed = _parse_score(content, 10)
+                extra = {"score": parsed["score"], "feedback": parsed["feedback"]}
+            yield done_event(content, **extra)
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:

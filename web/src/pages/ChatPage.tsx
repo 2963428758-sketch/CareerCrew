@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import { Send, Square, CornerDownLeft, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -6,7 +6,10 @@ import { MultilineInput } from "@/components/MultilineInput"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
 import { useChatStream } from "@/hooks/useChatStream"
+import { useChatScroll } from "@/hooks/useChatScroll"
+import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatStore } from "@/store/chatStore"
+import { useThreadStore } from "@/store/threadStore"
 import { cn } from "@/lib/utils"
 import { AGENT_META } from "@/types"
 import type { ChatMessage } from "@/types"
@@ -24,59 +27,63 @@ export default function ChatPage() {
   const {
     messages, addMessage, updateLastAssistant,
     newConversation,
-    selectedThreadId, setSelectedThreadId, threadId,
-    bumpProfileNonce, bumpThreadNonce,
+    bumpProfileNonce,
   } = useChatStore()
   const stream = useChatStream()
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }, [stream.streamingText, messages])
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const currentThreadId = useThreadStore((s) => s.currentThreadByModule.chat)
 
   useEffect(() => {
     if (stream.status === "done" && stream.doneContent) {
       updateLastAssistant(stream.doneContent)
       if (stream.stage === "match") useChatStore.getState().setLastMatchResult(stream.doneContent)
       bumpProfileNonce()
-      bumpThreadNonce()
+      useThreadStore.getState().bumpNonce()
     }
-  }, [stream.status, stream.doneContent, updateLastAssistant, stream.stage, bumpProfileNonce, bumpThreadNonce])
+  }, [stream.status, stream.doneContent, updateLastAssistant, stream.stage, bumpProfileNonce])
 
-  // 侧边栏选中历史对话时，加载该 thread 的对话消息
+  // 当前会话变化（侧边栏选中历史 / 新建会话）时加载该 thread 的消息
   useEffect(() => {
-    if (!selectedThreadId) return
-    setSelectedThreadId(null)
+    const tid = currentThreadId
     stream.reset()
-    useChatStore.setState({ messages: [], threadId: selectedThreadId })
-    fetch(`/api/memory?thread_id=${selectedThreadId}`)
+    useChatStore.setState({ messages: [], threadId: tid })
+    fetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
+        const msgs: ChatMessage[] = []
         for (const entry of entries) {
           const type = String(entry.type || "")
           const content = String(entry.content || "")
           if (type === "user_message" && content) {
-            addMessage({ id: nextId(), role: "user", content })
+            msgs.push({ id: nextId(), role: "user", content })
           } else if (type === "agent_response" && content) {
-            addMessage({ id: nextId(), role: "assistant", content, agent: "job_matcher" })
+            msgs.push({ id: nextId(), role: "assistant", content, agent: "job_matcher" })
           }
         }
+        useChatStore.setState({ messages: msgs, threadId: tid })
+        jumpToLatest()
       })
       .catch(() => {})
-  }, [selectedThreadId])
+  }, [currentThreadId, jumpToLatest])
 
   const handleMatch = async (intent: string) => {
+    const isFirst = useChatStore.getState().messages.length === 0
     addMessage({ id: nextId(), role: "user", content: intent })
     addMessage({ id: nextId(), role: "assistant", content: "", agent: "job_matcher", streaming: true })
     setInput("")
-    await stream.start("/chat/match", { intent, thread_id: threadId })
+    jumpToLatest()
+    if (isFirst) useThreadStore.getState().touchThread("chat", currentThreadId, intent)
+    await stream.start("/chat/match", { intent, thread_id: currentThreadId })
   }
 
   const handleResume = async (jdText: string) => {
+    const isFirst = useChatStore.getState().messages.length === 0
     addMessage({ id: nextId(), role: "user", content: jdText.slice(0, 100) + (jdText.length > 100 ? "…" : "") })
     addMessage({ id: nextId(), role: "assistant", content: "", agent: "resume_advisor", streaming: true })
     setInput("")
-    await stream.start("/chat/resume", { jd_text: jdText, thread_id: threadId })
+    jumpToLatest()
+    if (isFirst) useThreadStore.getState().touchThread("chat", currentThreadId, jdText)
+    await stream.start("/chat/resume", { jd_text: jdText, thread_id: currentThreadId })
   }
 
   const handleSend = () => {
@@ -92,6 +99,7 @@ export default function ChatPage() {
   const handleNew = () => {
     stream.reset()
     newConversation()
+    useThreadStore.getState().registerThread("chat")
   }
 
   const lastIsStreaming = stream.status === "streaming"
@@ -108,26 +116,29 @@ export default function ChatPage() {
         </Button>
       </header>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
-        {messages.length === 0 && <EmptyState />}
-        <div className="mx-auto max-w-3xl space-y-4">
-          {messages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              msg={msg}
-              isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
-              streamingText={stream.streamingText}
-              thinking={stream.thinking}
-              initializing={stream.initializing}
-            />
-          ))}
+      <div className="relative flex-1 overflow-hidden">
+        <div ref={scrollRef} className="h-full overflow-y-auto px-6 py-6">
+          {messages.length === 0 && <EmptyState />}
+          <div className="mx-auto max-w-3xl space-y-4">
+            {messages.map((msg) => (
+              <MessageBubble
+                key={msg.id}
+                msg={msg}
+                isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
+                streamingText={stream.streamingText}
+                thinking={stream.thinking}
+                initializing={stream.initializing}
+              />
+            ))}
 
-          {stream.errorMsg && (
-            <Card className="border-destructive">
-              <CardContent className="p-4 text-sm text-destructive">{stream.errorMsg}</CardContent>
-            </Card>
-          )}
+            {stream.errorMsg && (
+              <Card className="border-destructive">
+                <CardContent className="p-4 text-sm text-destructive">{stream.errorMsg}</CardContent>
+              </Card>
+            )}
+          </div>
         </div>
+        <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} />
       </div>
 
       <div className="shrink-0 border-t bg-card/50 px-6 py-4">
@@ -140,11 +151,11 @@ export default function ChatPage() {
             placeholder="输入求职需求或粘贴目标 JD…"
           />
           {stream.status === "streaming" ? (
-            <Button variant="destructive" size="icon" onClick={stream.stop} className="shrink-0">
+            <Button variant="destructive" size="icon" onClick={stream.stop} className="h-11 w-11 shrink-0">
               <Square className="h-4 w-4" />
             </Button>
           ) : (
-            <Button size="icon" onClick={handleSend} disabled={!input.trim()} className="shrink-0">
+            <Button size="icon" onClick={handleSend} disabled={!input.trim()} className="h-11 w-11 shrink-0">
               <Send className="h-4 w-4" />
             </Button>
           )}

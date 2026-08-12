@@ -12,7 +12,7 @@
 3. 项目里这 5 个 agent 是怎么分工的？supervisor 怎么决定该让哪个 agent 出场？
 4. 你说求职是"高 stakes 决策"，这个判断怎么影响了你的架构设计？
 5. CareerCrew 的"长期陪跑"靠什么实现？记忆系统在其中扮演什么角色？
-6. 为什么 Demo 入口选 CLI 优先而不是直接做 Web？
+6. 为什么 Demo 入口选 Web 而不是 CLI？
 7. 项目复用了 MODULAR-RAG-MCP-SERVER，复用了哪些能力？为什么不从头写？
 8. 你给 MODULAR-RAG 扩了 Milvus 后端，这个扩展的必要性在哪？
 9. 项目里"教是最好的学"是什么意思？Skill 体系怎么体现这点？
