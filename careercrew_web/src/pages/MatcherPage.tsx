@@ -12,6 +12,7 @@ import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META } from "@/types"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 
 interface MatcherMessage {
   id: string
@@ -54,7 +55,7 @@ export default function MatcherPage() {
   useEffect(() => {
     const tid = currentThreadId
     setMessages([])
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: MatcherMessage[] = []

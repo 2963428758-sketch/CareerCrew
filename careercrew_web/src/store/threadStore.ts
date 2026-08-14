@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { apiFetch } from "@/lib/auth"
 
 export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
@@ -100,7 +101,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   fetchThreads: async (m) => {
     set({ loading: true, error: "" })
     try {
-      const resp = await fetch(`/api/threads?module=${m}`)
+      const resp = await apiFetch(`/api/threads?module=${m}`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data: unknown = await resp.json()
       const list: ThreadItem[] = (Array.isArray(data) ? data : []).map((t) => {
@@ -167,7 +168,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       }
     })
     try {
-      await fetch(`/api/threads/${encodeURIComponent(tid)}`, {
+      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: trimmed, module: m }),
@@ -189,7 +190,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       },
     }))
     try {
-      await fetch(`/api/threads/${encodeURIComponent(tid)}`, {
+      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: trimmed }),
@@ -211,7 +212,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       },
     }))
     try {
-      await fetch(`/api/threads/${encodeURIComponent(tid)}`, {
+      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned }),
@@ -223,7 +224,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
   deleteThread: async (m, tid) => {
     try {
-      await fetch(`/api/threads/${encodeURIComponent(tid)}`, { method: "DELETE" })
+      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, { method: "DELETE" })
     } catch {
       // 删除失败也先移除本地项，保持列表即时响应
     }

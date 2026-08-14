@@ -49,6 +49,14 @@ def bootstrap(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="bootstrap already completed") from err
 
 
+@router.get("/bootstrap")
+def bootstrap_status(
+    auth: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, bool]:
+    """仅公开是否可创建首个开发管理员，不暴露任何账号信息。"""
+    return {"available": auth.settings.is_development and not auth.store.has_accounts()}
+
+
 @router.post("/token", response_model=TokenResponse)
 @router.post("/login", response_model=TokenResponse, include_in_schema=False)
 def login(

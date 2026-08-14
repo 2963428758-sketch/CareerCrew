@@ -1,8 +1,8 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
-import { useEffect, useRef, useState, type ComponentType } from "react"
+import { useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from "react"
 import {
   BookOpen, Copy, FileText, GraduationCap, MessageCircle,
-  Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
+  Loader2, LogOut, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
@@ -15,6 +15,8 @@ import ConsultPage from "@/pages/ConsultPage"
 import DataPage from "@/pages/DataPage"
 import KnowledgePage from "@/pages/KnowledgePage"
 import MatcherPage from "@/pages/MatcherPage"
+import { AuthLoading, AuthScreen } from "@/components/AuthScreen"
+import { apiFetch, getAuthSnapshot, logout, restoreSession, subscribeAuth } from "@/lib/auth"
 
 const NAV = [
   // 按求职流程排序：规划 → 匹配 → 简历 → 面试 → 会诊 → 知识库
@@ -37,8 +39,14 @@ const PAGES: Record<string, ComponentType> = {
 }
 
 export default function App() {
+  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
   const location = useLocation()
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  useEffect(() => { void restoreSession() }, [])
+
+  if (auth.status === "loading") return <AuthLoading />
+  if (auth.status === "anonymous") return <AuthScreen />
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -86,6 +94,14 @@ export default function App() {
 
         <div className="mt-auto flex items-center justify-between gap-1 border-t border-sidebar-border py-1 pl-1 pr-2">
           <HealthDot />
+          <span className="max-w-20 truncate text-[11px] text-sidebar-text" title={auth.user?.username}>{auth.user?.username}</span>
+          <button
+            onClick={() => { void logout() }}
+            className="rounded-md p-2 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
+            title="退出登录"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
           <button
             onClick={() => setSettingsOpen(true)}
             className="rounded-md p-2 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
@@ -308,7 +324,7 @@ function HealthDot() {
 
   useEffect(() => {
     const check = () => {
-      fetch("/api/health")
+      apiFetch("/api/health")
         .then((r) => r.json())
         .then((d) => setStatus(d.status === "ok" ? "ok" : "down"))
         .catch(() => setStatus("down"))

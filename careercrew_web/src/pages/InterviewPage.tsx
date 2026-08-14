@@ -10,6 +10,7 @@ import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 import type { InterviewQA } from "@/types"
 
 const INTERVIEWER = { label: "面试官", color: "#BE185D" }
@@ -75,7 +76,7 @@ export default function InterviewPage() {
     setMessages([])
     setQaList([])
     setTopic("")
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: ChatMsg[] = []
@@ -128,7 +129,7 @@ export default function InterviewPage() {
 
   const handleRecord = async () => {
     if (qaList.length === 0) return
-    await fetch("/api/interview/record", {
+    await apiFetch("/api/interview/record", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ entries: qaList.map((qa) => ({ q: qa.question, a: qa.answer, score: qa.score })) }),

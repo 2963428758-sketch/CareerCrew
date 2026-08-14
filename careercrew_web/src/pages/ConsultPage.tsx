@@ -13,6 +13,7 @@ import { IDLE_SESSION, useStreamStore, type StreamSession } from "@/store/stream
 import { AGENT_META, CONSULT_AGENTS, CONSULT_INPUT_FIELDS, ORCHESTRATOR_META, type ConsultCall } from "@/types"
 import { ConsultFormDialog } from "@/components/ConsultFormDialog"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 
 let msgId = 0
 const nextId = () => `consult-${++msgId}`
@@ -61,7 +62,7 @@ export default function ConsultPage() {
     const tid = currentThreadId
     lastAssistantIdRef.current = null
     setMessages([])
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: ConsultMessage[] = []

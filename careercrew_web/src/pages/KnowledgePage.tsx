@@ -13,6 +13,7 @@ import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, type KnowledgeSource } from "@/types"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 
 interface KnowledgeMessage {
   id: string
@@ -73,7 +74,7 @@ export default function KnowledgePage() {
     const tid = currentThreadId
     setMessages([])
     setPreviewUrl(null)
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: KnowledgeMessage[] = []

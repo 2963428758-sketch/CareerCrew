@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import type { ConsultCall, ConsultInputRequest, KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
 import { useThreadStore } from "@/store/threadStore"
+import { apiFetch } from "@/lib/auth"
 
 /**
  * 每会话（thread_id）独立的流式会话 store（Codex 式并行对话）。
@@ -108,7 +109,7 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
     patchS({ dispatch: null, calls: [] })
 
     try {
-      const resp = await fetch(`/api${endpoint}`, {
+      const resp = await apiFetch(`/api${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

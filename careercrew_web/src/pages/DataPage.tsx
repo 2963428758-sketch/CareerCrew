@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { useChatStore } from "@/store/chatStore"
+import { apiFetch } from "@/lib/auth"
 
 export default function DataPage() {
   return (
@@ -51,7 +52,7 @@ function useFetch<T>(url: string) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetch(url)
+    apiFetch(url)
       .then(async (r) => {
         if (!r.ok) {
           const body = await r.json().catch(() => null)
@@ -129,7 +130,7 @@ export function ProfilePanel() {
     }
 
     try {
-      const resp = await fetch("/api/profile?user_id=u_001", {
+      const resp = await apiFetch("/api/profile?user_id=u_001", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fields }),
@@ -296,7 +297,7 @@ export function MemoryPanel() {
   const load = () => {
     setLoading(true)
     setError("")
-    fetch("/api/memory")
+    apiFetch("/api/memory")
       .then(async (r) => {
         if (!r.ok) {
           const body = await r.json().catch(() => null)
@@ -317,7 +318,7 @@ export function MemoryPanel() {
       const params = new URLSearchParams({ kind: item.kind })
       if (item.kind === "fact") params.set("name", item.id)
       else params.set("entry_id", item.id)
-      const resp = await fetch(`/api/memory?${params.toString()}`, { method: "DELETE" })
+      const resp = await apiFetch(`/api/memory?${params.toString()}`, { method: "DELETE" })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       load()
     } catch (e) {
@@ -409,8 +410,8 @@ export function MemorySettingsPanel() {
     setLoading(true)
     setError("")
     Promise.all([
-      fetch("/api/settings/memory").then((r) => r.json()),
-      fetch("/api/memory/policy?user_id=u_001").then((r) => r.json()),
+      apiFetch("/api/settings/memory").then((r) => r.json()),
+      apiFetch("/api/memory/policy?user_id=u_001").then((r) => r.json()),
     ])
       .then(([s, p]) => {
         setSettings(s as MemorySettingsData)
@@ -423,7 +424,7 @@ export function MemorySettingsPanel() {
   useEffect(load, [])
 
   const put = async (url: string, body: Record<string, unknown>) => {
-    const resp = await fetch(url, {
+    const resp = await apiFetch(url, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

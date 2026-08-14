@@ -35,6 +35,19 @@ def _bootstrap(client, username: str = "admin") -> dict:
 
 
 @pytest.mark.web
+def test_bootstrap_status_only_reports_whether_first_admin_can_be_created(auth_client):
+    available = auth_client.get("/api/auth/bootstrap")
+    assert available.status_code == 200
+    assert available.json() == {"available": True}
+
+    _bootstrap(auth_client)
+
+    unavailable = auth_client.get("/api/auth/bootstrap")
+    assert unavailable.status_code == 200
+    assert unavailable.json() == {"available": False}
+
+
+@pytest.mark.web
 def test_password_login_protects_me_and_never_returns_refresh_token(auth_client):
     user = _bootstrap(auth_client)
     assert user == {"id": "u_001", "username": "admin", "role": "admin"}
