@@ -99,6 +99,42 @@ def test_checkpoint_migration_handles_tenant_prefixed_public_id_and_wal_backups(
         writer.close()
 
 
+def test_checkpoint_migration_moves_source_whose_id_is_another_sources_destination(
+    tmp_path,
+) -> None:
+    db = tmp_path / "checkpoint.db"
+    first_source = "public"
+    second_source = tenant_thread_id("u_admin", first_source)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
+        )
+        conn.executemany(
+            "INSERT INTO checkpoints VALUES (?, '', ?)",
+            [(first_source, "cp-public"), (second_source, "cp-prefixed")],
+        )
+
+    dry = migrate_checkpoint_sqlite(db, "u_admin", apply=False)
+    assert dry.changed == 2
+    assert dry.conflicts == 0
+
+    applied = migrate_checkpoint_sqlite(db, "u_admin", apply=True)
+    assert applied.changed == 2
+    assert applied.conflicts == 0
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT thread_id, checkpoint_id FROM checkpoints ORDER BY checkpoint_id"
+        ).fetchall() == [
+            (tenant_thread_id("u_admin", second_source), "cp-prefixed"),
+            (second_source, "cp-public"),
+        ]
+
+    rerun = migrate_checkpoint_sqlite(db, "u_admin", apply=True)
+    assert rerun.changed == 0
+    assert rerun.conflicts == 0
+
+
 def test_resume_asset_migration_copies_thread_and_backs_up_metadata(tmp_path) -> None:
     data = tmp_path / "data"
     thread_dir = data / "uploads" / "resume_threads"
@@ -156,7 +192,12 @@ def _qdrant_migration_client() -> QdrantClient:
     return client
 
 
-def _seed_interrupted_qdrant_copy(client: QdrantClient, *, destination_text: str) -> tuple[str, str]:
+def _seed_interrupted_qdrant_copy(
+    client: QdrantClient,
+    *,
+    destination_text: str,
+    destination_vector: list[float] | None = None,
+) -> tuple[str, str]:
     logical_id = "e_retry"
     old_id = QdrantStore._to_qid(logical_id)
     expected_id = QdrantStore._to_qid(logical_id, "u_admin")
@@ -170,7 +211,13 @@ def _seed_interrupted_qdrant_copy(client: QdrantClient, *, destination_text: str
             ),
             PointStruct(
                 id=expected_id,
-                vector={"text_dense": [1.0, 0.0]},
+                vector={
+                    "text_dense": (
+                        destination_vector
+                        if destination_vector is not None
+                        else [1.0, 0.0]
+                    )
+                },
                 payload={
                     "_id": logical_id,
                     "text": destination_text,
@@ -203,7 +250,9 @@ def test_qdrant_migration_retry_cleans_identical_destination_without_recopying()
 def test_qdrant_migration_rejects_semantically_different_destination() -> None:
     client = _qdrant_migration_client()
     old_id, expected_id = _seed_interrupted_qdrant_copy(
-        client, destination_text="different record",
+        client,
+        destination_text="private legacy",
+        destination_vector=[0.0, 1.0],
     )
 
     result = migrate_qdrant_client(client, ["legacy"], "u_admin", apply=True)

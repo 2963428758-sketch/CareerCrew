@@ -150,23 +150,30 @@ def migrate_checkpoint_sqlite(
         migrated_ids = _checkpoint_completed_destinations(
             conn, target_user_id, all_ids,
         )
-        migration_ids: list[str] = []
-        for public_id in sorted(all_ids - migrated_ids):
-            internal_id = tenant_thread_id(target_user_id, public_id)
-            collision = any(
-                conn.execute(
-                    f'SELECT 1 FROM "{table}" WHERE thread_id=? LIMIT 1', (internal_id,)
-                ).fetchone()
-                for table in tables
+        raw_ids = all_ids - migrated_ids
+        migration_ids = set(raw_ids)
+        # A destination occupied by another raw source is legal because that
+        # source will move too. Propagate only genuinely blocked destinations
+        # backward through the chain before reporting conflicts.
+        while True:
+            blocked_ids = {
+                public_id
+                for public_id in migration_ids
+                if tenant_thread_id(target_user_id, public_id) in all_ids
+                and tenant_thread_id(target_user_id, public_id) not in migration_ids
+            }
+            if not blocked_ids:
+                break
+            migration_ids.difference_update(blocked_ids)
+
+        for public_id in sorted(raw_ids - migration_ids):
+            result.conflicts += 1
+            result.messages.append(
+                f"CONFLICT checkpoint thread {public_id!r}: destination cannot be vacated"
             )
-            if collision:
-                result.conflicts += 1
-                result.messages.append(
-                    f"CONFLICT checkpoint thread {public_id!r}: destination already exists"
-                )
-                continue
+        for public_id in sorted(migration_ids):
+            internal_id = tenant_thread_id(target_user_id, public_id)
             result.changed += 1
-            migration_ids.append(public_id)
             mode = "APPLY" if apply else "DRY-RUN"
             result.messages.append(f"{mode} checkpoint {public_id!r} -> {internal_id!r}")
 
@@ -174,12 +181,32 @@ def migrate_checkpoint_sqlite(
             backup = _backup_checkpoint_sqlite(conn, db_path)
             result.messages.append(f"BACKUP checkpoint -> {backup}")
             _ensure_checkpoint_migration_table(conn)
-            for public_id in migration_ids:
+
+            reserved_ids = all_ids | {
+                tenant_thread_id(target_user_id, public_id)
+                for public_id in migration_ids
+            }
+            # Vacate every source before assigning any final destination, so
+            # chains (and any future cycles) cannot violate table uniqueness.
+            temporary_ids: dict[str, str] = {}
+            for public_id in sorted(migration_ids):
+                temporary_id = f"tenant-migration-temp:{uuid.uuid4().hex}"
+                while temporary_id in reserved_ids:
+                    temporary_id = f"tenant-migration-temp:{uuid.uuid4().hex}"
+                temporary_ids[public_id] = temporary_id
+                reserved_ids.add(temporary_id)
+                for table in tables:
+                    conn.execute(
+                        f'UPDATE "{table}" SET thread_id=? WHERE thread_id=?',
+                        (temporary_id, public_id),
+                    )
+
+            for public_id in sorted(migration_ids):
                 internal_id = tenant_thread_id(target_user_id, public_id)
                 for table in tables:
                     conn.execute(
                         f'UPDATE "{table}" SET thread_id=? WHERE thread_id=?',
-                        (internal_id, public_id),
+                        (internal_id, temporary_ids[public_id]),
                     )
                 conn.execute(
                     f'INSERT OR REPLACE INTO "{_CHECKPOINT_MIGRATION_TABLE}" '
