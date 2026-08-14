@@ -1,6 +1,8 @@
 """pydantic 请求/响应模型（§4 API 端点）。"""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -14,6 +16,31 @@ class HealthResponse(BaseModel):
     vector_store: str = ""
     ready: bool = False
     error: str | None = None
+
+
+# ── Auth ──
+
+
+class CredentialsRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=12, max_length=256)
+
+
+class CreateUserRequest(CredentialsRequest):
+    role: Literal["user", "admin"] = "user"
+
+
+class PublicUser(BaseModel):
+    id: str
+    username: str
+    role: Literal["user", "admin"]
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"]
+    expires_in: int
+    user: PublicUser
 
 
 # ── Chat（M1 对话闭环）──

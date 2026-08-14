@@ -39,7 +39,13 @@ dependencies = [
 # 答案级评估（L1 阶段用）
 eval = ["ragas>=0.2.0"]
 # Web 前端后端：FastAPI + SSE 流式（uvicorn/multipart 已在 env，实际只补 fastapi）
-web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "PyJWT>=2.10",
+    "argon2-cffi>=23.1",
+]
 # 测试工具链（A2 起用）
 dev = [
     "pytest>=8.0.0",
