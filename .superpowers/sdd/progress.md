@@ -6,7 +6,7 @@
 
 ## Tasks
 
-- [ ] Task 1 — Postgres 情景记忆排序
+- [x] Task 1 — Postgres 情景记忆排序 (`dc6d9aa`, reviewed and approved)
 - [ ] Task 2 — 本地账号、JWT 与管理员开户
 - [ ] Task 3 — 完整租户隔离
 - [ ] Task 4 — 上传隔离、UUID 与路径安全
