@@ -7,7 +7,7 @@
 ## Tasks
 
 - [x] Task 1 — Postgres 情景记忆排序 (`dc6d9aa`, reviewed and approved)
-- [ ] Task 2 — 本地账号、JWT 与管理员开户
+- [x] Task 2 — 本地账号、JWT 与管理员开户 (`131a63c`, reviewed and approved)
 - [ ] Task 3 — 完整租户隔离
 - [ ] Task 4 — 上传隔离、UUID 与路径安全
 - [ ] Task 5 — SSE 取消、背压与回收
