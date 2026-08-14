@@ -28,3 +28,35 @@ jobs:
           SILICONFLOW_API_KEY: "sk-test-ci-dummy"
         run: |
           pytest -q tests/unit/test_config_loading.py tests/unit/test_ai_base_factories.py
+
+  postgres-memory:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: careercrew
+          POSTGRES_PASSWORD: careercrew
+          POSTGRES_DB: careercrew
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U careercrew -d careercrew"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Postgres memory test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest "psycopg[binary]>=3.1.0"
+          pip install -e . --no-deps
+      - name: Postgres episodic-memory regression test
+        env:
+          POSTGRES_TEST_DSN: postgresql://careercrew:careercrew@localhost:5432/careercrew
+        run: |
+          pytest -q tests/integration/test_postgres_memory_db.py
