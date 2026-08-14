@@ -67,3 +67,33 @@ def test_match_error_handling(client, fake_runtime):
     events = [json.loads(l) for l in lines]
     assert any(e["type"] == "error" for e in events)
     fake_runtime.run_match_stream = original
+
+
+@pytest.mark.web
+def test_match_done_uses_final_answer_not_streamed_preamble(client, fake_runtime):
+    """回归：match 流式 chunk 带中间轮开头话时，done 内容必须取最终回答。"""
+    fake_runtime.match_output = "匹配到字节跳动 0.95"
+    fake_runtime.stream_preamble = "好的，我先检索岗位"
+    resp = client.post("/api/chat/match", json={"intent": "大模型方向找工作"})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    chunks = "".join(e["text"] for e in events if e["type"] == "chunk")
+    assert "好的，我先检索岗位" in chunks
+    assert events[-1]["type"] == "done"
+    assert events[-1]["content"] == "匹配到字节跳动 0.95"
+    assert "我先检索岗位" not in events[-1]["content"]
+
+
+@pytest.mark.web
+def test_plan_stream(client, fake_runtime):
+    """求职对话：职业规划师主理，stage=planning + chunk + done。"""
+    fake_runtime.planner_output = "规划完成：冲刺字节/阿里，匹配美团/腾讯"
+    resp = client.post("/api/chat/plan", json={"intent": "大模型方向，帮我规划求职"})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    assert events[0]["type"] == "stage"
+    assert events[0]["stage"] == "planning"
+    chunks = "".join(e["text"] for e in events if e["type"] == "chunk")
+    assert chunks == fake_runtime.planner_output
+    assert events[-1]["type"] == "done"
+    assert events[-1]["content"] == fake_runtime.planner_output

@@ -77,3 +77,31 @@ def test_delete_fact() -> None:
     store.upsert_fact("profile.skills", "profile", {"skills": ["Python"]}, source="t")
     assert store.delete_fact("profile.skills") == 1
     assert store.get_fact("profile.skills") is None
+
+
+def test_update_empty_values_clear_facts() -> None:
+    """空值（None / "" / []）视为显式清空：删除对应事实，避免旧值残留。"""
+    store = _store()
+    store.update("u1", {
+        "profile.skills": ["Python"],
+        "profile.direction": "大模型",
+        "profile.experience_years": 3,
+        "preferences.salary_min": 30,
+    })
+    assert store.load("u1").profile.skills == ["Python"]
+
+    m = store.update("u1", {
+        "profile.skills": [],
+        "profile.direction": "",
+        "profile.experience_years": None,
+        "preferences.salary_min": None,
+    })
+    assert m.profile.skills == []
+    assert m.profile.direction == ""
+    assert m.profile.experience_years is None
+    assert m.preferences.salary_min is None
+    # 对应事实已被删除
+    assert store.get_fact("profile.skills") is None
+    assert store.get_fact("profile.direction") is None
+    assert store.get_fact("profile.experience_years") is None
+    assert store.get_fact("preferences.salary_min") is None

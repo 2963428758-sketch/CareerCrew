@@ -14,7 +14,8 @@ _PROMPT_PATH = (
 )
 
 _DEFAULT_PROMPT = (
-    "你是 CareerCrew 的职业规划师。用 profile_update 建画像和目标公司池，制定阶段规划。"
+    "你是 CareerCrew 的职业规划师。用 profile_update 建画像和目标公司池，"
+    "用 memory_search/rag_query/salary_query 做阶段规划与复盘，不越界做匹配/简历/谈薪。"
 )
 
 

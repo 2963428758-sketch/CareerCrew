@@ -1,26 +1,22 @@
 import { useEffect, useState } from "react"
-import { Send, Square, CornerDownLeft, Plus } from "lucide-react"
+import { Send, Square, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { MultilineInput } from "@/components/MultilineInput"
+import { InputHint } from "@/components/InputHint"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
-import { useChatStream } from "@/hooks/useChatStream"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatStore } from "@/store/chatStore"
 import { useThreadStore } from "@/store/threadStore"
+import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { cn } from "@/lib/utils"
 import { AGENT_META } from "@/types"
 import type { ChatMessage } from "@/types"
 
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
-
-/** 判断用户输入是否像 JD（长文本 + 岗位关键词） */
-function looksLikeJd(text: string): boolean {
-  return text.length > 80 && /职责|要求|职位|JD|岗位|学历|经验|技能|薪资|本科|硕士|工作内容/i.test(text)
-}
 
 export default function ChatPage() {
   const [input, setInput] = useState("")
@@ -29,23 +25,25 @@ export default function ChatPage() {
     newConversation,
     bumpProfileNonce,
   } = useChatStore()
-  const stream = useChatStream()
-  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.chat)
+  // 每会话独立流：切换会话不影响其他会话正在进行的回答
+  const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
+  const startStream = useStreamStore((s) => s.start)
+  const stopStream = useStreamStore((s) => s.stop)
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
 
   useEffect(() => {
     if (stream.status === "done" && stream.doneContent) {
       updateLastAssistant(stream.doneContent)
       if (stream.stage === "match") useChatStore.getState().setLastMatchResult(stream.doneContent)
       bumpProfileNonce()
-      useThreadStore.getState().bumpNonce()
     }
   }, [stream.status, stream.doneContent, updateLastAssistant, stream.stage, bumpProfileNonce])
 
   // 当前会话变化（侧边栏选中历史 / 新建会话）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
-    stream.reset()
     useChatStore.setState({ messages: [], threadId: tid })
     fetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
@@ -57,47 +55,40 @@ export default function ChatPage() {
           if (type === "user_message" && content) {
             msgs.push({ id: nextId(), role: "user", content })
           } else if (type === "agent_response" && content) {
-            msgs.push({ id: nextId(), role: "assistant", content, agent: "job_matcher" })
+            msgs.push({ id: nextId(), role: "assistant", content, agent: "career_planner" })
           }
         }
         useChatStore.setState({ messages: msgs, threadId: tid })
+        // 切回一个仍在流式回答的会话：补一个流式占位气泡
+        const live = useStreamStore.getState().sessions[tid]
+        if (live && live.status === "streaming") {
+          useChatStore.getState().addMessage({
+            id: nextId(), role: "assistant", content: "",
+            agent: "career_planner",
+            streaming: true,
+          })
+        }
         jumpToLatest()
       })
       .catch(() => {})
   }, [currentThreadId, jumpToLatest])
 
-  const handleMatch = async (intent: string) => {
+  const handlePlan = async (text: string) => {
     const isFirst = useChatStore.getState().messages.length === 0
-    addMessage({ id: nextId(), role: "user", content: intent })
-    addMessage({ id: nextId(), role: "assistant", content: "", agent: "job_matcher", streaming: true })
+    addMessage({ id: nextId(), role: "user", content: text })
+    addMessage({ id: nextId(), role: "assistant", content: "", agent: "career_planner", streaming: true })
     setInput("")
     jumpToLatest()
-    if (isFirst) useThreadStore.getState().touchThread("chat", currentThreadId, intent)
-    await stream.start("/chat/match", { intent, thread_id: currentThreadId })
-  }
-
-  const handleResume = async (jdText: string) => {
-    const isFirst = useChatStore.getState().messages.length === 0
-    addMessage({ id: nextId(), role: "user", content: jdText.slice(0, 100) + (jdText.length > 100 ? "…" : "") })
-    addMessage({ id: nextId(), role: "assistant", content: "", agent: "resume_advisor", streaming: true })
-    setInput("")
-    jumpToLatest()
-    if (isFirst) useThreadStore.getState().touchThread("chat", currentThreadId, jdText)
-    await stream.start("/chat/resume", { jd_text: jdText, thread_id: currentThreadId })
+    if (isFirst) useThreadStore.getState().touchThread("chat", currentThreadId, text)
+    await startStream(currentThreadId, "/chat/plan", { intent: text, thread_id: currentThreadId })
   }
 
   const handleSend = () => {
     if (!input.trim() || stream.status === "streaming") return
-    // 用户粘贴的 JD（长文本+岗位关键词）-> 走简历顾问
-    if (looksLikeJd(input)) {
-      handleResume(input)
-    } else {
-      handleMatch(input)
-    }
+    handlePlan(input)
   }
 
   const handleNew = () => {
-    stream.reset()
     newConversation()
     useThreadStore.getState().registerThread("chat")
   }
@@ -108,8 +99,8 @@ export default function ChatPage() {
     <div className="flex h-full flex-col">
       <header className="flex h-16 shrink-0 items-center justify-between border-b px-6">
         <div>
-          <h1 className="font-display text-xl font-semibold">求职对话</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">匹配岗位、定制简历</p>
+          <h1 className="font-display text-xl font-semibold">求职规划</h1>
+          <p className="mt-0.5 text-xs text-muted-foreground">职业规划师 · 求职规划</p>
         </div>
         <Button variant="outline" size="sm" onClick={handleNew}>
           <Plus className="mr-1 h-3.5 w-3.5" />新对话
@@ -127,7 +118,7 @@ export default function ChatPage() {
                 isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
                 streamingText={stream.streamingText}
                 thinking={stream.thinking}
-                initializing={stream.initializing}
+                initializing={initializing}
               />
             ))}
 
@@ -148,10 +139,10 @@ export default function ChatPage() {
             onChange={setInput}
             onSend={handleSend}
             disabled={stream.status === "streaming"}
-            placeholder="输入求职需求或粘贴目标 JD…"
+            placeholder="聊聊你的求职方向与背景…"
           />
           {stream.status === "streaming" ? (
-            <Button variant="destructive" size="icon" onClick={stream.stop} className="h-11 w-11 shrink-0">
+            <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
               <Square className="h-4 w-4" />
             </Button>
           ) : (
@@ -160,11 +151,7 @@ export default function ChatPage() {
             </Button>
           )}
         </div>
-        <p className="mx-auto mt-2 flex max-w-3xl items-center gap-1 text-[11px] text-muted-foreground">
-          <CornerDownLeft className="h-3 w-3" /> 发送
-          <span className="mx-1">·</span>
-          Shift + Enter 换行 · 粘贴 JD 自动定制简历
-        </p>
+        <InputHint tip="规划师帮你制定求职规划" />
       </div>
     </div>
   )
@@ -182,8 +169,8 @@ function EmptyState() {
       </div>
       <h2 className="font-display text-2xl font-semibold tracking-tight">你的求职顾问团队已就位</h2>
       <p className="mt-3 text-sm text-muted-foreground">
-        告诉我们你的方向和背景，匹配官会找到合适的岗位，<br />
-        简历顾问再按目标 JD 定制简历。
+        告诉规划师你的方向和背景，<br />
+        帮你建立能力画像、确定目标公司、制定阶段规划。
       </p>
     </div>
   )

@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react"
-import { BookOpen, ChevronDown, CornerDownLeft, Plus, Send, Square, X } from "lucide-react"
+import { BookOpen, ChevronDown, Plus, Send, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { MultilineInput } from "@/components/MultilineInput"
+import { InputHint } from "@/components/InputHint"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
 import KnowledgePanel from "@/components/KnowledgePanel"
 import { JumpToLatest } from "@/components/JumpToLatest"
-import { useChatStream } from "@/hooks/useChatStream"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore } from "@/store/threadStore"
-import { AGENT_META, type KnowledgeSource } from "@/types"
+import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
+import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, type KnowledgeSource } from "@/types"
 import { cn } from "@/lib/utils"
 
 interface KnowledgeMessage {
@@ -42,9 +43,14 @@ export default function KnowledgePage() {
   const [messages, setMessages] = useState<KnowledgeMessage[]>([])
   const [panelOpen, setPanelOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const stream = useChatStream()
-  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const [category, setCategory] = useState("")
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.knowledge)
+  // 每会话独立流：切换会话不影响其他会话正在进行的回答
+  const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
+  const startStream = useStreamStore((s) => s.start)
+  const stopStream = useStreamStore((s) => s.stop)
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
   const meta = AGENT_META.knowledge_advisor
 
   useEffect(() => {
@@ -59,14 +65,12 @@ export default function KnowledgePage() {
         }
         return msgs
       })
-      useThreadStore.getState().bumpNonce()
     }
   }, [stream.status, stream.doneContent, stream.doneSources])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
-    stream.reset()
     setMessages([])
     setPreviewUrl(null)
     fetch(`/api/memory?thread_id=${tid}`)
@@ -86,7 +90,11 @@ export default function KnowledgePage() {
             msgs.push(msg)
           }
         }
-        setMessages(msgs)
+        // 切回一个仍在流式回答的会话：补一个流式占位气泡（状态从 store 实时读）
+        const live = useStreamStore.getState().sessions[tid]
+        setMessages(live && live.status === "streaming"
+          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+          : msgs)
         jumpToLatest()
       })
       .catch(() => {})
@@ -104,12 +112,10 @@ export default function KnowledgePage() {
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("knowledge", currentThreadId, question)
-    await stream.start("/knowledge/ask", { question, thread_id: currentThreadId })
+    await startStream(currentThreadId, "/knowledge/ask", { question, thread_id: currentThreadId, category })
   }
 
   const handleNew = () => {
-    if (stream.status === "streaming") stream.stop()
-    stream.reset()
     setMessages([])
     setPreviewUrl(null)
     useThreadStore.getState().registerThread("knowledge")
@@ -160,7 +166,7 @@ export default function KnowledgePage() {
                     isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
                     streamingText={stream.streamingText}
                     thinking={stream.thinking}
-                    initializing={stream.initializing}
+                    initializing={initializing}
                     onPreview={setPreviewUrl}
                   />
                 ))}
@@ -176,6 +182,25 @@ export default function KnowledgePage() {
           </div>
 
           <div className="shrink-0 border-t bg-card/50 px-6 py-4">
+            <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
+              {KB_CATEGORIES.map((c) => (
+                <button
+                  key={c.id || "all"}
+                  onClick={() => setCategory(c.id)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all",
+                    category === c.id
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-muted-foreground hover:bg-muted"
+                  )}
+                >
+                  {c.label}
+                </button>
+              ))}
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                检索范围：{KB_CATEGORY_LABELS[category] ?? "全部"}
+              </span>
+            </div>
             <div className="mx-auto flex max-w-3xl items-end gap-2">
               <MultilineInput
                 value={input}
@@ -185,7 +210,7 @@ export default function KnowledgePage() {
                 placeholder="输入问题，将自动检索知识库后回答"
               />
               {stream.status === "streaming" ? (
-                <Button variant="destructive" size="icon" onClick={stream.stop} className="h-11 w-11 shrink-0">
+                <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
                   <Square className="h-4 w-4" />
                 </Button>
               ) : (
@@ -194,11 +219,7 @@ export default function KnowledgePage() {
                 </Button>
               )}
             </div>
-            <p className="mx-auto mt-2 flex max-w-3xl items-center gap-1 text-[11px] text-muted-foreground">
-              <CornerDownLeft className="h-3 w-3" /> 发送
-              <span className="mx-1">·</span>
-              Shift + Enter 换行 · 知识库图片会自动内嵌显示
-            </p>
+            <InputHint tip="知识库图片会自动内嵌显示" />
           </div>
         </div>
 
@@ -294,6 +315,11 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
             >
               <span className="text-[10px] font-semibold text-primary">[{i + 1}]</span>
               <span className="min-w-0 flex-1 truncate text-xs font-medium">{name}</span>
+              {s.category && (
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {KB_CATEGORY_LABELS[s.category] ?? s.category}
+                </span>
+              )}
               {s.used_image ? (
                 <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   已读图

@@ -2,7 +2,7 @@
 
 > 本文档记录 CareerCrew 独立 Web 前端的完整实施现状（2026-08-11 更新）。
 > 仓库: `F:\agent_develop\CareerCrew`(conda 环境 `careercrew`,Python 3.12)。
-> 双服务本地开发：FastAPI(:8000) + React/Vite(:5173)，生产模式 uvicorn 单端口托管。
+> 双服务本地开发：FastAPI(:8000) + React/Vite(:5175)，生产模式 uvicorn 单端口托管。
 
 > **后续演进（2026-08-11，相对本文初稿）**：RAG 全面切换到 Qdrant + MinerU 多模态
 > （resume 上传 PDF/docx 走 MinerU，不再用 MarkItDown）；自建 trace（TraceRecorder /
@@ -146,7 +146,7 @@ web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 ## 7. 生产模式
 
 - `cd careercrew_web && npm run build` → FastAPI StaticFiles 托管 `/assets` + catch-all SPA fallback 到 index.html
-- 开发模式: uvicorn :8000 + vite :5173(`/api` 代理到 8000)
+- 开发模式: uvicorn :8000 + vite :5175(`/api` 代理到 8000)
 
 ---
 

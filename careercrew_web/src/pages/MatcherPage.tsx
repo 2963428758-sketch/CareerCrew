@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react"
-import { Send, Square, CornerDownLeft, Target, Plus } from "lucide-react"
+import { Send, Square, Target, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { MultilineInput } from "@/components/MultilineInput"
+import { InputHint } from "@/components/InputHint"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
-import { useChatStream } from "@/hooks/useChatStream"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
+import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META } from "@/types"
 import { cn } from "@/lib/utils"
 
@@ -25,9 +26,13 @@ const nextId = () => `match-msg-${++msgId}`
 export default function MatcherPage() {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<MatcherMessage[]>([])
-  const stream = useChatStream()
-  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.matcher)
+  // 每会话独立流：切换会话不影响其他会话正在进行的回答
+  const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
+  const startStream = useStreamStore((s) => s.start)
+  const stopStream = useStreamStore((s) => s.stop)
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
   const meta = AGENT_META.job_matcher
 
   useEffect(() => {
@@ -42,14 +47,12 @@ export default function MatcherPage() {
         }
         return msgs
       })
-      useThreadStore.getState().bumpNonce()
     }
   }, [stream.status, stream.doneContent])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
-    stream.reset()
     setMessages([])
     fetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
@@ -61,7 +64,11 @@ export default function MatcherPage() {
           if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
           else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
         }
-        setMessages(msgs)
+        // 切回一个仍在流式回答的会话：补一个流式占位气泡
+        const live = useStreamStore.getState().sessions[tid]
+        setMessages(live && live.status === "streaming"
+          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+          : msgs)
         jumpToLatest()
       })
       .catch(() => {})
@@ -79,12 +86,10 @@ export default function MatcherPage() {
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("matcher", currentThreadId, intent)
-    await stream.start("/chat/match", { intent, thread_id: currentThreadId })
+    await startStream(currentThreadId, "/chat/match", { intent, thread_id: currentThreadId })
   }
 
   const handleNew = () => {
-    if (stream.status === "streaming") stream.stop()
-    stream.reset()
     setMessages([])
     useThreadStore.getState().registerThread("matcher")
   }
@@ -126,7 +131,7 @@ export default function MatcherPage() {
                 isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
                 streamingText={stream.streamingText}
                 thinking={stream.thinking}
-                initializing={stream.initializing}
+                initializing={initializing}
               />
             ))}
 
@@ -150,7 +155,7 @@ export default function MatcherPage() {
             placeholder="输入求职方向与背景，匹配官将自动检索岗位"
           />
           {stream.status === "streaming" ? (
-            <Button variant="destructive" size="icon" onClick={stream.stop} className="h-11 w-11 shrink-0">
+            <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
               <Square className="h-4 w-4" />
             </Button>
           ) : (
@@ -159,11 +164,7 @@ export default function MatcherPage() {
             </Button>
           )}
         </div>
-        <p className="mx-auto mt-2 flex max-w-3xl items-center gap-1 text-[11px] text-muted-foreground">
-          <CornerDownLeft className="h-3 w-3" /> 发送
-          <span className="mx-1">·</span>
-          Shift + Enter 换行
-        </p>
+        <InputHint tip="匹配官会搜索猎聘真实岗位并评估匹配度" />
       </div>
     </div>
   )

@@ -7,7 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from careercrew_api.deps import get_runtime_dep
@@ -51,7 +51,8 @@ def _new_job(filename: str) -> str:
     return job_id
 
 
-def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str) -> None:
+def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
+                    category: str = "") -> None:
     """后台线程执行入库，通过进度回调更新任务状态。"""
 
     def cb(stage: str, progress: float) -> None:
@@ -69,7 +70,7 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str) -> None:
             job["status"] = "running"
 
     try:
-        result = rt.ingest_document(save_path, progress_cb=cb)
+        result = rt.ingest_document(save_path, progress_cb=cb, category=category)
         with _jobs_lock:
             job = _jobs.get(job_id)
             if job is not None:
@@ -89,9 +90,13 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str) -> None:
 @router.post("/upload", status_code=202)
 async def upload_knowledge(
     file: UploadFile = File(...),
+    category: str = Form(""),
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
-    """上传文档入库（异步）：立即返回 job_id，进度通过 GET /upload/{job_id} 轮询。"""
+    """上传文档入库（异步）：立即返回 job_id，进度通过 GET /upload/{job_id} 轮询。
+
+    category: 内容分类（resume/knowledge/interview），空串按文件名自动识别。
+    """
     content = await file.read()
     if len(content) > _MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
@@ -105,7 +110,7 @@ async def upload_knowledge(
     job_id = _new_job(filename)
     threading.Thread(
         target=_run_ingest_job,
-        args=(rt, job_id, str(save_path)),
+        args=(rt, job_id, str(save_path), category),
         daemon=True,
     ).start()
     return {
@@ -168,18 +173,24 @@ def ask_knowledge(
         def _run(cb):
             nonlocal result
             result = rt.run_knowledge_ask_stream(
-                req.question, req.user_id, thread_id=req.thread_id, cb=cb
+                req.question, req.user_id, thread_id=req.thread_id, cb=cb,
+                category=req.category,
             )
 
         try:
             yield stage_event("knowledge")
             content_parts: list[str] = []
-            for line in stream_agent(_run, timeout=120.0):
+            # agentic 检索 + VLM 读图可能长时间无文本 chunk，放宽到 300s（与会诊一致）
+            for line in stream_agent(_run, timeout=300.0):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
-            yield done_event("".join(content_parts), sources=result.get("sources", []))
+            # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
+            yield done_event(
+                result.get("content") or "".join(content_parts),
+                sources=result.get("sources", []),
+            )
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:

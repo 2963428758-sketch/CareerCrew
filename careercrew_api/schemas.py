@@ -81,12 +81,15 @@ class GenerateRequest(BaseModel):
     user_id: str = "u_001"
 
 
-class UploadResponse(BaseModel):
-    filename: str
-    doc_type: str  # image | text | pdf | ...
-    content: str
-    truncated: bool = False
-    char_count: int = 0
+class ResumeChatRequest(BaseModel):
+    """对话式简历优化：question 为当前轮输入；resume_text 仅在新上传时携带，
+    后端按 thread_id 存储简历，后续轮次自动复用。"""
+
+    question: str
+    resume_text: str = ""
+    jd: str = ""
+    thread_id: str = "m1"
+    user_id: str = "u_001"
 
 
 # ── Consult（会诊）──
@@ -94,9 +97,13 @@ class UploadResponse(BaseModel):
 
 class ConsultRequest(BaseModel):
     question: str
-    agents: list[str] = Field(default_factory=lambda: ["salary_negotiator", "career_planner"])
+    # 会诊已改为总调度官自动编排；该字段仅为向后兼容保留，后端会忽略它。
+    agents: list[str] = Field(default_factory=list)
     thread_id: str = "consult"
     user_id: str = "u_001"
+    # 前端"资料填写框"提交的结构化用户画像（current_position / experience_years /
+    # skills / target_direction / city / salary / target_companies），后端并入会诊上下文。
+    profile: dict[str, str] = Field(default_factory=dict)
 
 
 # ── Knowledge（知识库问答）──
@@ -106,3 +113,4 @@ class KnowledgeAskRequest(BaseModel):
     question: str = Field(min_length=1)
     thread_id: str = "knowledge"
     user_id: str = "u_001"
+    category: str = ""  # resume / knowledge / interview，空串=全部

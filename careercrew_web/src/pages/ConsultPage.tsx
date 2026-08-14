@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react"
-import { Loader2, Send, Square, Plus, Users, ChevronDown } from "lucide-react"
+import { Send, Square, Plus, Users, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { MultilineInput } from "@/components/MultilineInput"
+import { InputHint } from "@/components/InputHint"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
 import { JumpToLatest } from "@/components/JumpToLatest"
-import { useChatStream } from "@/hooks/useChatStream"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore } from "@/store/threadStore"
-import { AGENT_META, CONSULT_AGENTS } from "@/types"
+import { IDLE_SESSION, useStreamStore, type StreamSession } from "@/store/streamStore"
+import { AGENT_META, CONSULT_AGENTS, CONSULT_INPUT_FIELDS, ORCHESTRATOR_META, type ConsultCall } from "@/types"
+import { ConsultFormDialog } from "@/components/ConsultFormDialog"
 import { cn } from "@/lib/utils"
 
 let msgId = 0
@@ -20,16 +22,21 @@ interface ConsultMessage {
   role: "user" | "assistant"
   content?: string
   opinions?: Record<string, string>
+  calls?: ConsultCall[]
 }
 
 export default function ConsultPage() {
   const [input, setInput] = useState("")
-  const [selectedAgents, setSelectedAgents] = useState<string[]>(["salary_negotiator", "career_planner"])
   const [messages, setMessages] = useState<ConsultMessage[]>([])
+  // 资料填写框：一次会话里用户主动关闭后不再弹出（提交/手动发送时后端流会重置 pendingInput）
+  const [formDismissed, setFormDismissed] = useState(false)
   const lastAssistantIdRef = useRef<string | null>(null)
-  const stream = useChatStream()
-  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, stream.agentChunks, messages])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.consult)
+  // 每会话独立流：切换会话不影响其他会话正在进行的回答
+  const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
+  const startStream = useStreamStore((s) => s.start)
+  const stopStream = useStreamStore((s) => s.stop)
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, stream.agentChunks, messages])
 
   // 流结束（done / 手动停止 / 出错）后把结果落进对话历史
   useEffect(() => {
@@ -38,17 +45,20 @@ export default function ConsultPage() {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === lastAssistantIdRef.current && !m.content
-          ? { ...m, content: stream.doneContent || stream.streamingText || "", opinions: stream.opinions }
+          ? {
+              ...m,
+              content: stream.doneContent || stream.streamingText || "",
+              opinions: stream.opinions,
+              calls: stream.calls,
+            }
           : m
       )
     )
-    useThreadStore.getState().bumpNonce()
-  }, [stream.status, stream.doneContent, stream.streamingText, stream.opinions])
+  }, [stream.status, stream.doneContent, stream.streamingText, stream.opinions, stream.calls])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
-    stream.reset()
     lastAssistantIdRef.current = null
     setMessages([])
     fetch(`/api/memory?thread_id=${tid}`)
@@ -59,33 +69,65 @@ export default function ConsultPage() {
           const type = String(entry.type || "")
           const content = String(entry.content || "")
           if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
+          else if (type === "agent_response" && content) {
+            msgs.push({
+              id: nextId(),
+              role: "assistant",
+              content,
+              calls: Array.isArray(entry.consult_calls) ? (entry.consult_calls as ConsultCall[]) : undefined,
+            })
+          }
         }
-        setMessages(msgs)
+        // 切回一个仍在流式回答的会话：补一个流式占位气泡（会诊渲染用 lastAssistantIdRef 定位）
+        const live = useStreamStore.getState().sessions[tid]
+        if (live && live.status === "streaming") {
+          const id = nextId()
+          lastAssistantIdRef.current = id
+          setMessages([...msgs, { id, role: "assistant" }])
+        } else {
+          setMessages(msgs)
+        }
         jumpToLatest()
       })
       .catch(() => {})
   }, [currentThreadId, jumpToLatest])
 
-  const toggleAgent = (id: string) => {
-    setSelectedAgents((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]))
-  }
-
-  const handleSend = async () => {
-    const q = input.trim()
-    if (!q || stream.status === "streaming" || selectedAgents.length === 0) return
+  const sendQuestion = async (q: string, profile?: Record<string, string>) => {
+    const trimmed = q.trim()
+    if (!trimmed || stream.status === "streaming") return
     const isFirst = messages.length === 0
     const id = nextId()
     lastAssistantIdRef.current = id
-    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: q }, { id, role: "assistant" }])
+    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }, { id, role: "assistant" }])
     setInput("")
     jumpToLatest()
-    if (isFirst) useThreadStore.getState().touchThread("consult", currentThreadId, q)
-    await stream.start("/consult", { question: q, agents: selectedAgents, thread_id: currentThreadId })
+    if (isFirst) useThreadStore.getState().touchThread("consult", currentThreadId, trimmed)
+    await startStream(currentThreadId, "/consult", {
+      question: trimmed,
+      thread_id: currentThreadId,
+      ...(profile ? { profile } : {}),
+    })
+  }
+
+  const handleSend = () => {
+    void sendQuestion(input)
+  }
+
+  // 资料填写框提交：把结构化字段拼成可读消息 + 原样 profile 传给后端，
+  // 后端据此直接给出规划，不再追问。
+  const handleFormSubmit = (values: Record<string, string>) => {
+    const fields = stream.pendingInput?.fields.length ? stream.pendingInput.fields : CONSULT_INPUT_FIELDS
+    const parts: string[] = []
+    for (const f of fields) {
+      const v = (values[f.id] ?? "").trim()
+      if (v) parts.push(`${f.label}：${v}`)
+    }
+    const q = parts.length ? `我补充一下我的求职信息：${parts.join("；")}` : "我补充了求职信息，请继续"
+    setFormDismissed(true)
+    void sendQuestion(q, values)
   }
 
   const handleNew = () => {
-    stream.reset()
     setMessages([])
     lastAssistantIdRef.current = null
     useThreadStore.getState().registerThread("consult")
@@ -98,34 +140,12 @@ export default function ConsultPage() {
       <header className="flex h-16 shrink-0 items-center justify-between border-b px-6">
         <div>
           <h1 className="font-display text-xl font-semibold">会诊</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">多位顾问并行分析，综合给出建议</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">总调度官自动调度顾问，综合给出建议</p>
         </div>
         <Button variant="outline" size="sm" onClick={handleNew}>
           <Plus className="mr-1 h-3.5 w-3.5" />新对话
         </Button>
       </header>
-
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-card/50 px-6 py-2.5">
-        <span className="text-xs font-medium text-muted-foreground">参与顾问</span>
-        {CONSULT_AGENTS.map((agent) => {
-          const active = selectedAgents.includes(agent.id)
-          return (
-            <button
-              key={agent.id}
-              onClick={() => toggleAgent(agent.id)}
-              disabled={stream.status === "streaming"}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all",
-                active ? "text-white" : "border-border bg-card hover:bg-muted"
-              )}
-              style={active ? { backgroundColor: agent.color, borderColor: agent.color } : {}}
-            >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: active ? "white" : agent.color }} />
-              {agent.label}
-            </button>
-          )
-        })}
-      </div>
 
       <div className="relative flex-1 overflow-hidden">
         <div ref={scrollRef} className="h-full overflow-y-auto px-6 py-6">
@@ -135,7 +155,7 @@ export default function ConsultPage() {
               msg.role === "user" ? (
                 <UserBubble key={msg.id} content={msg.content || ""} />
               ) : isLive(msg) ? (
-                <LiveAssistant key={msg.id} agents={selectedAgents} stream={stream} />
+                <LiveAssistant key={msg.id} stream={stream} />
               ) : (
                 <HistoryAssistant key={msg.id} msg={msg} />
               )
@@ -160,21 +180,30 @@ export default function ConsultPage() {
             placeholder="输入需要会诊的问题…"
           />
           {stream.status === "streaming" ? (
-            <Button variant="destructive" size="icon" onClick={stream.stop} className="h-11 w-11 shrink-0">
+            <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
               <Square className="h-4 w-4" />
             </Button>
           ) : (
             <Button
               size="icon"
               onClick={handleSend}
-              disabled={!input.trim() || selectedAgents.length === 0}
+              disabled={!input.trim()}
               className="h-11 w-11 shrink-0"
             >
               <Send className="h-4 w-4" />
             </Button>
           )}
         </div>
+        <InputHint tip="总调度官自动调度顾问，综合给出建议" />
       </div>
+
+      <ConsultFormDialog
+        open={!!stream.pendingInput && stream.status !== "streaming" && !formDismissed}
+        message={stream.pendingInput?.message}
+        fields={stream.pendingInput?.fields ?? []}
+        onClose={() => setFormDismissed(true)}
+        onSubmit={handleFormSubmit}
+      />
     </div>
   )
 }
@@ -189,7 +218,7 @@ function UserBubble({ content }: { content: string }) {
   )
 }
 
-function LiveAssistant({ agents, stream }: { agents: string[]; stream: ReturnType<typeof useChatStream> }) {
+function LiveAssistant({ stream }: { stream: StreamSession }) {
   const live = stream.status === "streaming"
   return (
     <div className="flex justify-start">
@@ -197,24 +226,36 @@ function LiveAssistant({ agents, stream }: { agents: string[]; stream: ReturnTyp
         {live && stream.stage === "consult" && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-            各顾问正在并行分析
+            总调度官正在分析并调度顾问
           </p>
         )}
-        <div className="grid gap-2 sm:grid-cols-2">
-          {agents.map((id) => (
-            <LiveOpinionCard key={id} id={id} content={stream.agentChunks[id] ?? ""} streaming={live} />
-          ))}
-        </div>
+        {stream.dispatch && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>第 {stream.dispatch.round} 轮调度：</span>
+            {stream.dispatch.agents.map((id) => {
+              const meta = AGENT_META[id] ?? { label: id, color: "#78716C" }
+              return (
+                <span
+                  key={id}
+                  className="flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-0.5"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+                  {meta.label}
+                </span>
+              )
+            })}
+          </div>
+        )}
         {(stream.stage === "synthesis" || stream.streamingText || stream.doneContent) && (
           <Card className="stream-fade-in bg-primary/5">
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-primary">
-                <Users className="h-3.5 w-3.5" />综合结论
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold" style={{ color: ORCHESTRATOR_META.color }}>
+                <Users className="h-3.5 w-3.5" />{ORCHESTRATOR_META.label}结论
               </CardTitle>
             </CardHeader>
             <CardContent>
               {live && !stream.streamingText && !stream.doneContent ? (
-                <InitIndicator text="正在生成综合结论" />
+                <InitIndicator text="正在生成总调度官结论" />
               ) : (
                 <>
                   <MarkdownContent className={cn(live && !stream.thinking && "typing-cursor")}>
@@ -231,35 +272,46 @@ function LiveAssistant({ agents, stream }: { agents: string[]; stream: ReturnTyp
   )
 }
 
-function LiveOpinionCard({ id, content, streaming }: { id: string; content: string; streaming: boolean }) {
-  const meta = AGENT_META[id] ?? { label: id, color: "#78716C" }
-  return (
-    <Card className="stream-fade-in">
-      <CardHeader className="pb-1">
-        <div className="flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
-          <span className="text-xs font-semibold" style={{ color: meta.color }}>{meta.label}</span>
-          {streaming && !content && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
-        </div>
-      </CardHeader>
-      <CardContent className="text-[13px]">
-        {content ? (
-          <MarkdownContent>{content}</MarkdownContent>
-        ) : (
-          <p className="text-xs text-muted-foreground">分析中…</p>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
 function HistoryAssistant({ msg }: { msg: ConsultMessage }) {
   const opinions = msg.opinions ?? {}
+  const calls = msg.calls ?? []
   const ids = Object.keys(opinions)
+  const groups = calls.reduce<Record<number, ConsultCall[]>>((acc, call) => {
+    ;(acc[call.round] ||= []).push(call)
+    return acc
+  }, {})
   return (
     <div className="flex justify-start">
       <div className="w-full max-w-[85%] space-y-2">
-        {ids.length > 0 && (
+        {Object.keys(groups).length > 0 && (
+          <details className="group rounded-lg border bg-card/60 px-3 py-2">
+            <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+              查看调度过程（{calls.length} 次调用）
+            </summary>
+            <div className="mt-2 space-y-2">
+              {Object.entries(groups).map(([round, roundCalls]) => (
+                <div key={round} className="space-y-1.5">
+                  <p className="text-[11px] font-semibold text-muted-foreground">第 {round} 轮</p>
+                  {roundCalls.map((call) => {
+                    const meta = AGENT_META[call.agent] ?? { label: call.agent, color: "#78716C" }
+                    return (
+                      <div key={`${round}-${call.agent}`} className="rounded-md bg-muted/50 p-2.5">
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+                          <span className="text-xs font-semibold" style={{ color: meta.color }}>{meta.label}</span>
+                        </div>
+                        {call.task && <p className="mb-1 text-[11px] text-muted-foreground">{call.task}</p>}
+                        <MarkdownContent className="text-[13px]">{call.content}</MarkdownContent>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+        {ids.length > 0 && calls.length === 0 && (
           <details className="group rounded-lg border bg-card/60 px-3 py-2">
             <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
@@ -283,8 +335,8 @@ function HistoryAssistant({ msg }: { msg: ConsultMessage }) {
         )}
         <Card className="stream-fade-in bg-primary/5">
           <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-primary">
-              <Users className="h-3.5 w-3.5" />综合结论
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold" style={{ color: ORCHESTRATOR_META.color }}>
+              <Users className="h-3.5 w-3.5" />{ORCHESTRATOR_META.label}结论
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -305,7 +357,7 @@ function EmptyState() {
         ))}
       </div>
       <h2 className="font-display text-2xl font-semibold tracking-tight">你的求职顾问团队已就位</h2>
-      <p className="mt-3 text-sm text-muted-foreground">选择上方顾问，输入问题，他们会并行分析后综合给你建议。</p>
+      <p className="mt-3 text-sm text-muted-foreground">输入问题，总调度官会自动选择合适的顾问并综合给你建议。</p>
     </div>
   )
 }

@@ -19,8 +19,8 @@ _PROMPT_PATH = (
 )
 
 _DEFAULT_PROMPT = (
-    "你是 CareerCrew 的知识库顾问。用 rag_query 检索知识库回答用户问题，"
-    "并说明依据来源。"
+    "你是 CareerCrew 的知识库顾问。用 rag_query/read_image/memory_search "
+    "检索知识库与用户记忆回答，并说明依据来源。"
 )
 
 
@@ -33,6 +33,7 @@ class KnowledgeAdvisor(BaseAgent):
         tools: list[BaseTool] | ToolRegistry | None = None,
         max_iterations: int = 15,
         prompt_path: Path | None = None,
+        prompt_suffix: str = "",
         stream_callback=None,
         memory_injector=None,
         history_loader=None,
@@ -40,6 +41,7 @@ class KnowledgeAdvisor(BaseAgent):
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
+        prompt = prompt + prompt_suffix
         super().__init__(
             name="knowledge_advisor",
             system_prompt=prompt,

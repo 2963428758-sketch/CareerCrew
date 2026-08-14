@@ -113,14 +113,23 @@ class ContextCompactionMiddleware(AgentMiddleware):
         token_threshold_ratio: float = 0.7,
         retention_tokens: int = 20000,
         max_summary_chunk_tokens: int = 4000,
+        max_summary_chunks: int = 6,
+        compaction_grace_calls: int = 3,
     ) -> None:
         super().__init__()
         self._llm = llm
         self._token_threshold_ratio = token_threshold_ratio
         self._retention_tokens = retention_tokens
         self._max_summary_chunk_tokens = max_summary_chunk_tokens
+        self._max_summary_chunks = max_summary_chunks
+        self._compaction_grace_calls = compaction_grace_calls
+        # before_model 在 agent 循环的每次模型调用前都会执行；记录"上一次真正压缩
+        # 发生在第几次调用"，压缩后给几轮宽限，避免长对话每轮重新过线、反复压缩。
+        self._call_count = 0
+        self._last_compaction_call = -compaction_grace_calls - 1
 
     def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        self._call_count += 1
         messages = list(state.get("messages") or [])
         if not messages:
             return None
@@ -128,9 +137,14 @@ class ContextCompactionMiddleware(AgentMiddleware):
         total = sum(_estimate_msg_tokens(m) for m in messages)
         if total < limit * self._token_threshold_ratio:
             return None
+        # 刚压缩过：宽限期内即使再次过线也不再压缩（等上下文再积累几轮），
+        # 否则 ReAct 循环每轮新增一条消息都会重新触发压缩，白耗多次 LLM 摘要。
+        if self._call_count - self._last_compaction_call <= self._compaction_grace_calls:
+            return None
         try:
             compacted = self._compact(messages)
             if compacted != messages:
+                self._last_compaction_call = self._call_count
                 return {"messages": compacted}
         except Exception:
             return None  # 压缩失败不阻塞
@@ -169,9 +183,18 @@ class ContextCompactionMiddleware(AgentMiddleware):
                 total += t
         if cur:
             chunks.append(cur)
-        parts = []
-        for c in chunks:
-            text = "\n".join(f"{type(m).__name__}: {str(m.content)[:500]}" for m in c)
+        parts: list[str] = []
+        for c in chunks[: self._max_summary_chunks]:
+            # 只保留有实际文本的消息：纯工具调用消息 content=""，进了摘要 prompt
+            # 只会产出"AIMessage:"空行，浪费一次 LLM 调用并注入垃圾摘要
+            lines = [
+                f"{type(m).__name__}: {str(m.content).strip()[:500]}"
+                for m in c
+                if str(m.content).strip()
+            ]
+            if not lines:
+                continue  # 该 chunk 全为空内容，直接跳过
+            text = "\n".join(lines)
             try:
                 resp = self._llm.invoke(f"把以下对话压缩成要点摘要（中文，不超过 200 字）：\n{text}")
                 parts.append(resp.content if isinstance(resp.content, str) else str(resp.content))
@@ -181,9 +204,9 @@ class ContextCompactionMiddleware(AgentMiddleware):
 
 
 def _estimate_msg_tokens(msg: BaseMessage) -> int:
-    usage = getattr(msg, "usage_metadata", None)
-    if usage and usage.get("input_tokens"):
-        return int(usage["input_tokens"])
+    # 只按内容长度估算。不能用 usage_metadata.input_tokens：那是一条消息生成时
+    # **整个上下文**的 token 数（可达数万），会把单条消息误估成超大，
+    # 导致小对话误触发压缩、空消息被单独分块，进而产生只有"AIMessage:"的空摘要调用。
     return len(str(msg.content)) // 4 + 4
 
 

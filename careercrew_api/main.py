@@ -1,6 +1,6 @@
 """FastAPI 应用：CORS + /api 挂载 + 生产托管 careercrew_web/dist（SPA fallback）。
 
-开发：uvicorn careercrew_api.main:app --reload --port 8000（+ vite :5173 代理 /api）
+开发：uvicorn careercrew_api.main:app --reload --port 8000（+ vite :5175 代理 /api）
 生产：npm run build -> uvicorn 单端口托管 careercrew_web/dist（SPA fallback 到 index.html）
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=["http://localhost:5175", "http://127.0.0.1:5175"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

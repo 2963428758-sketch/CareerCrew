@@ -40,20 +40,32 @@ def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
 def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
-    def run_fn(cb):
-        from langchain_core.messages import HumanMessage
-
-        agent = rt.new_interviewer(cb)
-        prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
-        state = {
-            "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
-            "user_intent": prompt,
-            "messages": [HumanMessage(content=prompt)],
-            "pending_action": None, "agent_outputs": {}, "target_companies": [],
-        }
-        agent.run(state)
-
     def gen() -> Generator[str, None, None]:
+        result: dict = {"content": ""}
+
+        def run_fn(cb):
+            nonlocal result
+            from langchain_core.messages import HumanMessage
+
+            agent = rt.new_interviewer(cb)
+            prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
+            try:
+                pending_id = rt.record_user_message(
+                    req.user_id, req.thread_id, prompt, module="interview"
+                )
+            except Exception:
+                pending_id = None
+            state = {
+                "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
+                "user_intent": prompt,
+                "messages": [HumanMessage(content=prompt)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+                "pending_user_entry_id": pending_id,
+            }
+            agent.run(state)
+            lr = agent.last_result
+            result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
@@ -62,10 +74,12 @@ def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
-            content = "".join(content_parts)
+            # 最终内容以 agent 最后一轮回答为准：流式 chunk 会包含多轮迭代的
+            # "好的，我先检索…"开头话，全部拼接会重复（回归：分布式锁开头重复 3 次）
+            content = result["content"] or "".join(content_parts)
             try:
                 rt.record_thread_messages(
-                    req.user_id, req.thread_id, user_text=prompt, agent_text=content,
+                    req.user_id, req.thread_id, user_text="", agent_text=content,
                     module="interview",
                 )
             except Exception:
@@ -92,29 +106,41 @@ def _build_chat_prompt(topic: str, messages: list[InterviewChatMessage]) -> str:
 def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
-    def run_fn(cb):
-        from langchain_core.messages import HumanMessage
-
-        agent = rt.new_interviewer(cb, prompt_path=_CHAT_PROMPT_PATH)
-        # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
-        last_user = next(
-            (m.content for m in reversed(req.messages) if m.role == "user"),
-            "",
-        )
-        current = (
-            f"当前面试主题：{req.topic or '（未指定，随机出题）'}\n\n用户：{last_user}"
-            if last_user
-            else (req.topic or "请开始模拟面试")
-        )
-        state = {
-            "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
-            "user_intent": "chat",
-            "messages": [HumanMessage(content=current)],
-            "pending_action": None, "agent_outputs": {}, "target_companies": [],
-        }
-        agent.run(state)
-
     def gen() -> Generator[str, None, None]:
+        result: dict = {"content": ""}
+
+        def run_fn(cb):
+            nonlocal result
+            from langchain_core.messages import HumanMessage
+
+            agent = rt.new_interviewer(cb, prompt_path=_CHAT_PROMPT_PATH)
+            # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
+            last_user = next(
+                (m.content for m in reversed(req.messages) if m.role == "user"),
+                "",
+            )
+            try:
+                pending_id = rt.record_user_message(
+                    req.user_id, req.thread_id, last_user, module="interview"
+                )
+            except Exception:
+                pending_id = None
+            current = (
+                f"当前面试主题：{req.topic or '（未指定，随机出题）'}\n\n用户：{last_user}"
+                if last_user
+                else (req.topic or "请开始模拟面试")
+            )
+            state = {
+                "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
+                "user_intent": "chat",
+                "messages": [HumanMessage(content=current)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+                "pending_user_entry_id": pending_id,
+            }
+            agent.run(state)
+            lr = agent.last_result
+            result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
@@ -123,7 +149,8 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
-            content = "".join(content_parts)
+            # 最终内容以最后一轮回答为准（流式 chunk 含中间轮开头话，会重复）
+            content = result["content"] or "".join(content_parts)
             extra: dict = {}
             # 用户刚答完一题 -> 从输出解析分数/反馈，随 done 事件下发（首题/总结不带）
             if req.messages and req.messages[-1].role == "user" and "分数" in content:
@@ -136,7 +163,7 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                     (m.content for m in reversed(req.messages) if m.role == "user"), req.topic
                 )
                 rt.record_thread_messages(
-                    req.user_id, req.thread_id, user_text=last_user, agent_text=content,
+                    req.user_id, req.thread_id, user_text="", agent_text=content,
                     module="interview",
                 )
             except Exception:

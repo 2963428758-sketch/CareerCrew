@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from functools import wraps
+import threading
 from typing import Any
 
 
@@ -20,6 +22,17 @@ def _now() -> str:
 def _row_to_dict(row: Any) -> dict:
     """psycopg dict_row 行转普通 dict（复制一份，避免后续 mutate 影响连接）。"""
     return dict(row)
+
+
+def _synchronized(fn):
+    """PostgresMemoryDb 单连接非线程安全：所有公开方法串行化（RLock 可重入）。"""
+
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self.write_lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class MemoryDb(ABC):
@@ -137,6 +150,9 @@ class PostgresMemoryDb(MemoryDb):
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._conn = None
+        # 单 psycopg 连接被多个请求线程（并行会话）共用，psycopg 连接非线程安全；
+        # RLock 保证同一线程内嵌套调用可重入，跨线程操作串行化。
+        self.write_lock = threading.RLock()
 
     def _ensure(self):
         if self._conn is not None:
@@ -181,6 +197,7 @@ class PostgresMemoryDb(MemoryDb):
 
     # ── episodic ──
 
+    @_synchronized
     def insert_episodic(self, user_id, thread_id, entry_id, parent_id, type, content, ts) -> dict:
         conn = self._ensure()
         conn.execute(
@@ -194,6 +211,7 @@ class PostgresMemoryDb(MemoryDb):
         conn.commit()
         return self.get_episodic(user_id, entry_id) or {}
 
+    @_synchronized
     def get_episodic(self, user_id, entry_id) -> dict | None:
         conn = self._ensure()
         cur = conn.execute(
@@ -204,6 +222,7 @@ class PostgresMemoryDb(MemoryDb):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    @_synchronized
     def list_episodic(self, user_id, thread_id=None, type=None, limit=None) -> list[dict]:
         conn = self._ensure()
         sql = "SELECT id, user_id, thread_id, parent_id, type, content, ts FROM episodic_events WHERE user_id=%s"
@@ -221,6 +240,7 @@ class PostgresMemoryDb(MemoryDb):
         rows = conn.execute(sql, tuple(params)).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    @_synchronized
     def delete_episodic(self, user_id, entry_id=None, thread_id=None, type=None) -> int:
         conn = self._ensure()
         sql = "DELETE FROM episodic_events WHERE user_id=%s"
@@ -238,6 +258,7 @@ class PostgresMemoryDb(MemoryDb):
         conn.commit()
         return cur.rowcount or 0
 
+    @_synchronized
     def latest_episodic(self, user_id, thread_id) -> dict | None:
         conn = self._ensure()
         row = conn.execute(
@@ -247,6 +268,7 @@ class PostgresMemoryDb(MemoryDb):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    @_synchronized
     def children_episodic(self, user_id, parent_id) -> list[dict]:
         conn = self._ensure()
         rows = conn.execute(
@@ -256,6 +278,7 @@ class PostgresMemoryDb(MemoryDb):
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    @_synchronized
     def chain_episodic(self, user_id, leaf_id) -> list[dict]:
         """从叶子沿 parent_id 回溯到根，返回 root -> leaf（用应用层遍历，量小）。"""
         conn = self._ensure()
@@ -274,6 +297,7 @@ class PostgresMemoryDb(MemoryDb):
             cur = by_id.get(cur["parent_id"]) if cur.get("parent_id") else None
         return list(reversed(chain))
 
+    @_synchronized
     def next_episodic_id(self, user_id) -> str:
         conn = self._ensure()
         # 用 MAX(id) 而不是 COUNT(*)：删除历史行后 COUNT 会回退，导致 id 重用、
@@ -287,6 +311,7 @@ class PostgresMemoryDb(MemoryDb):
 
     # ── semantic facts ──
 
+    @_synchronized
     def upsert_fact(self, user_id, name, type, description, content, source, confidence) -> dict:
         conn = self._ensure()
         now = _now()
@@ -305,6 +330,7 @@ class PostgresMemoryDb(MemoryDb):
         conn.commit()
         return self.get_fact(user_id, name) or {}
 
+    @_synchronized
     def get_fact(self, user_id, name) -> dict | None:
         conn = self._ensure()
         row = conn.execute(
@@ -314,6 +340,7 @@ class PostgresMemoryDb(MemoryDb):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    @_synchronized
     def list_facts(self, user_id, type=None) -> list[dict]:
         conn = self._ensure()
         if type:
@@ -331,6 +358,7 @@ class PostgresMemoryDb(MemoryDb):
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    @_synchronized
     def delete_fact(self, user_id, name=None, type=None) -> int:
         conn = self._ensure()
         sql = "DELETE FROM semantic_facts WHERE user_id=%s"
@@ -347,6 +375,7 @@ class PostgresMemoryDb(MemoryDb):
 
     # ── policy ──
 
+    @_synchronized
     def get_policy(self, user_id) -> dict:
         conn = self._ensure()
         row = conn.execute(
@@ -357,6 +386,7 @@ class PostgresMemoryDb(MemoryDb):
             return _row_to_dict(row)
         return {"user_id": user_id, "enabled": False, "generate": True, "use": True, "updated_at": _now()}
 
+    @_synchronized
     def set_policy(self, user_id, enabled, generate, use) -> dict:
         conn = self._ensure()
         now = _now()
@@ -369,6 +399,7 @@ class PostgresMemoryDb(MemoryDb):
         conn.commit()
         return self.get_policy(user_id)
 
+    @_synchronized
     def get_global_policy(self) -> dict:
         conn = self._ensure()
         row = conn.execute(
@@ -378,6 +409,7 @@ class PostgresMemoryDb(MemoryDb):
             return _row_to_dict(row)
         return {"id": 1, "enabled": False, "generate": True, "use": True, "updated_at": _now()}
 
+    @_synchronized
     def set_global_policy(self, enabled, generate, use) -> dict:
         conn = self._ensure()
         now = _now()
@@ -392,6 +424,7 @@ class PostgresMemoryDb(MemoryDb):
 
     # ── threads ──
 
+    @_synchronized
     def upsert_thread(self, user_id, thread_id, title, module, pinned) -> dict:
         conn = self._ensure()
         now = _now()
@@ -406,6 +439,7 @@ class PostgresMemoryDb(MemoryDb):
         conn.commit()
         return self.get_thread(user_id, thread_id) or {}
 
+    @_synchronized
     def get_thread(self, user_id, thread_id) -> dict | None:
         conn = self._ensure()
         row = conn.execute(
@@ -415,6 +449,7 @@ class PostgresMemoryDb(MemoryDb):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    @_synchronized
     def list_threads(self, user_id, module=None) -> list[dict]:
         conn = self._ensure()
         if module:
@@ -431,6 +466,7 @@ class PostgresMemoryDb(MemoryDb):
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    @_synchronized
     def delete_thread(self, user_id, thread_id) -> int:
         conn = self._ensure()
         cur = conn.execute(
@@ -444,6 +480,7 @@ class FakeMemoryDb(MemoryDb):
     """内存实现（单测用），接口与 PostgresMemoryDb 一致。"""
 
     def __init__(self) -> None:
+        self.write_lock = threading.RLock()
         self._episodic: dict[tuple[str, str], dict] = {}
         self._facts: dict[tuple[str, str], dict] = {}
         self._policies: dict[str, dict] = {}

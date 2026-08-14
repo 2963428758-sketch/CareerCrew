@@ -242,12 +242,14 @@ class CareerCrewRuntime:
         agent_text: str,
         module: str = "chat",
         sources: list[dict] | None = None,
+        metadata: dict | None = None,
     ) -> int:
         """写会话 transcript（user_message + agent_response）到情景记忆，供 /api/memory 恢复。
 
         前端按 thread_id 从 /api/memory 恢复对话；本方法把一轮 user/agent 消息
         追加到该 thread 的 episodic（append-only 链）。
-        sources（知识库依据来源）随 agent_response 一起存储，刷新后可恢复。
+        sources（知识库依据来源）与 metadata（如会诊调度过程）随 agent_response
+        一起存储，刷新后可恢复。
         """
         self._ensure_heavy()
         from careercrew_core.memory.redaction import redact_secrets
@@ -263,13 +265,40 @@ class CareerCrewRuntime:
             n += 1
         if agent_text:
             content: dict | str = redact_secrets(agent_text)
-            if sources:
-                content = {"text": content, "sources": sources}
+            if sources or metadata:
+                stored = {"text": content}
+                if sources:
+                    stored["sources"] = sources
+                if metadata:
+                    stored.update(metadata)
+                content = stored
             ep.write(MemoryEntry(
                 type="agent_response", content=content,
             ))
             n += 1
         return n
+
+    def record_user_message(self, user_id: str, thread_id: str, user_text: str,
+                            module: str = "chat") -> str | None:
+        """在 agent 运行开始前立即落库用户消息，返回 entry id（供历史加载时跳过）。
+
+        长 agent 运行（知识库检索 / VLM 读图 / 多轮工具调用）可能耗时数分钟，
+        若只在运行完成后才写 transcript，运行挂起/失败/进程重启时用户的问题
+        就永久丢失（刷新也找不回）。这里先落 user_message，运行结束后再补
+        agent_response，保证问题随时可恢复。
+        """
+        self._ensure_heavy()
+        from careercrew_core.memory.redaction import redact_secrets
+        from careercrew_core.memory.types import MemoryEntry
+
+        if not user_text:
+            return None
+        self._ensure_thread(thread_id, user_id, module=module, title=user_text[:50])
+        ep = self._get_episodic(thread_id, user_id)
+        entry = ep.write(MemoryEntry(
+            type="user_message", content=redact_secrets(user_text),
+        ))
+        return entry.id
 
     def get_threads(self, user_id: str = "u_001", module: str | None = None) -> list[dict]:
         """列出用户的所有对话线程（Postgres threads 表，按置顶+更新时间排序）。"""
@@ -340,8 +369,14 @@ class CareerCrewRuntime:
     def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                cb: Callable[[str], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
-        self._ensure_thread(thread_id, user_id, module="matcher", title=intent)
         cycle = self.get_cycle(thread_id, user_id)
+        try:
+            # 先落库用户消息：即使后续 agent 运行挂起/失败，问题也不丢
+            cycle.pending_user_entry_id = self.record_user_message(
+                user_id, thread_id, intent, module="matcher"
+            )
+        except Exception:
+            cycle.pending_user_entry_id = None
         ep = self._get_episodic(thread_id, user_id)
         cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
         result = cycle.run_match(intent)
@@ -354,7 +389,7 @@ class CareerCrewRuntime:
             )
         try:
             self.record_thread_messages(
-                user_id, thread_id, user_text=intent, agent_text=result,
+                user_id, thread_id, user_text="", agent_text=result,
                 module="matcher",
             )
         except Exception:
@@ -378,15 +413,21 @@ class CareerCrewRuntime:
     def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
                                 cb: Callable[[str], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
-        self._ensure_thread(thread_id, user_id, module="matcher", title="简历定制")
         cycle = self.get_cycle(thread_id, user_id)
+        user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
+        try:
+            cycle.pending_user_entry_id = self.record_user_message(
+                user_id, thread_id, user_text, module="matcher"
+            )
+        except Exception:
+            cycle.pending_user_entry_id = None
         ep = self._get_episodic(thread_id, user_id)
         cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
         result = cycle.run_resume(jd_text)
         try:
             self.record_thread_messages(
                 user_id, thread_id,
-                user_text=f"按这个 JD 定制简历：{jd_text[:200]}",
+                user_text="",
                 agent_text=result,
                 module="matcher",
             )
@@ -394,13 +435,61 @@ class CareerCrewRuntime:
             pass
         return result
 
+    def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
+                                cb: Callable[[str], None] | None = None) -> str:
+        """求职对话：职业规划师主理（聚焦求职规划：画像/目标公司池/阶段规划与复盘）。"""
+        return traced_call(
+            self._run_planner_chat_stream_impl,
+            name="careercrew.plan",
+            run_type="chain",
+            run_metadata={"endpoint": "plan"},
+            thread_id=thread_id,
+            user_id=user_id,
+            intent=intent,
+            cb=cb,
+        )
+
+    def _run_planner_chat_stream_impl(self, thread_id: str, user_id: str, intent: str,
+                                      cb: Callable[[str], None] | None = None) -> str:
+        attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
+        from langchain_core.messages import HumanMessage
+
+        agent = self.new_career_planner(cb)
+        try:
+            # 先落库用户消息：长工具链（搜岗位/查薪资）中断也不丢问题
+            pending_id = self.record_user_message(
+                user_id, thread_id, intent, module="chat"
+            )
+        except Exception:
+            pending_id = None
+        state = {
+            "thread_id": thread_id, "user_id": user_id, "stage": "planning",
+            "user_intent": intent,
+            "messages": [HumanMessage(content=intent)],
+            "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            "pending_user_entry_id": pending_id,
+        }
+        agent.run(state)
+        result = (agent.last_result.content or "").strip() if agent.last_result else ""
+        if not result:
+            result = "（本轮未产出完整规划，可补充方向/技能/城市/薪资等信息后继续对话）"
+        try:
+            self.record_thread_messages(
+                user_id, thread_id, user_text="", agent_text=result, module="chat",
+            )
+        except Exception:
+            pass  # transcript 写入失败不阻塞主流程
+        return result
+
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
-                                 cb: Callable[[str], None] | None = None) -> str:
+                                 cb: Callable[[str], None] | None = None,
+                                 category: str = "") -> str:
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
         返回 ``{"content": str, "sources": list[dict]}``：
         sources 为 agent 实际检索到的结构化片段（doc/source/score/text/image_path/page），
         供前端标注来源并点击查看原文。
+        category: 检索范围（resume / knowledge / interview），空串检索全部。
         """
         return traced_call(
             self._run_knowledge_ask_stream_impl,
@@ -411,12 +500,14 @@ class CareerCrewRuntime:
             user_id=user_id,
             thread_id=thread_id,
             cb=cb,
+            category=category,
         )
 
     def _run_knowledge_ask_stream_impl(self, question: str, user_id: str,
                                        thread_id: str = "knowledge",
-                                       cb: Callable[[str], None] | None = None) -> str:
-        attach_run_metadata(user_id=user_id, stage="knowledge")
+                                       cb: Callable[[str], None] | None = None,
+                                       category: str = "") -> str:
+        attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         from langchain_core.messages import HumanMessage
 
         sources: list[dict] = []
@@ -433,15 +524,26 @@ class CareerCrewRuntime:
                 "text": r.text,
                 "image_path": r.image_path or "",
                 "page": r.page,
+                "category": str(r.metadata.get("category", "")),
             })
 
-        agent = self.new_knowledge_advisor(cb, rag_sink=_sink)
+        agent = self.new_knowledge_advisor(cb, rag_sink=_sink, category=category)
+        try:
+            # 先落库用户消息：知识库 agentic 检索 + VLM 读图可能耗时很长，
+            # 运行中途被切换/刷新/重启时问题必须仍在
+            pending_id = self.record_user_message(
+                user_id, thread_id, question, module="knowledge"
+            )
+        except Exception:
+            pending_id = None
         state = {
             "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
             "user_intent": question,
             # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前问题
             "messages": [HumanMessage(content=question)],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            # 历史恢复时跳过刚写入的当前问题，避免上下文里重复出现
+            "pending_user_entry_id": pending_id,
         }
         agent.run(state)
         content = (agent.last_result.content or "").strip()
@@ -453,7 +555,7 @@ class CareerCrewRuntime:
         )
         try:
             self.record_thread_messages(
-                user_id, thread_id, user_text=question, agent_text=content,
+                user_id, thread_id, user_text="", agent_text=content,
                 module="knowledge", sources=capped,
             )
         except Exception:
@@ -464,10 +566,13 @@ class CareerCrewRuntime:
         }
 
     def _thread_history_messages(self, user_id: str, thread_id: str,
-                                 max_rounds: int = 10) -> list:
+                                 max_rounds: int = 10,
+                                 exclude_entry_id: str | None = None) -> list:
         """从 episodic 恢复该线程的历史对话（user_message/agent_response），供多轮上下文。
 
         只取本线程、按时间序，最多保留最近 max_rounds 轮；内容为 dict 时取 text。
+        exclude_entry_id：跳过刚写入的当前用户消息（本轮问题由调用方单独放入 messages），
+        避免上下文重复。
         """
         from langchain_core.messages import AIMessage, HumanMessage
 
@@ -476,6 +581,8 @@ class CareerCrewRuntime:
         )
         msgs: list = []
         for r in rows:
+            if exclude_entry_id and r.get("id") == exclude_entry_id:
+                continue
             if r.get("type") not in ("user_message", "agent_response"):
                 continue
             content = r.get("content")
@@ -534,14 +641,17 @@ class CareerCrewRuntime:
             "retention_tokens": cfg.retention_tokens,
         }
 
-    def _history_loader(self, user_id: str, thread_id: str):
+    def _history_loader(self, user_id: str, thread_id: str,
+                        exclude_entry_id: str | None = None):
         """从 episodic 恢复该线程历史对话（供 BaseAgent.history_loader）。"""
         try:
-            return self._thread_history_messages(user_id, thread_id)
+            return self._thread_history_messages(
+                user_id, thread_id, exclude_entry_id=exclude_entry_id
+            )
         except Exception:
             return []
 
-    def _make_tools(self, kind: str, episodic=None, rag_sink=None):
+    def _make_tools(self, kind: str, episodic=None, rag_sink=None, rag_category=None):
         """构造 agent 工具集。episodic 为 None 时用默认单例。"""
         from careercrew_core.memory.semantic import SemanticFactStore
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
@@ -563,34 +673,50 @@ class CareerCrewRuntime:
             fact_store=self.fact_store,
             router=self.memory_router,
         )
+        from careercrew_core.rag.categories import categories_for_agent
+
+        # 每个 agent 的 rag_query 只检索对应分类（knowledge 分支由 rag_category 用户选择控制）
+        cats = categories_for_agent(kind)
         if kind == "matcher":
             tools.register(ToolSpec(tool=search_jobs))
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="job_matcher")))
         elif kind == "resume":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="resume_advisor")))
         elif kind == "interviewer":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
-        elif kind == "salary" or kind == "planner":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs)))
+        elif kind == "salary":
+            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source=kind)))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_salary_query_tool()))
+        elif kind == "planner":
+            # 职业规划师：求职对话页的主理 agent，职责聚焦求职规划
+            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
+            tools.register(ToolSpec(tool=make_profile_update_tool(
+                SemanticFactStore(self.memory_db, user_id), user_id=user_id,
+                source="career_planner")))
+            tools.register(ToolSpec(tool=mem_search))
+            tools.register(ToolSpec(tool=make_salary_query_tool()))
         elif kind == "knowledge":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs, sink=rag_sink)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, sink=rag_sink, categories=rag_category or None,
+            )))
             # 个人背景问题（学校/专业/教育等）常藏在简历页图里，允许顾问按需读图
             tools.register(ToolSpec(tool=make_read_image_tool(self.settings)))
+            # "我有哪些项目/技能/目标公司" 等个人记忆问题：允许查语义事实 + 情景事件
+            tools.register(ToolSpec(tool=mem_search))
         return tools
 
     def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None):
@@ -628,12 +754,36 @@ class CareerCrewRuntime:
         )
 
     def new_knowledge_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
-                              rag_sink=None):
+                              rag_sink=None, category: str = ""):
         self._ensure_heavy()
         from careercrew_core.agents.knowledge_advisor import KnowledgeAdvisor
 
+        from careercrew_core.rag.categories import category_label
+
+        prompt_suffix = ""
+        if category:
+            prompt_suffix = (
+                f"\n\n（本次检索范围：分类「{category_label(category)}」，"
+                "rag_query 只会检索该分类，回答以该分类内容为准。）"
+            )
         return KnowledgeAdvisor(
-            llm=self.llm, tools=self._make_tools("knowledge", episodic=episodic, rag_sink=rag_sink),
+            llm=self.llm,
+            tools=self._make_tools(
+                "knowledge", episodic=episodic, rag_sink=rag_sink, rag_category=category,
+            ),
+            max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+            history_loader=self._history_loader,
+            compaction=self._compaction_kwargs() or None,
+            prompt_suffix=prompt_suffix,
+        )
+
+    def new_career_planner(self, cb: Callable[[str], None] | None = None, episodic=None):
+        """职业规划师（求职对话主理人）：聚焦求职规划，建画像、定目标公司池、做阶段规划与复盘。"""
+        self._ensure_heavy()
+        from careercrew_core.agents.career_planner import CareerPlanner
+
+        return CareerPlanner(
+            llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
@@ -652,14 +802,7 @@ class CareerCrewRuntime:
                 compaction=self._compaction_kwargs() or None,
             )
         if name == "career_planner":
-            from careercrew_core.agents.career_planner import CareerPlanner
-
-            return CareerPlanner(
-                llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
-                max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
-                history_loader=self._history_loader,
-                compaction=self._compaction_kwargs() or None,
-            )
+            return self.new_career_planner(cb, episodic=episodic)
         if name == "job_matcher":
             return self.new_job_matcher(cb, episodic=episodic)
         if name == "resume_advisor":
@@ -708,19 +851,18 @@ class CareerCrewRuntime:
         events = []
         for r in rows:
             content = r.get("content")
-            sources = None
+            extra: dict = {}
             if isinstance(content, dict):
                 # 知识库 agent_response 存的是 {"text": ..., "sources": [...]}
                 if "text" in content:
-                    sources = content.get("sources")
+                    extra = {k: v for k, v in content.items() if k != "text"}
                     content = content["text"]
             event: dict = {
                 "id": r["id"], "type": r["type"], "ts": r["ts"],
                 "parentId": r.get("parent_id"), "content": content,
                 "thread_id": r.get("thread_id"),
             }
-            if sources:
-                event["sources"] = sources
+            event.update(extra)
             events.append(event)
         merged: list[dict] = []
         for f in facts:
@@ -848,17 +990,25 @@ class CareerCrewRuntime:
         path: str,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> dict:
         """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。
 
         progress_cb(stage, progress) 可选进度回调：stage ∈ parse/vectorize/store，
         progress ∈ [0, 1]（阶段边界处的真实进度，非秒级平滑值）。
+        category: 内容分类（resume/knowledge/interview）；空串按文档名自动识别。
         """
         self._ensure_heavy()
         from pathlib import Path
 
         p = Path(path)
-        n = self.ingest_pipeline.ingest_file(p, metadata=metadata, progress_cb=progress_cb)
+        if not category:
+            from careercrew_core.rag.categories import category_for_doc
+
+            category = category_for_doc(p.stem)
+        n = self.ingest_pipeline.ingest_file(
+            p, metadata=metadata, progress_cb=progress_cb, category=category,
+        )
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
     def delete_document(self, doc_id: str) -> int:

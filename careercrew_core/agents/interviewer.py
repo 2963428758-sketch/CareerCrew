@@ -20,7 +20,8 @@ _PROMPT_PATH = (
 )
 
 _DEFAULT_PROMPT = (
-    "你是 CareerCrew 的面试官。用 rag_query 检索面经/八股，出一组有梯度的面试题。"
+    "你是 CareerCrew 的面试官。用 rag_query/memory_search 检索面经/八股出题，"
+    "按五维评分并给出黄金回答范例。"
 )
 
 

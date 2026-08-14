@@ -147,3 +147,36 @@ def test_knowledge_sources_persist_after_restore(client, fake_runtime):
         {"doc": "note", "source": "data/uploads/note.md",
          "score": 0.91, "text": "LangChain 定义"},
     ]
+
+
+@pytest.mark.web
+def test_profile_update_empty_fields(client):
+    """能力画像空字段保存不报 422（请求体需带 fields 包装），且清空生效。"""
+    # 先写入有值
+    r = client.put("/api/profile?user_id=u_001", json={
+        "fields": {
+            "profile.skills": ["Python"],
+            "profile.direction": "大模型",
+            "profile.experience_years": 3,
+        },
+    })
+    assert r.status_code == 200
+    assert r.json()["profile"]["skills"] == ["Python"]
+
+    # 清空保存：字符串->""、列表->[]、数字->null 均不报错且删除旧值
+    r2 = client.put("/api/profile?user_id=u_001", json={
+        "fields": {
+            "profile.skills": [],
+            "profile.direction": "",
+            "profile.experience_years": None,
+            "preferences.salary_min": None,
+            "preferences.city": [],
+        },
+    })
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["profile"]["skills"] == []
+    assert body["profile"]["direction"] == ""
+    assert body["profile"]["experience_years"] is None
+    assert body["preferences"]["salary_min"] is None
+    assert body["preferences"]["city"] == []

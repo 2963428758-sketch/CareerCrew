@@ -44,3 +44,39 @@ def test_thread_history_empty() -> None:
     rt = CareerCrewRuntime()
     rt.memory_db = FakeMemoryDb()
     assert rt._thread_history_messages("u1", "no-such") == []
+
+
+def test_thread_history_excludes_pending_user_entry() -> None:
+    """刚写入的当前用户消息（pending_user_entry_id）不进入历史上下文，避免重复。"""
+    rt, db = _rt_with_history()
+    ep = EpisodicMemory(db, user_id="u1", thread_id="k-t1")
+    pending = ep.write(MemoryEntry(type="user_message", content="刚问的新问题"))
+    msgs = rt._thread_history_messages(
+        "u1", "k-t1", exclude_entry_id=pending.id
+    )
+    assert len(msgs) == 4  # 4 条旧对话，不含刚写入的当前问题
+    assert all(m.content != "刚问的新问题" for m in msgs)
+    # 不排除时该条会出现（恢复视图用）
+    all_msgs = rt._thread_history_messages("u1", "k-t1")
+    assert any(m.content == "刚问的新问题" for m in all_msgs)
+
+
+def test_record_user_message_persists_before_run() -> None:
+    """record_user_message 立即落库用户消息并登记线程，不等待 agent 完成。"""
+    from careercrew_core.memory.threads import ThreadStore
+
+    rt = CareerCrewRuntime()
+    rt._initialized = True  # 跳过重组件初始化，只测记忆层
+    db = FakeMemoryDb()
+    rt.memory_db = db
+    rt.thread_store = ThreadStore(db, user_id="u1")
+    entry_id = rt.record_user_message("u1", "k-t1", "我有什么项目", module="knowledge")
+    assert entry_id
+    rows = db.list_episodic("u1", thread_id="k-t1")
+    assert len(rows) == 1
+    assert rows[0]["type"] == "user_message"
+    assert rows[0]["content"] == "我有什么项目"
+    thread = db.get_thread("u1", "k-t1")
+    assert thread is not None
+    assert thread["module"] == "knowledge"
+    assert thread["title"] == "我有什么项目"

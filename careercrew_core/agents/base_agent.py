@@ -79,7 +79,8 @@ class BaseAgent:
         if self.history_loader is not None:
             try:
                 history = self.history_loader(
-                    state.get("user_id", ""), state.get("thread_id", "")
+                    state.get("user_id", ""), state.get("thread_id", ""),
+                    state.get("pending_user_entry_id"),
                 )
                 if history:
                     messages = history + messages

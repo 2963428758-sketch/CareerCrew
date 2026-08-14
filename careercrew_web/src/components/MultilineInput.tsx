@@ -13,14 +13,14 @@ interface MultilineInputProps {
 
 /**
  * 多行输入框：auto-grow textarea。
- * - Enter 发送 / Shift+Enter 换行
+ * - Enter 发送 / Shift + Enter 换行
  * - 多行粘贴原样保留（核心痛点：CLI input() 只取一行）
  */
 export function MultilineInput({
   value,
   onChange,
   onSend,
-  placeholder = "输入消息…（Enter 发送，Shift+Enter 换行）",
+  placeholder = "输入消息…（Enter 发送，Shift + Enter 换行）",
   disabled,
   className,
 }: MultilineInputProps) {

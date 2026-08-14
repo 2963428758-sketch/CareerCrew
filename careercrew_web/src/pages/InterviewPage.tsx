@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react"
-import { Send, Square, CornerDownLeft, Plus, BookOpen, Check } from "lucide-react"
+import { Send, Square, Plus, BookOpen, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { MultilineInput } from "@/components/MultilineInput"
+import { InputHint } from "@/components/InputHint"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
-import { useChatStream } from "@/hooks/useChatStream"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
+import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { cn } from "@/lib/utils"
 import type { InterviewQA } from "@/types"
 
@@ -30,9 +31,13 @@ export default function InterviewPage() {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState("")
   const [qaList, setQaList] = useState<InterviewQA[]>([])
-  const stream = useChatStream()
-  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.interview)
+  // 每会话独立流：切换会话不影响其他会话正在进行的回答
+  const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
+  const startStream = useStreamStore((s) => s.start)
+  const stopStream = useStreamStore((s) => s.stop)
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
   /** 当前作答对应的题目（用户回答前最近一条面试官消息），done 评分后入 qaList */
   const pendingRef = useRef<{ q: string; a: string } | null>(null)
 
@@ -52,7 +57,6 @@ export default function InterviewPage() {
         feedback: stream.doneFeedback,
       }])
     }
-    useThreadStore.getState().bumpNonce()
     setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)))
   }, [stream.status, stream.doneContent, stream.doneScore, stream.doneFeedback])
 
@@ -67,7 +71,6 @@ export default function InterviewPage() {
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
-    stream.reset()
     pendingRef.current = null
     setMessages([])
     setQaList([])
@@ -82,7 +85,11 @@ export default function InterviewPage() {
           if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
           else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
         }
-        setMessages(msgs)
+        // 切回一个仍在流式回答的会话：补一个流式占位气泡
+        const live = useStreamStore.getState().sessions[tid]
+        setMessages(live && live.status === "streaming"
+          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+          : msgs)
         jumpToLatest()
       })
       .catch(() => {})
@@ -105,7 +112,7 @@ export default function InterviewPage() {
       role: m.role,
       content: m.content,
     }))
-    await stream.start("/interview/chat", { topic: topicOverride ?? topic, messages: history, thread_id: currentThreadId })
+    await startStream(currentThreadId, "/interview/chat", { topic: topicOverride ?? topic, messages: history, thread_id: currentThreadId })
   }
 
   const startWithTopic = (t: string) => {
@@ -130,7 +137,6 @@ export default function InterviewPage() {
   }
 
   const handleNew = () => {
-    stream.reset()
     pendingRef.current = null
     setMessages([])
     setQaList([])
@@ -182,7 +188,7 @@ export default function InterviewPage() {
                 isStreaming={lastIsStreaming && i === messages.length - 1 && (msg.streaming ?? false)}
                 streamingText={stream.streamingText}
                 thinking={stream.thinking}
-                initializing={stream.initializing}
+                initializing={initializing}
               />
             ))}
           </div>
@@ -201,7 +207,7 @@ export default function InterviewPage() {
               placeholder="作答，或输入「结束面试」获取总结…"
             />
             {lastIsStreaming ? (
-              <Button variant="destructive" size="icon" onClick={stream.stop} className="h-11 w-11 shrink-0">
+              <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
                 <Square className="h-4 w-4" />
               </Button>
             ) : (
@@ -210,11 +216,7 @@ export default function InterviewPage() {
               </Button>
             )}
           </div>
-          <p className="mx-auto mt-2 flex max-w-3xl items-center gap-1 text-[11px] text-muted-foreground">
-            <CornerDownLeft className="h-3 w-3" /> 发送
-            <span className="mx-1">·</span>
-            Shift + Enter 换行 · 面试官一轮一问，回答后自动评分并追问
-          </p>
+          <InputHint tip="面试官一轮一问，回答后自动评分并追问" />
         </div>
       )}
     </div>

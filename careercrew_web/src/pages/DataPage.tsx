@@ -132,7 +132,7 @@ export function ProfilePanel() {
       const resp = await fetch("/api/profile?user_id=u_001", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(fields),
+        body: JSON.stringify({ fields }),
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       useChatStore.getState().bumpProfileNonce()

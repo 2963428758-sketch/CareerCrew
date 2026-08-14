@@ -84,3 +84,20 @@ def test_chat_score_extracted(client, fake_runtime):
     assert done["type"] == "done"
     assert done["score"] == 8.5
     assert "结构清晰" in done["feedback"]
+
+
+@pytest.mark.web
+def test_done_uses_final_answer_not_streamed_preamble(client, fake_runtime):
+    """回归：多轮迭代时流式 chunk 会带中间轮"开头话"，
+    done 内容必须取最终回答，不能拼接重复（分布式锁开头重复 3 次）。"""
+    fake_runtime.interview_output = "好的，面试主题正式确定为：分布式锁！现在开始第一道题。"
+    fake_runtime.stream_preamble = "好的，我先检索知识库"
+    resp = client.post("/api/interview/chat", json={"topic": "分布式锁", "messages": []})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    chunks = "".join(e["text"] for e in events if e["type"] == "chunk")
+    assert "好的，我先检索知识库" in chunks  # 流式过程仍能看到中间话
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["content"] == fake_runtime.interview_output
+    assert "我先检索知识库" not in done["content"]

@@ -4,10 +4,12 @@
 export type StreamEvent =
   | { type: "stage"; stage: "match" | "resume" | "questions" | "consult" | "synthesis" | "knowledge" }
   | { type: "chunk"; text: string; agent?: string }
-  | { type: "agent_start"; agent: string }
-  | { type: "agent_end"; agent: string }
-  | { type: "done"; content: string; opinions?: Record<string, string>; sources?: KnowledgeSource[]; score?: number; feedback?: string }
+  | { type: "dispatch"; round: number; agents: string[]; tasks?: Record<string, string> }
+  | { type: "agent_start"; agent: string; round?: number }
+  | { type: "agent_end"; agent: string; round?: number }
+  | { type: "done"; content: string; opinions?: Record<string, string>; calls?: ConsultCall[]; sources?: KnowledgeSource[]; score?: number; feedback?: string }
   | { type: "error"; message: string }
+  | { type: "input_request"; message: string; fields: ConsultInputField[] }
 
 export type StreamStatus = "idle" | "streaming" | "done" | "error"
 
@@ -36,8 +38,58 @@ export interface KnowledgeSource {
   text: string
   image_path?: string
   page?: number | null
+  category?: string
   /** 该来源的图片被顾问实际读取用于作答（替代低文本相关度展示）。 */
   used_image?: boolean
+}
+
+/** 会诊总调度官一次顾问调用记录。 */
+export interface ConsultCall {
+  round: number
+  agent: string
+  task: string
+  content: string
+}
+
+/** 会诊"资料填写框"字段（总调度官判断信息不足时下发给前端）。 */
+export interface ConsultInputField {
+  id: string
+  label: string
+  placeholder?: string
+  required?: boolean
+}
+
+/** 会诊 input_request 事件载荷：引导语 + 需要用户填写的字段。 */
+export interface ConsultInputRequest {
+  message: string
+  fields: ConsultInputField[]
+}
+
+/** 前端兜底字段定义：后端未下发时按 id 补齐展示文案。 */
+export const CONSULT_INPUT_FIELDS: ConsultInputField[] = [
+  { id: "current_position", label: "当前职位 / 行业", placeholder: "例如：后端开发 / 互联网", required: true },
+  { id: "experience_years", label: "工作年限", placeholder: "例如：3 年，中级", required: true },
+  { id: "skills", label: "核心技能", placeholder: "例如：Python、RAG、大模型微调", required: true },
+  { id: "target_direction", label: "目标方向", placeholder: "例如：大模型工程师、Agent 工程师", required: true },
+  { id: "city", label: "期望城市", placeholder: "例如：上海、杭州", required: false },
+  { id: "salary", label: "期望薪资", placeholder: "例如：目前 20k，期望 30-35k", required: false },
+  { id: "target_companies", label: "目标公司", placeholder: "例如：字节、阿里（可填多个）", required: false },
+]
+
+/** 知识库分类（与后端 careercrew_core/rag/categories.py 对齐）。 */
+export const KB_CATEGORIES = [
+  { id: "", label: "全部" },
+  { id: "resume", label: "简历" },
+  { id: "knowledge", label: "学习资料" },
+  { id: "interview", label: "面试题" },
+  { id: "job", label: "岗位/JD" },
+] as const
+
+export const KB_CATEGORY_LABELS: Record<string, string> = {
+  resume: "简历",
+  knowledge: "学习资料",
+  interview: "面试题",
+  job: "岗位/JD",
 }
 
 
@@ -59,3 +111,6 @@ export const AGENT_META: Record<string, { label: string; color: string }> = {
   career_planner: { label: "职业规划师", color: "#2563EB" },
   knowledge_advisor: { label: "知识库顾问", color: "#16A34A" },
 }
+
+/** 会诊总调度官身份色系（页面顶部逻辑角色）。 */
+export const ORCHESTRATOR_META = { label: "总调度官", color: "#0F172A" }

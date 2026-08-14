@@ -96,6 +96,7 @@ class MultimodalIngestionPipeline:
         source: str = "",
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> int:
         """纯文本入库（根 run careercrew.ingest，Contextualizer 逐 chunk LLM 不刷配额）。"""
         return traced_call(
@@ -103,7 +104,7 @@ class MultimodalIngestionPipeline:
             name="careercrew.ingest",
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
-            text=text, source=source, metadata=metadata, progress_cb=progress_cb,
+            text=text, source=source, metadata=metadata, progress_cb=progress_cb, category=category,
         )
 
     def _ingest_text_impl(
@@ -112,6 +113,7 @@ class MultimodalIngestionPipeline:
         source: str = "",
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> int:
         """纯文本路径：切分 -> contextualize -> BGE-M3 -> upsert（无视觉向量）。"""
         chunks = self._chunker.chunk(text, source=source, metadata=metadata)
@@ -130,7 +132,7 @@ class MultimodalIngestionPipeline:
                 dense=emb.dense[i],
                 sparse=emb.sparse[i] if emb.sparse else None,
                 text=c.text,
-                metadata={**c.metadata, "doc": doc_id},
+                metadata={**c.metadata, "doc": doc_id, "category": category},
             )
             for i, c in enumerate(chunks)
         ]
@@ -145,6 +147,7 @@ class MultimodalIngestionPipeline:
         path: str | Path,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> int:
         """文件入库（根 run careercrew.ingest）。"""
         return traced_call(
@@ -152,7 +155,7 @@ class MultimodalIngestionPipeline:
             name="careercrew.ingest",
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
-            path=path, metadata=metadata, progress_cb=progress_cb,
+            path=path, metadata=metadata, progress_cb=progress_cb, category=category,
         )
 
     def _ingest_file_impl(
@@ -160,28 +163,36 @@ class MultimodalIngestionPipeline:
         path: str | Path,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> int:
         """文件入库：md/txt 走文本路径；其余走 MinerU 多模态路径。"""
         p = Path(path)
         if p.suffix.lower() in _TEXT_EXTS:
             doc = MarkdownLoader().load(str(p))
             meta = {**doc.metadata, **(metadata or {})}
-            return self.ingest_text(doc.text, source=str(p), metadata=meta, progress_cb=progress_cb)
+            return self.ingest_text(
+                doc.text, source=str(p), metadata=meta, progress_cb=progress_cb, category=category,
+            )
         if progress_cb:
             progress_cb("parse", 0.05)
         parsed = self._make_loader().parse(p)
         if progress_cb:
             progress_cb("vectorize", 0.6)
-        return self._ingest_parsed(parsed, metadata, progress_cb=progress_cb)
+        return self._ingest_parsed(parsed, metadata, progress_cb=progress_cb, category=category)
 
     def _ingest_parsed(
         self,
         parsed: ParsedDocument,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> int:
         meta = metadata or {}
-        base_meta = {"doc": parsed.doc_id, "source": meta.get("source", "") or parsed.metadata.get("source_path", "")}
+        base_meta = {
+            "doc": parsed.doc_id,
+            "source": meta.get("source", "") or parsed.metadata.get("source_path", ""),
+            "category": category,
+        }
         doc_text = "\n\n".join(pg.markdown for pg in parsed.pages)
         records: list[VectorRecord] = []
 

@@ -91,6 +91,8 @@ class JobCycle:
         return {
             "thread_id": self._thread_id, "user_id": self._user_id, "stage": stage, "user_intent": text,
             "messages": msgs, "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            # 本轮用户消息已先落库（record_user_message），历史恢复时跳过它避免重复
+            "pending_user_entry_id": getattr(self, "pending_user_entry_id", None),
         }
 
     def run_match(self, intent: str) -> str:

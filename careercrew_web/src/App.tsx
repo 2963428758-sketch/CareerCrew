@@ -1,11 +1,12 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import { useEffect, useRef, useState, type ComponentType } from "react"
 import {
-  BookOpen, ChevronDown, Copy, FileText, GraduationCap, MessageCircle,
-  MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
+  BookOpen, Copy, FileText, GraduationCap, MessageCircle,
+  Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
+import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { SettingsDialog } from "@/components/SettingsDialog"
 import ChatPage from "@/pages/ChatPage"
 import InterviewPage from "@/pages/InterviewPage"
@@ -16,12 +17,13 @@ import KnowledgePage from "@/pages/KnowledgePage"
 import MatcherPage from "@/pages/MatcherPage"
 
 const NAV = [
-  { to: "/", label: "求职对话", icon: MessageSquare, end: true },
+  // 按求职流程排序：规划 → 匹配 → 简历 → 面试 → 会诊 → 知识库
+  { to: "/", label: "求职规划", icon: MessageSquare, end: true },
   { to: "/matcher", label: "职位匹配", icon: Target },
-  { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/resume", label: "简历优化", icon: FileText },
-  { to: "/knowledge", label: "知识库问答", icon: BookOpen },
+  { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/consult", label: "会诊", icon: Users },
+  { to: "/knowledge", label: "知识库问答", icon: BookOpen },
 ]
 
 const PAGES: Record<string, ComponentType> = {
@@ -129,11 +131,6 @@ function ThreadList() {
   const currentId = currentThreadByModule[module]
   const moduleMeta = CHAT_MODULES.find((m) => m.key === module)!
 
-  const handleSelectModule = (m: ThreadModule) => {
-    setActiveModule(m)
-    navigate(CHAT_MODULES.find((x) => x.key === m)!.path)
-  }
-
   const handleSelect = (tid: string) => {
     selectThread(module, tid)
     navigate(moduleMeta.path)
@@ -147,7 +144,6 @@ function ThreadList() {
   return (
     <div className="mt-2 flex-1 overflow-y-auto border-t border-sidebar-border px-3 py-2">
       <p className="mb-1.5 px-1 text-[11px] font-medium text-sidebar-text/70">对话历史</p>
-      <ModuleDropdown module={module} onSelect={handleSelectModule} />
       {loading ? (
         <p className="px-1 py-1 text-[11px] text-sidebar-text/60">加载中…</p>
       ) : error ? (
@@ -176,54 +172,6 @@ function ThreadList() {
   )
 }
 
-function ModuleDropdown({ module, onSelect }: { module: ThreadModule; onSelect: (m: ThreadModule) => void }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  const label = CHAT_MODULES.find((m) => m.key === module)?.label || module
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", onDown)
-    return () => document.removeEventListener("mousedown", onDown)
-  }, [open])
-
-  return (
-    <div ref={ref} className="relative mb-1.5">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[12px] text-sidebar-text transition-colors hover:bg-sidebar-hover/50 hover:text-white/90"
-      >
-        <span className="truncate">{label}</span>
-        <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute left-0 right-0 z-40 mt-1 overflow-hidden rounded-md border border-sidebar-border bg-[#1E242E] py-1 shadow-xl">
-          {CHAT_MODULES.map((m) => (
-            <button
-              key={m.key}
-              onClick={() => {
-                onSelect(m.key)
-                setOpen(false)
-              }}
-              className={cn(
-                "block w-full px-2.5 py-1.5 text-left text-[12px] transition-colors",
-                m.key === module
-                  ? "bg-sidebar-hover text-white"
-                  : "text-sidebar-text hover:bg-sidebar-hover/50 hover:text-white/90"
-              )}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function ThreadRow({ module: _module, thread, isActive, copied, onSelect, onRename, onTogglePin, onDelete, onCopy }: {
   module: ThreadModule
   thread: ThreadItem
@@ -239,6 +187,9 @@ function ThreadRow({ module: _module, thread, isActive, copied, onSelect, onRena
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(thread.title)
   const ref = useRef<HTMLDivElement>(null)
+  // 会话流状态：streaming=转圈圈，done+未点击=蓝色圆点（点击后清除），error=红色
+  const session = useStreamStore((s) => s.sessions[thread.thread_id]) ?? IDLE_SESSION
+  const unread = useThreadStore((s) => !!s.completedUnread[thread.thread_id])
 
   useEffect(() => {
     if (!menuOpen) return
@@ -284,6 +235,25 @@ function ThreadRow({ module: _module, thread, isActive, copied, onSelect, onRena
         ) : (
           <>
             {thread.pinned && <Pin className="h-3 w-3 shrink-0 text-sidebar-text-active" />}
+            {session.status === "streaming" && (
+              <span className="flex shrink-0" title="正在生成回答…">
+                <Loader2 className="h-3 w-3 animate-spin" style={{ color: "#F59E0B" }} />
+              </span>
+            )}
+            {session.status === "done" && unread && (
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: "#3B82F6", boxShadow: "0 0 5px #3B82F6" }}
+                title="回答完成，点击查看"
+              />
+            )}
+            {session.status === "error" && (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: "#EF4444" }}
+                title="生成出错"
+              />
+            )}
             <span className="min-w-0 flex-1 truncate">{thread.title}</span>
             <button
               className="shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-sidebar-hover group-hover:opacity-100"

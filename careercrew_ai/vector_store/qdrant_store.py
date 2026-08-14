@@ -261,7 +261,12 @@ class QdrantStore(BaseVectorStore):
                 payload = p.payload or {}
                 doc = payload.get("doc") or payload.get("_id", "")
                 entry = docs.setdefault(
-                    doc, {"doc": doc, "source": payload.get("source", ""), "points": 0}
+                    doc, {
+                        "doc": doc,
+                        "source": payload.get("source", ""),
+                        "points": 0,
+                        "category": payload.get("category", ""),
+                    }
                 )
                 entry["points"] += 1
             if offset is None or len(docs) >= limit:

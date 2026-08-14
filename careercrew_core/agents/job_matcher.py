@@ -20,8 +20,8 @@ _PROMPT_PATH = (
 )
 
 _DEFAULT_PROMPT = (
-    "你是 CareerCrew 的职位匹配官。用 search_jobs 搜职位，评估匹配度，"
-    "高匹配（≥0.6）用 memory_write(type=job_match) 入库，输出匹配岗位列表。"
+    "你是 CareerCrew 的职位匹配官。用 search_jobs/rag_query 搜 JD，评估匹配度，"
+    "高匹配（≥0.6）用 memory_write(type=job_match) 入库并输出匹配报告。"
 )
 
 

@@ -17,6 +17,7 @@ class FakeRuntime:
         self._initialized = True
         self.match_output = "匹配到字节跳动 0.95 / 腾讯 0.85"
         self.resume_output = "定制简历完成，匹配度 0.97"
+        self.planner_output = "规划完成：冲刺字节/阿里，匹配美团/腾讯，阶段 0-3 月补 RAG 深度"
         self.interview_output = "1. 请讲讲你对 RAG 的理解\n2. 如何优化召回质量？"
         self.score_result = {"score": 8.5, "feedback": "回答结构清晰，可补充具体案例"}
         self.consult_opinions = {
@@ -24,7 +25,11 @@ class FakeRuntime:
             "career_planner": "建议先积累 Agent 项目经验",
         }
         self.consult_synthesis = "综合建议：先积累经验，谈薪 30-35K"
+        self._orchestrator_calls = 0
+        self.orchestrator_override = None
         self.knowledge_output = "RAG 检索流程：先解析文档，再切分向量化，最后混合检索重排。（来源：note.md）"
+        # 模拟 agent 多轮迭代时中间轮的"开头话"（只进流式 chunk，不进最终内容）
+        self.stream_preamble = ""
         self.knowledge_sources = [
             {
                 "doc": "note",
@@ -38,6 +43,7 @@ class FakeRuntime:
         self.match_chunks: list[str] = []
         self.resume_chunks: list[str] = []
         self.upload_content = "解析出的简历文本内容"
+        self.upload_error: Exception | None = None
         self.ingest_error: Exception | None = None
         self.knowledge_docs: list[dict] = [
             {"doc": "note", "source": "data/uploads/note.md", "points": 3}
@@ -96,25 +102,41 @@ class FakeRuntime:
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None) -> str:
         if cb:
+            if self.stream_preamble:
+                cb(self.stream_preamble)
             cb(self.match_output)
         return self.match_output
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None) -> str:
         if cb:
+            if self.stream_preamble:
+                cb(self.stream_preamble)
             cb(self.resume_output)
         return self.resume_output
 
-    def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
-                                 cb: Callable[[str], None] | None = None) -> str:
+    def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
+                                cb: Callable[[str], None] | None = None) -> str:
         if cb:
+            if self.stream_preamble:
+                cb(self.stream_preamble)
+            cb(self.planner_output)
+        return self.planner_output
+
+    def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
+                                 cb: Callable[[str], None] | None = None,
+                                 category: str = "") -> str:
+        if cb:
+            if self.stream_preamble:
+                cb(self.stream_preamble)
             cb(self.knowledge_output)
         return {"content": self.knowledge_output, "sources": self.knowledge_sources}
 
     def record_thread_messages(self, user_id: str, thread_id: str,
                                user_text: str, agent_text: str,
                                module: str = "chat",
-                               sources: list[dict] | None = None) -> int:
+                               sources: list[dict] | None = None,
+                               metadata: dict | None = None) -> int:
         n = 0
         if user_text:
             self.memory_db.insert_episodic(
@@ -124,14 +146,29 @@ class FakeRuntime:
             n += 1
         if agent_text:
             content: dict | str = agent_text
-            if sources:
-                content = {"text": agent_text, "sources": sources}
+            if sources or metadata:
+                stored = {"text": agent_text}
+                if sources:
+                    stored["sources"] = sources
+                if metadata:
+                    stored.update(metadata)
+                content = stored
             self.memory_db.insert_episodic(
                 user_id, thread_id, f"t-{thread_id}-{n}", None,
                 "agent_response", content, "",
             )
             n += 1
         return n
+
+    def record_user_message(self, user_id: str, thread_id: str, user_text: str,
+                            module: str = "chat") -> str | None:
+        if not user_text:
+            return None
+        self.memory_db.insert_episodic(
+            user_id, thread_id, f"u-{thread_id}", None,
+            "user_message", user_text, "",
+        )
+        return f"u-{thread_id}"
 
     def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None):
         class FakeAgent:
@@ -160,6 +197,8 @@ class FakeRuntime:
 
             def run(self_inner, state):
                 if cb:
+                    if self.stream_preamble:
+                        cb(self.stream_preamble)
                     cb(self.interview_output)
         return FakeAgent()
 
@@ -224,17 +263,16 @@ class FakeRuntime:
         } for f in facts if not type or f["type"] == type]
         for r in rows:
             content = r.get("content")
-            sources = None
+            extra: dict = {}
             if isinstance(content, dict) and "text" in content:
-                sources = content.get("sources")
+                extra = {k: v for k, v in content.items() if k != "text"}
                 content = content["text"]
             event = {
                 "kind": "event", "id": r["id"], "type": r["type"], "ts": r["ts"],
                 "parentId": r.get("parent_id"), "content": content,
                 "thread_id": r.get("thread_id"),
             }
-            if sources:
-                event["sources"] = sources
+            event.update(extra)
             merged.append(event)
         merged.sort(key=lambda x: x.get("ts", ""))
         return merged
@@ -288,10 +326,25 @@ class FakeRuntime:
 
     @property
     def llm(self):
-        """假 LLM（_synthesize 调 .invoke）。"""
+        """假 LLM：第一轮返回会诊调度决策，之后返回最终答案。"""
         class FakeLLM:
             def invoke(self_inner, prompt, config=None):
-                return type("R", (), {"content": self.consult_synthesis})()
+                outer = self
+                if outer.orchestrator_override:
+                    return outer.orchestrator_override(prompt, config)
+                outer._orchestrator_calls += 1
+                if outer._orchestrator_calls == 1:
+                    content = (
+                        '{"next_agents": ["salary_negotiator", "career_planner"], '
+                        '"tasks": {}, "final_answer": ""}'
+                    )
+                else:
+                    content = (
+                        '{"next_agents": [], "tasks": {}, "final_answer": "'
+                        + outer.consult_synthesis.replace('"', "'")
+                        + '"}'
+                    )
+                return type("R", (), {"content": content})()
         return FakeLLM()
 
     def score_answer(self, question: str, answer: str, max_score: int = 10) -> dict:
@@ -301,9 +354,13 @@ class FakeRuntime:
         return len(entries)
 
     def read_image(self, path: str) -> str:
+        if self.upload_error:
+            raise self.upload_error
         return self.upload_content
 
     def load_document(self, path: str) -> str:
+        if self.upload_error:
+            raise self.upload_error
         return self.upload_content
 
     def ingest_document(
@@ -311,6 +368,7 @@ class FakeRuntime:
         path: str,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
+        category: str = "",
     ) -> dict:
         from pathlib import Path
 

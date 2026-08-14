@@ -45,7 +45,14 @@ export function useChatScroll(followDeps: unknown[]) {
   const jumpToLatest = useCallback(() => {
     atBottomRef.current = true
     setIsAtBottom(true)
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
+    // 等 React 提交新消息后再滚动：立即 scrollTo 时 scrollHeight 还是旧内容高度，
+    // 目标会被算成顶部，导致点历史后停在对话最上面。
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = scrollRef.current
+        if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+      })
+    })
   }, [])
 
   return { scrollRef, isAtBottom, showJumpToLatest: !isAtBottom, jumpToLatest }

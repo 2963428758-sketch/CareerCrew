@@ -35,3 +35,16 @@ def test_knowledge_ask_empty_question(client):
     """空问题应返回 422（pydantic 校验）。"""
     resp = client.post("/api/knowledge/ask", json={"question": ""})
     assert resp.status_code == 422
+
+
+@pytest.mark.web
+def test_knowledge_ask_with_category(client):
+    """按分类检索：category 字段可透传。"""
+    resp = client.post("/api/knowledge/ask", json={
+        "question": "我的学校",
+        "category": "resume",
+    })
+    assert resp.status_code == 200
+    lines = [l for l in resp.text.strip().split("\n") if l.strip()]
+    events = [json.loads(l) for l in lines]
+    assert events[-1]["type"] == "done"

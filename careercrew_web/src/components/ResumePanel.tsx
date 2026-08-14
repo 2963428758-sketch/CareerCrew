@@ -1,69 +1,57 @@
-import { useEffect, useState } from "react"
-import { Upload, BookOpen, Trash2, X } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { Upload, FileText, Trash2, RefreshCw, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { KB_CATEGORIES, KB_CATEGORY_LABELS } from "@/types"
 import { cn } from "@/lib/utils"
-
-interface KnowledgeDoc {
-  doc: string
-  source: string
-  points: number
-  category?: string
-}
-
-interface KnowledgeStatus {
-  points: number
-  docs: KnowledgeDoc[]
-}
-
-interface UploadJob {
-  job_id: string
-  filename: string
-  status: "queued" | "running" | "done" | "error"
-  stage: string
-  progress: number
-  error?: string | null
-  result?: { doc_id?: string; points?: number } | null
-}
+import {
+  fetchResumeContent,
+  type ActiveResume,
+  type ResumeLibraryItem,
+  type ResumeUploadJob,
+} from "@/lib/resumeUpload"
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "排队中",
-  parse: "MinerU 解析文档",
-  vectorize: "切分并向量化",
-  store: "写入知识库",
+  parse: "解析简历",
   done: "完成",
 }
 
 // 各阶段展示进度上限：真实进度只在阶段边界跳跃，阶段内由前端平滑推进，避免进度条长时间"卡住"
 const STAGE_CEILING: Record<string, number> = {
   queued: 4,
-  parse: 50,
-  vectorize: 80,
-  store: 95,
+  parse: 95,
 }
 
-/** 知识库管理面板（上传 / 列表 / 删除），可嵌入知识库问答页右上角。 */
-export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
-  const [status, setStatus] = useState<KnowledgeStatus | null>(null)
+interface ResumePanelProps {
+  onClose?: () => void
+  /** 解析完成 / 点「用于当前对话」时回调，携带可用于当前会话的简历内容 */
+  onActive?: (resume: ActiveResume) => void
+}
+
+/** 简历管理面板（上传解析 + 我的简历列表），可嵌入简历优化页右上角抽屉。 */
+export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
+  const [resumes, setResumes] = useState<ResumeLibraryItem[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [files, setFiles] = useState<FileList | null>(null)
-  const [uploadCategory, setUploadCategory] = useState("")
   const [uploadError, setUploadError] = useState("")
-  const [job, setJob] = useState<UploadJob | null>(null)
+  const [job, setJob] = useState<ResumeUploadJob | null>(null)
   const [displayPct, setDisplayPct] = useState(0)
+  /** 正在读取某份简历内容用于当前对话 */
+  const [activatingId, setActivatingId] = useState<string | null>(null)
+  /** 已回调 onActive 的任务 id：避免父组件重渲染时重复触发（重复添加附件气泡） */
+  const firedJobRef = useRef<string | null>(null)
 
   const uploading = !!job && (job.status === "queued" || job.status === "running")
 
   const refresh = () => {
     setLoading(true)
     setError("")
-    fetch("/api/knowledge")
+    fetch("/api/resume/library")
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then((d) => setStatus(d))
+      .then((d: { resumes: ResumeLibraryItem[] }) => setResumes(d.resumes))
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false))
   }
@@ -77,9 +65,9 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     if (!jobId || jobStatus === "done" || jobStatus === "error") return
     const timer = setInterval(async () => {
       try {
-        const resp = await fetch(`/api/knowledge/upload/${jobId}`)
+        const resp = await fetch(`/api/resume/upload/${jobId}`)
         if (!resp.ok) return
-        const next: UploadJob = await resp.json()
+        const next: ResumeUploadJob = await resp.json()
         setJob(next)
         if (next.status === "done") {
           setFiles(null)
@@ -115,6 +103,20 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     return () => clearInterval(timer)
   }, [jobId, jobStatus, jobStage, jobProgress])
 
+  // 上传完成：把解析结果直接用于当前会话（每个任务只回调一次）
+  useEffect(() => {
+    if (job?.status === "done" && job.result && onActive && firedJobRef.current !== job.job_id) {
+      firedJobRef.current = job.job_id
+      onActive({
+        resume_id: job.result.resume_id,
+        filename: job.result.filename,
+        doc_type: job.result.doc_type,
+        char_count: job.result.char_count,
+        content: job.result.content,
+      })
+    }
+  }, [job, onActive])
+
   const handleUpload = async () => {
     if (!files || files.length === 0) return
     setUploadError("")
@@ -122,69 +124,81 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     setDisplayPct(0)
     const fd = new FormData()
     fd.append("file", files[0])
-    fd.append("category", uploadCategory)
     try {
-      const resp = await fetch("/api/knowledge/upload", { method: "POST", body: fd })
+      const resp = await fetch("/api/resume/upload", { method: "POST", body: fd })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
-      setJob(data as UploadJob)
+      setJob(data as ResumeUploadJob)
     } catch (e) {
       setUploadError((e as Error).message)
     }
   }
 
-  const handleDelete = async (doc: string) => {
-    if (!window.confirm(`确定从知识库删除「${doc}」吗？删除后需重新上传才能恢复。`)) return
-    await fetch(`/api/knowledge/${encodeURIComponent(doc)}`, { method: "DELETE" })
-    refresh()
+  const handleActivate = async (item: ResumeLibraryItem) => {
+    if (!onActive) return
+    setActivatingId(item.resume_id)
+    try {
+      const content = await fetchResumeContent(item.resume_id)
+      onActive({
+        resume_id: item.resume_id,
+        filename: item.filename,
+        doc_type: item.doc_type,
+        char_count: item.char_count,
+        content,
+      })
+    } catch (e) {
+      setUploadError(`读取简历失败：${(e as Error).message}`)
+    } finally {
+      setActivatingId(null)
+    }
+  }
+
+  const handleDelete = async (item: ResumeLibraryItem) => {
+    if (!window.confirm(`确定从简历库删除「${item.filename}」吗？删除后需重新上传才能恢复。`)) return
+    try {
+      const resp = await fetch(`/api/resume/library/${encodeURIComponent(item.resume_id)}`, {
+        method: "DELETE",
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      refresh()
+    } catch (e) {
+      setUploadError(`删除失败：${(e as Error).message}`)
+    }
   }
 
   return (
     <div className="space-y-4">
-      {onClose && (
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold text-muted-foreground">知识库管理</p>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} title="关闭">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      )}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">上传知识文档</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
-            {[{ id: "", label: "自动识别" }, ...KB_CATEGORIES.slice(1)].map((c) => (
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-semibold">上传简历</CardTitle>
+            {onClose && (
               <button
-                key={c.id || "auto"}
-                onClick={() => setUploadCategory(c.id)}
-                className={cn(
-                  "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-all",
-                  uploadCategory === c.id
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border bg-card hover:bg-muted"
-                )}
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={onClose}
+                title="关闭"
               >
-                {c.label}
+                <X className="h-4 w-4" />
               </button>
-            ))}
+            )}
           </div>
+        </CardHeader>
+        <CardContent className="space-y-2.5">
           <div className="flex flex-wrap items-center gap-2">
             <Input
               type="file"
-              accept=".pdf,.png,.jpg,.jpeg,.docx,.pptx,.xlsx,.md,.markdown,.txt"
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.webp,.txt,.md,.markdown,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
               onChange={(e) => setFiles(e.target.files)}
               className="h-9 max-w-sm text-sm"
             />
             <Button size="sm" className="gap-1.5" onClick={handleUpload} disabled={uploading || !files || files.length === 0}>
               <Upload className="h-3.5 w-3.5" />
-              {uploading ? "解析入库中…" : "上传入库"}
+              {uploading ? "解析中…" : "上传解析"}
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            支持 PDF / 图片 / DOCX / PPTX / XLSX / Markdown / TXT。PDF 与图片会先经 MinerU
-            抽取文本再向量化，约需 1-2 分钟，请耐心等待。
+            支持 PDF / 图片 / TXT / MD / DOCX 等 · 最大 20MB。PDF 与图片会先经 MinerU
+            抽取文本，约需 1-2 分钟，请耐心等待。
           </p>
           {job && job.status !== "error" && (
             <div className="space-y-1.5">
@@ -209,53 +223,68 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
           )}
           {job?.status === "done" && displayPct >= 99 && job.result && (
             <p className="text-xs font-medium text-green-600">
-              ✓ 入库成功：{job.filename} → doc_id={job.result.doc_id}，
-              {Number(job.result.points)} 个向量点
+              ✓ 解析成功：{job.result.filename}（{job.result.doc_type} · {job.result.char_count} 字符）
             </p>
           )}
-          {job?.status === "error" && <p className="text-xs font-medium text-destructive">上传失败：{job.error}</p>}
-          {uploadError && <p className="text-xs font-medium text-destructive">上传失败：{uploadError}</p>}
+          {job?.status === "error" && <p className="text-xs font-medium text-destructive">解析失败：{job.error}</p>}
+          {uploadError && <p className="text-xs font-medium text-destructive">操作失败：{uploadError}</p>}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">
-            库内文档
-            {status && <span className="ml-1 font-normal text-muted-foreground">（{status.docs.length} 份）</span>}
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-semibold">
+              我的简历
+              {resumes && <span className="ml-1 font-normal text-muted-foreground">（{resumes.length} 份）</span>}
+            </CardTitle>
+            <button
+              className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              onClick={refresh}
+              title="刷新"
+            >
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            </button>
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
             <Skeleton className="h-32 w-full" />
           ) : error ? (
             <p className="text-sm text-destructive">加载失败：{error}</p>
-          ) : !status || status.docs.length === 0 ? (
+          ) : !resumes || resumes.length === 0 ? (
             <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-              知识库为空，先上传一份文档吧
+              还没有上传过简历，先上传一份吧
             </p>
           ) : (
             <div className="space-y-1.5">
-              {status.docs.map((doc) => (
-                <div key={doc.doc} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
-                  <BookOpen className="h-4 w-4 shrink-0 text-primary" />
+              {resumes.map((item) => (
+                <div key={item.resume_id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
+                  <FileText className="h-4 w-4 shrink-0 text-primary" />
                   <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-1.5 truncate text-sm font-medium">
-                      <span className="truncate">{doc.doc}</span>
-                      {doc.category && (
-                        <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                          {KB_CATEGORY_LABELS[doc.category] ?? doc.category}
-                        </span>
-                      )}
-                    </p>
+                    <p className="truncate text-sm font-medium">{item.filename}</p>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      {doc.source.split(/[\\/]/).pop() || doc.source}
+                      {item.doc_type} · {item.char_count} 字符
                     </p>
                   </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0 gap-1 px-2 text-[11px]"
+                    onClick={() => handleActivate(item)}
+                    disabled={activatingId === item.resume_id}
+                  >
+                    {activatingId === item.resume_id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Upload className="h-3 w-3" />
+                    )}
+                    用于当前对话
+                  </Button>
                   <button
                     className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                    onClick={() => handleDelete(doc.doc)}
-                    title={`删除 ${doc.doc}`}
+                    onClick={() => handleDelete(item)}
+                    title={`删除 ${item.filename}`}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

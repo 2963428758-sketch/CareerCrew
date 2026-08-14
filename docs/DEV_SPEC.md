@@ -2154,7 +2154,7 @@ export MINERU_API_KEY="xxx"                    # MinerU 云端解析（rag.loade
 
 ```bash
 conda run -n careercrew uvicorn careercrew_api.main:app --reload --port 8000  # FastAPI 后端
-cd careercrew_web && npm run dev                                          # React 前端（Vite，:5173 代理 /api）
+cd careercrew_web && npm run dev                                          # React 前端（Vite，:5175 代理 /api）
 npm run build                                                  # 构建生产产物 careercrew_web/dist（FastAPI 单端口托管）
 conda run -n careercrew python -m careercrew_mcp               # 多模态 RAG MCP Server（stdio）
 conda run -n careercrew python scripts/ingest_knowledge.py     # 知识库摄取（多模态 pipeline）

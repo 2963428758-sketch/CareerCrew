@@ -1,6 +1,6 @@
 import { create } from "zustand"
 
-export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult"
+export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
 export interface ThreadItem {
   thread_id: string
@@ -20,14 +20,16 @@ export interface ChatModuleMeta {
 }
 
 export const CHAT_MODULES: ChatModuleMeta[] = [
-  { key: "chat", label: "求职对话", path: "/", prefix: "t-" },
+  // 会话类模块与侧边栏导航同序
+  { key: "chat", label: "求职规划", path: "/", prefix: "t-" },
   { key: "matcher", label: "职位匹配", path: "/matcher", prefix: "m-" },
   { key: "interview", label: "面试练习", path: "/interview", prefix: "i-" },
-  { key: "knowledge", label: "知识库问答", path: "/knowledge", prefix: "k-" },
+  { key: "resume", label: "简历优化", path: "/resume", prefix: "r-" },
   { key: "consult", label: "会诊", path: "/consult", prefix: "c-" },
+  { key: "knowledge", label: "知识库问答", path: "/knowledge", prefix: "k-" },
 ]
 
-/** 根据路由判断当前属于哪个对话模块；非对话页（数据看板/简历优化）返回 null。 */
+/** 根据路由判断当前属于哪个对话模块；非对话页（数据看板）返回 null。 */
 export const moduleOfPath = (pathname: string): ThreadModule | null => {
   const hit = CHAT_MODULES.find((m) =>
     m.key === "chat" ? pathname === "/" : pathname === m.path || pathname.startsWith(`${m.path}/`)
@@ -56,6 +58,8 @@ interface ThreadState {
   loading: boolean
   error: string
   copiedThreadId: string | null
+  /** 回答完成且尚未点击查看的会话（蓝色圆点，点击该会话后清除） */
+  completedUnread: Record<string, boolean>
   /** 会话列表刷新信号（注册/删除/发送完成后 bump，侧边栏据此重新拉取） */
   nonce: number
   setActiveModule: (m: ThreadModule) => void
@@ -67,6 +71,8 @@ interface ThreadState {
   togglePin: (m: ThreadModule, tid: string, pinned: boolean) => Promise<void>
   deleteThread: (m: ThreadModule, tid: string) => Promise<void>
   copyThreadId: (tid: string) => Promise<void>
+  markCompletedUnread: (tid: string) => void
+  clearCompletedUnread: (tid: string) => void
   bumpNonce: () => void
 }
 
@@ -86,6 +92,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   loading: false,
   error: "",
   copiedThreadId: null,
+  completedUnread: {},
   nonce: 0,
 
   setActiveModule: (m) => set({ activeModule: m }),
@@ -118,10 +125,15 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   selectThread: (m, tid) =>
-    set((s) => ({
-      activeModule: m,
-      currentThreadByModule: { ...s.currentThreadByModule, [m]: tid },
-    })),
+    set((s) => {
+      const unread = { ...s.completedUnread }
+      delete unread[tid] // 点击该会话后蓝色圆点消失
+      return {
+        activeModule: m,
+        currentThreadByModule: { ...s.currentThreadByModule, [m]: tid },
+        completedUnread: unread,
+      }
+    }),
 
   registerThread: async (m) => {
     const tid = genThreadId(m)
@@ -141,12 +153,16 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     set((s) => {
       const list = s.threadsByModule[m] || []
       const item = list.find((t) => t.thread_id === tid)
-      if (!item || (item.title && item.title !== tid)) return s
+      // 新会话首条消息：本地立即插入该行（流式期间就能看到脉冲圆点），
+      // 后端 PATCH 异步补齐，完成时 bumpNonce 重新拉取对齐。
+      const nextList = item
+        ? list.map((t) => (t.thread_id === tid ? { ...t, title: trimmed } : t))
+        : [...list, { thread_id: tid, title: trimmed, module: m, pinned: false }]
       return {
         ...s,
         threadsByModule: {
           ...s.threadsByModule,
-          [m]: list.map((t) => (t.thread_id === tid ? { ...t, title: trimmed } : t)),
+          [m]: sortThreads(nextList),
         },
       }
     })
@@ -217,6 +233,11 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     }
     set((s) => ({
       nonce: s.nonce + 1,
+      completedUnread: (() => {
+        const next = { ...s.completedUnread }
+        delete next[tid]
+        return next
+      })(),
       threadsByModule: {
         ...s.threadsByModule,
         [m]: (s.threadsByModule[m] || []).filter((t) => t.thread_id !== tid),
@@ -235,6 +256,17 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       if (get().copiedThreadId === tid) set({ copiedThreadId: null })
     }, 1500)
   },
+
+  markCompletedUnread: (tid) =>
+    set((s) => ({ completedUnread: { ...s.completedUnread, [tid]: true } })),
+
+  clearCompletedUnread: (tid) =>
+    set((s) => {
+      if (!s.completedUnread[tid]) return s
+      const next = { ...s.completedUnread }
+      delete next[tid]
+      return { completedUnread: next }
+    }),
 
   bumpNonce: () => set((s) => ({ nonce: s.nonce + 1 })),
 }))

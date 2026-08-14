@@ -44,24 +44,29 @@ class EpisodicMemory:
     def write(self, entry: MemoryEntry, thread_id: str | None = None) -> MemoryEntry:
         """append 一条；id/ts/parentId 缺省时自动填（parentId 默认接本线程最新条目）。"""
         tid = thread_id or self.thread_id
-        if not entry.id:
-            entry.id = self._db.next_episodic_id(self.user_id)
-        if not entry.ts:
-            entry.ts = datetime.now(timezone.utc).isoformat()
-        if entry.parentId is None:
-            latest = self._db.latest_episodic(self.user_id, tid)
-            if latest:
-                entry.parentId = latest["id"]
-        self._db.insert_episodic(
-            user_id=self.user_id,
-            thread_id=tid,
-            entry_id=entry.id,
-            parent_id=entry.parentId,
-            type=entry.type,
-            content=entry.content,
-            ts=entry.ts,
-        )
-        return entry
+        # 取 id → 取最新父节点 → 插入 三步必须在同一把锁内完成：
+        # 多个会话并行写入时，若分开加锁，两个线程可能拿到同一个 MAX(id)+1，
+        # 后插入者会 ON CONFLICT 覆盖前一条（内容串线程）。write_lock 与
+        # PostgresMemoryDb 的 @_synchronized 共用同一 RLock。
+        with self._db.write_lock:
+            if not entry.id:
+                entry.id = self._db.next_episodic_id(self.user_id)
+            if not entry.ts:
+                entry.ts = datetime.now(timezone.utc).isoformat()
+            if entry.parentId is None:
+                latest = self._db.latest_episodic(self.user_id, tid)
+                if latest:
+                    entry.parentId = latest["id"]
+            self._db.insert_episodic(
+                user_id=self.user_id,
+                thread_id=tid,
+                entry_id=entry.id,
+                parent_id=entry.parentId,
+                type=entry.type,
+                content=entry.content,
+                ts=entry.ts,
+            )
+            return entry
 
     def get(self, id: str) -> MemoryEntry | None:
         row = self._db.get_episodic(self.user_id, id)

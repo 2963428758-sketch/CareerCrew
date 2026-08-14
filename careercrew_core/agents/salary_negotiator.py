@@ -14,7 +14,8 @@ _PROMPT_PATH = (
 )
 
 _DEFAULT_PROMPT = (
-    "你是 CareerCrew 的薪资谈判师。用 rag_query 查薪资数据，制定谈薪策略与话术。"
+    "你是 CareerCrew 的薪资谈判师。用 salary_query/rag_query/memory_search "
+    "查薪资数据，制定谈薪策略与话术。"
 )
 
 

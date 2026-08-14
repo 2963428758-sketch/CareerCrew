@@ -1,40 +1,130 @@
-import { useRef, useState, type DragEvent } from "react"
-import { Upload, FileText, Image as ImageIcon, File, Loader2, Sparkles } from "lucide-react"
+import { useEffect, useRef, useState, type DragEvent } from "react"
+import { Send, Square, Plus, FileText, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
+import { MultilineInput } from "@/components/MultilineInput"
+import { InputHint } from "@/components/InputHint"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
-import { useChatStream } from "@/hooks/useChatStream"
+import { JumpToLatest } from "@/components/JumpToLatest"
+import ResumePanel from "@/components/ResumePanel"
+import { useChatScroll } from "@/hooks/useChatScroll"
+import { useThreadStore } from "@/store/threadStore"
+import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
+import { AGENT_META } from "@/types"
 import { cn } from "@/lib/utils"
+import { pollResumeUpload, type ActiveResume } from "@/lib/resumeUpload"
 
-interface UploadResult {
-  filename: string
-  doc_type: string
+let msgId = 0
+const nextId = () => `msg-${++msgId}`
+
+const RESUME_ADVISOR = AGENT_META.resume_advisor
+
+interface ChatMsg {
+  id: string
+  role: "user" | "assistant"
   content: string
-  truncated: boolean
-  char_count: number
+  streaming?: boolean
 }
 
 export default function ResumePage() {
+  const [messages, setMessages] = useState<ChatMsg[]>([])
+  const [input, setInput] = useState("")
   const [uploading, setUploading] = useState(false)
-  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
-  const [resumeText, setResumeText] = useState("")
-  const [jdText, setJdText] = useState("")
   const [dragOver, setDragOver] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const stream = useChatStream()
+  const [panelOpen, setPanelOpen] = useState(false)
+  /** 当前会话待使用的简历（展示在输入框上方，可移除）；首轮发送时随请求携带 */
+  const [activeResume, setActiveResume] = useState<ActiveResume | null>(null)
+  /** 最近上传/选中的简历：首轮发送时随请求携带，之后由后端按线程存储复用 */
+  const pendingResumeRef = useRef<{ threadId: string; text: string } | null>(null)
+  const currentThreadId = useThreadStore((s) => s.currentThreadByModule.resume)
+  // 每会话独立流：切换会话不影响其他会话正在进行的回答
+  const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
+  const startStream = useStreamStore((s) => s.start)
+  const stopStream = useStreamStore((s) => s.stop)
+  const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
+  const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
+
+  // 流结束：把最终内容写回最后一条 assistant 气泡
+  useEffect(() => {
+    if (stream.status !== "done" || !stream.doneContent) return
+    setMessages((prev) => prev.map((m, i) =>
+      i === prev.length - 1 && (m.streaming ?? false) ? { ...m, content: stream.doneContent, streaming: false } : m,
+    ))
+  }, [stream.status, stream.doneContent])
+
+  // 流失败：用错误信息填充空气泡
+  useEffect(() => {
+    if (stream.status !== "error" || !stream.errorMsg) return
+    setMessages((prev) => prev.map((m, i) =>
+      i === prev.length - 1 ? { ...m, content: stream.errorMsg, streaming: false } : m,
+    ))
+  }, [stream.status, stream.errorMsg])
+
+  // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
+  useEffect(() => {
+    const tid = currentThreadId
+    pendingResumeRef.current = null
+    setActiveResume(null)
+    setMessages([])
+    fetch(`/api/memory?thread_id=${tid}`)
+      .then((r) => r.json())
+      .then((entries: Record<string, unknown>[]) => {
+        const msgs: ChatMsg[] = []
+        for (const entry of entries) {
+          const type = String(entry.type || "")
+          const content = String(entry.content || "")
+          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
+          else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
+        }
+        // 切回一个仍在流式回答的会话：补一个流式占位气泡
+        const live = useStreamStore.getState().sessions[tid]
+        setMessages(live && live.status === "streaming"
+          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+          : msgs)
+        jumpToLatest()
+      })
+      .catch(() => {})
+  }, [currentThreadId, jumpToLatest])
+
+  /** 把一份简历设为当前会话使用的简历（展示在输入框上方，首轮发送时随请求携带）。 */
+  const activateResume = (resume: ActiveResume) => {
+    pendingResumeRef.current = { threadId: currentThreadId, text: resume.content }
+    setActiveResume(resume)
+  }
+
+  /** 移除当前会话的简历（不再随首轮发送携带）。 */
+  const removeActiveResume = () => {
+    pendingResumeRef.current = null
+    setActiveResume(null)
+  }
 
   const handleUpload = async (file: File) => {
+    if (uploading) return
     setUploading(true)
     try {
       const form = new FormData()
       form.append("file", file)
       const resp = await fetch("/api/resume/upload", { method: "POST", body: form })
-      const data: UploadResult = await resp.json()
-      setUploadResult(data)
-      setResumeText(data.content)
+      const data = await resp.json()
+      if (!resp.ok) {
+        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `上传失败：${data.detail || `HTTP ${resp.status}`}` }])
+        return
+      }
+      const job = await pollResumeUpload(data.job_id)
+      if (job.status === "error") {
+        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `解析失败：${job.error}` }])
+        return
+      }
+      const r = job.result
+      if (r) {
+        activateResume({
+          resume_id: r.resume_id,
+          filename: r.filename,
+          doc_type: r.doc_type,
+          char_count: r.char_count,
+          content: r.content,
+        })
+      }
     } finally {
       setUploading(false)
     }
@@ -47,145 +137,185 @@ export default function ResumePage() {
     if (file) handleUpload(file)
   }
 
-  const handleGenerate = async () => {
-    if (!resumeText.trim()) return
-    await stream.start("/resume/generate", { user_resume: resumeText, jd: jdText })
+  const send = async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed || stream.status === "streaming") return
+    const isFirst = messages.length === 0
+    const pending = pendingResumeRef.current
+    const resumeText = pending && pending.threadId === currentThreadId ? pending.text : ""
+    if (pending && pending.threadId === currentThreadId) {
+      pendingResumeRef.current = null
+      setActiveResume(null)
+    }
+    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }])
+    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
+    setInput("")
+    jumpToLatest()
+    if (isFirst) useThreadStore.getState().touchThread("resume", currentThreadId, trimmed)
+    await startStream(currentThreadId, "/resume/chat", { question: trimmed, resume_text: resumeText, thread_id: currentThreadId })
   }
 
-  const docTypeIcon = uploadResult?.doc_type === "image" ? ImageIcon : uploadResult?.doc_type === "text" ? FileText : File
+  const handleNew = () => {
+    pendingResumeRef.current = null
+    setActiveResume(null)
+    setMessages([])
+    setInput("")
+    useThreadStore.getState().registerThread("resume")
+  }
+
+  const lastIsStreaming = stream.status === "streaming"
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-16 shrink-0 items-center border-b px-6">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b px-6">
         <div>
           <h1 className="font-display text-xl font-semibold">简历优化</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">上传简历，按目标 JD 定制优化</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">上传简历，对话式定制优化 · 按目标 JD 重构</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleNew}>
+            <Plus className="mr-1 h-3.5 w-3.5" />新对话
+          </Button>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPanelOpen((v) => !v)}>
+            <FileText className="h-4 w-4 text-primary" />
+            简历管理
+          </Button>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="mx-auto max-w-3xl space-y-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">上传简历</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div
-                className={cn(
-                  "flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 transition-colors",
-                  dragOver ? "border-primary bg-primary/5" : "border-border hover:border-muted-foreground/40"
-                )}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => !uploading && fileInputRef.current?.click()}
-              >
-                {uploading ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="h-7 w-7 animate-spin text-primary" />
-                    <p className="text-sm text-muted-foreground">正在解析简历…</p>
-                  </div>
-                ) : uploadResult ? (
-                  <div className="flex items-center gap-3">
-                    {(() => {
-                      const Icon = docTypeIcon
-                      return <Icon className="h-7 w-7" style={{ color: "#D97706" }} />
-                    })()}
-                    <div>
-                      <p className="text-sm font-medium">{uploadResult.filename}</p>
-                      <p className="text-xs text-muted-foreground">{uploadResult.doc_type} · {uploadResult.char_count} 字符</p>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Upload className="mb-2 h-6 w-6 text-muted-foreground/60" />
-                    <p className="text-sm text-muted-foreground">
-                      拖拽文件到此处，或
-                      <span className="ml-1 font-medium text-primary">
-                        点击选择
-                      </span>
-                    </p>
-                    <p className="mt-1 text-[11px] text-muted-foreground/70">PNG / JPG / TXT / MD / PDF / DOCX · 最大 20MB</p>
-                  </>
-                )}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="hidden"
-                  accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.txt,.md,.markdown,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f) }}
-                />
+      <div className="relative flex-1 overflow-hidden">
+        <div className="flex h-full flex-col">
+          <div className="relative flex-1 overflow-hidden">
+            <div
+              ref={scrollRef}
+              className={cn("h-full overflow-y-auto px-6 py-6", dragOver && "bg-primary/5")}
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+            >
+              {messages.length === 0 && (
+                <EmptyState />
+              )}
+              <div className="mx-auto max-w-3xl space-y-4">
+                {messages.map((msg, i) => (
+                  <MessageBubble
+                    key={msg.id}
+                    msg={msg}
+                    isStreaming={lastIsStreaming && i === messages.length - 1 && (msg.streaming ?? false)}
+                    streamingText={stream.streamingText}
+                    thinking={stream.thinking}
+                    initializing={initializing}
+                  />
+                ))}
               </div>
+            </div>
+            <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} />
+          </div>
 
-              {uploadResult?.truncated && (
-                <p className="mt-2 text-xs text-accent">内容超过 200k 字符已截断，可能影响优化质量</p>
-              )}
-              {uploadResult && (
-                <div className="mt-2 flex gap-2">
-                  <Badge variant="outline">{uploadResult.doc_type}</Badge>
-                  <Badge variant="secondary">{uploadResult.char_count} chars</Badge>
+          <div className="shrink-0 border-t bg-card/50 px-6 py-4">
+            {activeResume && (
+              <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2">
+                <div className="flex items-center gap-2.5 rounded-lg border bg-card py-1.5 pl-3 pr-1.5 shadow-sm">
+                  <FileText className="h-4 w-4 shrink-0 text-primary" />
+                  <div className="min-w-0">
+                    <p className="max-w-[220px] truncate text-xs font-medium">{activeResume.filename}</p>
+                    <p className="text-[10px] text-muted-foreground">{activeResume.doc_type} · {activeResume.char_count} 字符</p>
+                  </div>
+                  <button
+                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    onClick={removeActiveResume}
+                    title="移除简历"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </div>
+              </div>
+            )}
+            <div className="mx-auto flex max-w-3xl items-end gap-2">
+              <MultilineInput
+                value={input}
+                onChange={setInput}
+                onSend={() => send(input)}
+                disabled={stream.status === "streaming"}
+                placeholder={activeResume ? "已添加简历，输入目标 JD 或想优化的部分…" : "上传简历，或直接输入简历内容与优化需求…"}
+              />
+              {stream.status === "streaming" ? (
+                <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
+                  <Square className="h-4 w-4" />
+                </Button>
+              ) : (
+                <Button size="icon" onClick={() => send(input)} disabled={!input.trim()} className="h-11 w-11 shrink-0">
+                  <Send className="h-4 w-4" />
+                </Button>
               )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">简历内容 <span className="text-xs font-normal text-muted-foreground">可编辑</span></CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Textarea
-                value={resumeText}
-                onChange={(e) => setResumeText(e.target.value)}
-                className="min-h-[180px] font-mono text-[13px] leading-relaxed"
-                placeholder="上传后自动填充，或直接粘贴简历文本…"
-              />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">目标 JD <span className="text-xs font-normal text-muted-foreground">可选</span></CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Textarea
-                value={jdText}
-                onChange={(e) => setJdText(e.target.value)}
-                className="min-h-[90px] text-[13px] leading-relaxed"
-                placeholder="粘贴目标岗位的 JD…"
-              />
-            </CardContent>
-          </Card>
-
-          <Button onClick={handleGenerate} disabled={stream.status === "streaming" || !resumeText.trim()} className="w-full" size="lg">
-            {stream.status === "streaming" ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />优化中</> : <><Sparkles className="mr-2 h-4 w-4" />AI 优化简历</>}
-          </Button>
-
-          {stream.status === "streaming" && (
-            <Card className="stream-fade-in">
-              <CardContent className="p-4">
-                {stream.initializing ? (
-                  <InitIndicator text="正在优化简历" />
-                ) : (
-                  <>
-                    <MarkdownContent className={cn(!stream.thinking && "typing-cursor")}>{stream.streamingText}</MarkdownContent>
-                    {stream.thinking && <ThinkingPulse />}
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          )}
-          {stream.status === "done" && stream.doneContent && (
-            <Card className="stream-fade-in">
-              <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">优化结果</CardTitle></CardHeader>
-              <CardContent><MarkdownContent>{stream.doneContent}</MarkdownContent></CardContent>
-            </Card>
-          )}
-
-          {stream.errorMsg && (
-            <Card className="border-destructive"><CardContent className="p-4 text-sm text-destructive">{stream.errorMsg}</CardContent></Card>
-          )}
+            </div>
+            <InputHint tip="上传简历后，直接描述目标 JD 或想优化的部分" />
+          </div>
         </div>
+
+        {/* 右上角简历管理抽屉 */}
+        {panelOpen && (
+          <aside className="absolute inset-y-0 right-0 z-20 w-[400px] overflow-y-auto border-l bg-background/95 p-4 shadow-2xl backdrop-blur">
+            <ResumePanel onClose={() => setPanelOpen(false)} onActive={activateResume} />
+          </aside>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EmptyState() {
+  return (
+    <div className="mx-auto mt-16 max-w-md text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+        <FileText className="h-7 w-7 text-primary" />
+      </div>
+      <h2 className="mt-4 font-display text-2xl font-semibold tracking-tight">上传简历，开始对话式优化</h2>
+      <p className="mt-3 text-sm text-muted-foreground">
+        点击右上角「简历管理」；<br />
+        随后直接在对话里描述目标 JD 或想优化的部分。
+      </p>
+    </div>
+  )
+}
+
+function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing }: {
+  msg: ChatMsg
+  isStreaming: boolean
+  streamingText: string
+  thinking: boolean
+  initializing: boolean
+}) {
+  const isUser = msg.role === "user"
+  const content = isStreaming ? streamingText : msg.content
+
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-lg rounded-br-sm bg-primary px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-primary-foreground">
+          {content}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex justify-start">
+      <div className="stream-fade-in max-w-[85%] rounded-lg rounded-bl-sm border bg-card px-4 py-3">
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: RESUME_ADVISOR.color }} />
+          <span className="text-xs font-semibold" style={{ color: RESUME_ADVISOR.color }}>{RESUME_ADVISOR.label}</span>
+        </div>
+        {isStreaming && !content && initializing ? (
+          <InitIndicator text="简历顾问正在分析" />
+        ) : (
+          <>
+            <MarkdownContent className={cn(isStreaming && content && !thinking && "typing-cursor")}>
+              {content || ""}
+            </MarkdownContent>
+            {isStreaming && content && thinking && <ThinkingPulse />}
+          </>
+        )}
       </div>
     </div>
   )

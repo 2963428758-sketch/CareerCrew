@@ -96,7 +96,10 @@ class SemanticFactStore:
                 raise ValueError(f"非法字段: {k}，允许: {sorted(ALLOWED_FIELDS)}")
         uid = user_id or self.user_id
         for k, v in fields.items():
-            if v is None:
+            if v is None or v == "" or v == []:
+                # 空值 = 显式清空该字段（删除事实，避免旧值残留）。
+                # 前端"能力画像/偏好"清空保存时传 ""/[]/null，对应删除。
+                self._db.delete_fact(uid, name=k)
                 continue
             ftype, key = ALLOWED_FIELDS[k]
             content = {key: v}
