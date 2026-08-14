@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import (
@@ -37,7 +38,11 @@ def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
 
 
 @router.post("/questions")
-def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def questions(
+    req: QuestionRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
     def gen() -> Generator[str, None, None]:
@@ -47,16 +52,18 @@ def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_
             nonlocal result
             from langchain_core.messages import HumanMessage
 
-            agent = rt.new_interviewer(cb)
+            user_id = current_user["id"]
+            episodic = rt._get_episodic(req.thread_id, user_id)
+            agent = rt.new_interviewer(cb, episodic=episodic)
             prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
             try:
                 pending_id = rt.record_user_message(
-                    req.user_id, req.thread_id, prompt, module="interview"
+                    user_id, req.thread_id, prompt, module="interview"
                 )
             except Exception:
                 pending_id = None
             state = {
-                "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
+                "thread_id": req.thread_id, "user_id": user_id, "stage": "questions",
                 "user_intent": prompt,
                 "messages": [HumanMessage(content=prompt)],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
@@ -79,7 +86,7 @@ def questions(req: QuestionRequest, rt: CareerCrewRuntime = Depends(get_runtime_
             content = result["content"] or "".join(content_parts)
             try:
                 rt.record_thread_messages(
-                    req.user_id, req.thread_id, user_text="", agent_text=content,
+                    current_user["id"], req.thread_id, user_text="", agent_text=content,
                     module="interview",
                 )
             except Exception:
@@ -103,7 +110,11 @@ def _build_chat_prompt(topic: str, messages: list[InterviewChatMessage]) -> str:
 
 
 @router.post("/chat")
-def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def chat(
+    req: InterviewChatRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
     def gen() -> Generator[str, None, None]:
@@ -113,7 +124,11 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
             nonlocal result
             from langchain_core.messages import HumanMessage
 
-            agent = rt.new_interviewer(cb, prompt_path=_CHAT_PROMPT_PATH)
+            user_id = current_user["id"]
+            episodic = rt._get_episodic(req.thread_id, user_id)
+            agent = rt.new_interviewer(
+                cb, episodic=episodic, prompt_path=_CHAT_PROMPT_PATH,
+            )
             # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
             last_user = next(
                 (m.content for m in reversed(req.messages) if m.role == "user"),
@@ -121,7 +136,7 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
             )
             try:
                 pending_id = rt.record_user_message(
-                    req.user_id, req.thread_id, last_user, module="interview"
+                    user_id, req.thread_id, last_user, module="interview"
                 )
             except Exception:
                 pending_id = None
@@ -131,7 +146,7 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                 else (req.topic or "请开始模拟面试")
             )
             state = {
-                "thread_id": req.thread_id, "user_id": req.user_id, "stage": "questions",
+                "thread_id": req.thread_id, "user_id": user_id, "stage": "questions",
                 "user_intent": "chat",
                 "messages": [HumanMessage(content=current)],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
@@ -163,7 +178,7 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
                     (m.content for m in reversed(req.messages) if m.role == "user"), req.topic
                 )
                 rt.record_thread_messages(
-                    req.user_id, req.thread_id, user_text="", agent_text=content,
+                    current_user["id"], req.thread_id, user_text="", agent_text=content,
                     module="interview",
                 )
             except Exception:
@@ -178,14 +193,22 @@ def chat(req: InterviewChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_
 
 
 @router.post("/score", response_model=ScoreResponse)
-def score(req: ScoreRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> ScoreResponse:
+def score(
+    req: ScoreRequest,
+    _current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> ScoreResponse:
     """LLM 评分 -> {score, feedback}。"""
     result = rt.score_answer(req.question, req.answer, max_score=req.max_score)
     return ScoreResponse(score=result["score"], feedback=result["feedback"])
 
 
 @router.post("/record", response_model=RecordResponse)
-def record(req: RecordRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> RecordResponse:
+def record(
+    req: RecordRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> RecordResponse:
     """写 interview_qa 到情景记忆。"""
-    saved = rt.record_interview_qa(req.entries)
+    saved = rt.record_interview_qa(current_user["id"], req.thread_id, req.entries)
     return RecordResponse(saved=saved)

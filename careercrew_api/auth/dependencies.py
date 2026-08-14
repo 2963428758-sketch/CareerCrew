@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, TypeAlias
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -37,3 +37,7 @@ def require_admin(
     if user["role"] != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="administrator required")
     return user
+
+
+CurrentUser: TypeAlias = Annotated[dict[str, str], Depends(get_current_user)]
+AdminUser: TypeAlias = Annotated[dict[str, str], Depends(require_admin)]

@@ -6,6 +6,7 @@ agent 按需调（ReAct 主 LLM 保持 tool-calling 文本模型）。vision_cal
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from pathlib import Path
 
 from langchain_core.tools import BaseTool, tool
@@ -14,7 +15,12 @@ from langchain_core.tools import BaseTool, tool
 DEFAULT_VISION_MODEL = "GLM-4.5V"
 
 
-def make_read_image_tool(settings, vision_caller=None, model: str | None = None) -> BaseTool:
+def make_read_image_tool(
+    settings,
+    vision_caller=None,
+    model: str | None = None,
+    path_authorizer: Callable[[str], bool] | None = None,
+) -> BaseTool:
     """构造 read_image 工具。vision_caller(image_b64, prompt) -> str。"""
     resolved_model = (
         model
@@ -50,6 +56,8 @@ def make_read_image_tool(settings, vision_caller=None, model: str | None = None)
             prompt: 读取指令（默认描述 + 提取文字）。
         """
         p = Path(image_path)
+        if path_authorizer is not None and not path_authorizer(str(p.resolve())):
+            return "[error] 图片不存在或无权访问"
         if not p.exists():
             return f"[error] 图片不存在: {image_path}"
         try:

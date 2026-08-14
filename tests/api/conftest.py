@@ -40,6 +40,10 @@ class FakeRuntime:
                 "page": None,
             }
         ]
+        self.last_call: dict = {}
+        self.knowledge_output_by_user: dict[str, str] = {}
+        self.knowledge_sources_by_user: dict[str, list[dict]] = {}
+        self.knowledge_asset_owners: dict[str, str] = {}
         self.match_chunks: list[str] = []
         self.resume_chunks: list[str] = []
         self.upload_content = "解析出的简历文本内容"
@@ -48,6 +52,9 @@ class FakeRuntime:
         self.knowledge_docs: list[dict] = [
             {"doc": "note", "source": "data/uploads/note.md", "points": 3}
         ]
+        self.knowledge_docs_by_user: dict[str, list[dict]] = {
+            "u_001": self.knowledge_docs,
+        }
         from careercrew_core.memory.db import FakeMemoryDb
         from careercrew_core.memory.injection import MemoryInjector
         from careercrew_core.memory.policy import MemoryPolicyStore
@@ -58,7 +65,7 @@ class FakeRuntime:
         self.memory_db = FakeMemoryDb()
         self.fact_store = SemanticFactStore(self.memory_db, user_id="u_001")
         self.policy_store = MemoryPolicyStore(self.memory_db)
-        self.thread_store = ThreadStore(self.memory_db, user_id="u_001")
+        self.thread_store = ThreadStore(self.memory_db)
         self.memory_router = MemoryRouter()
         self.memory_injector = MemoryInjector(
             db=self.memory_db, policy_store=self.policy_store,
@@ -101,6 +108,10 @@ class FakeRuntime:
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None) -> str:
+        self.last_call = {
+            "method": "run_match_stream", "thread_id": thread_id,
+            "user_id": user_id, "intent": intent,
+        }
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -126,11 +137,13 @@ class FakeRuntime:
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "") -> str:
+        output = self.knowledge_output_by_user.get(user_id, self.knowledge_output)
+        sources = self.knowledge_sources_by_user.get(user_id, self.knowledge_sources)
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
-            cb(self.knowledge_output)
-        return {"content": self.knowledge_output, "sources": self.knowledge_sources}
+            cb(output)
+        return {"content": output, "sources": sources}
 
     def record_thread_messages(self, user_id: str, thread_id: str,
                                user_text: str, agent_text: str,
@@ -218,7 +231,7 @@ class FakeRuntime:
         return None  # FakeRuntime 不需要真实 episodic
 
     def get_threads(self, user_id: str = "u_001", module: str | None = None) -> list[dict]:
-        rows = self.thread_store.list(module=module)
+        rows = self.thread_store.list(user_id, module=module)
         return [
             {
                 "thread_id": r["thread_id"],
@@ -234,27 +247,35 @@ class FakeRuntime:
 
     def register_thread(self, thread_id: str, user_id: str = "u_001",
                         module: str = "chat", title: str = "") -> dict:
-        return self.thread_store.upsert(thread_id, title=title, module=module)
+        return self.thread_store.upsert(user_id, thread_id, title=title, module=module)
 
     def touch_thread(self, thread_id: str, user_id: str = "u_001", title: str | None = None,
                      pinned: bool | None = None, module: str | None = None) -> dict:
-        row = self.thread_store.get(thread_id) or {
-            "title": "", "pinned": False, "module": "chat",
-        }
+        from careercrew_api.runtime import ResourceNotFoundError
+
+        row = self.thread_store.get(user_id, thread_id)
+        if row is None:
+            raise ResourceNotFoundError(f"thread not found: {thread_id}")
         return self.thread_store.upsert(
-            thread_id,
+            user_id, thread_id,
             title=title if title is not None else row.get("title", ""),
             module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
         )
 
     def delete_thread(self, thread_id: str, user_id: str = "u_001") -> dict:
-        n = self.thread_store.delete_all_for_thread(thread_id)
+        from careercrew_api.runtime import ResourceNotFoundError
+
+        if self.thread_store.get(user_id, thread_id) is None:
+            raise ResourceNotFoundError(f"thread not found: {thread_id}")
+        n = self.thread_store.delete_all_for_thread(user_id, thread_id)
         return {"deleted": n > 0, "thread_id": thread_id, "removed": n}
 
     def memory_list(self, user_id: str = "u_001", thread_id: str | None = None,
                     type: str = "") -> list[dict]:
-        facts = [f.model_dump() for f in self.fact_store.list_facts()]
+        from careercrew_core.memory.semantic import SemanticFactStore
+
+        facts = [f.model_dump() for f in SemanticFactStore(self.memory_db, user_id).list_facts()]
         rows = self.memory_db.list_episodic(user_id, thread_id=thread_id, type=type or None)
         merged = [{
             "kind": "fact", "id": f["name"], "type": f["type"], "ts": f["modified_at"],
@@ -282,7 +303,9 @@ class FakeRuntime:
                       thread_id: str | None = None, type: str = "") -> int:
         removed = 0
         if kind in ("", "fact") and name:
-            removed += self.fact_store.delete_fact(name)
+            from careercrew_core.memory.semantic import SemanticFactStore
+
+            removed += SemanticFactStore(self.memory_db, user_id).delete_fact(name)
         if kind in ("", "event"):
             removed += self.memory_db.delete_episodic(
                 user_id, entry_id=entry_id, thread_id=thread_id, type=type or None
@@ -350,7 +373,7 @@ class FakeRuntime:
     def score_answer(self, question: str, answer: str, max_score: int = 10) -> dict:
         return self.score_result
 
-    def record_interview_qa(self, entries: list[dict]) -> int:
+    def record_interview_qa(self, user_id: str, thread_id: str, entries: list[dict]) -> int:
         return len(entries)
 
     def read_image(self, path: str) -> str:
@@ -366,6 +389,7 @@ class FakeRuntime:
     def ingest_document(
         self,
         path: str,
+        user_id: str,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
@@ -377,13 +401,30 @@ class FakeRuntime:
         if progress_cb:
             progress_cb("vectorize", 0.6)
             progress_cb("store", 0.95)
-        return {"doc_id": Path(path).stem, "points": 2, "path": path}
+        doc_id = Path(path).stem
+        self.knowledge_docs_by_user.setdefault(user_id, []).append({
+            "doc": doc_id, "source": path, "points": 2,
+        })
+        return {"doc_id": doc_id, "points": 2, "path": path}
 
-    def delete_document(self, doc_id: str) -> int:
-        return 3
+    def delete_document(self, user_id: str, doc_id: str) -> int:
+        docs = self.knowledge_docs_by_user.setdefault(user_id, [])
+        matched = [doc for doc in docs if doc.get("doc") == doc_id]
+        if not matched:
+            return 0
+        self.knowledge_docs_by_user[user_id] = [
+            doc for doc in docs if doc.get("doc") != doc_id
+        ]
+        return sum(int(doc.get("points", 0)) for doc in matched)
 
-    def knowledge_status(self) -> dict:
-        return {"points": sum(d["points"] for d in self.knowledge_docs), "docs": self.knowledge_docs}
+    def knowledge_status(self, user_id: str) -> dict:
+        docs = self.knowledge_docs_by_user.get(user_id, [])
+        return {"points": sum(d["points"] for d in docs), "docs": docs}
+
+    def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
+        if not self.knowledge_asset_owners:
+            return user_id == "u_001"
+        return self.knowledge_asset_owners.get(path) == user_id
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):
@@ -404,9 +445,13 @@ def client(fake_runtime: FakeRuntime):
     """TestClient with FakeRuntime injected via dependency_overrides."""
     from fastapi.testclient import TestClient
 
+    from careercrew_api.auth.dependencies import get_current_user
     from careercrew_api.deps import get_runtime_dep
     from careercrew_api.main import create_app
 
     app = create_app()
     app.dependency_overrides[get_runtime_dep] = lambda: fake_runtime
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "u_001", "username": "test-admin", "role": "admin",
+    }
     return TestClient(app)

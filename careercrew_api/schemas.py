@@ -49,13 +49,11 @@ class TokenResponse(BaseModel):
 class MatchRequest(BaseModel):
     intent: str
     thread_id: str = "m1"
-    user_id: str = "u_001"
 
 
 class ResumeRequest(BaseModel):
     jd_text: str
     thread_id: str = "m1"
-    user_id: str = "u_001"
 
 
 # ── Interview ──
@@ -64,7 +62,6 @@ class ResumeRequest(BaseModel):
 class QuestionRequest(BaseModel):
     topic: str = ""
     thread_id: str = "interview"
-    user_id: str = "u_001"
 
 
 class InterviewChatMessage(BaseModel):
@@ -76,7 +73,6 @@ class InterviewChatRequest(BaseModel):
     topic: str = ""
     messages: list[InterviewChatMessage] = []
     thread_id: str = "interview"
-    user_id: str = "u_001"
 
 
 class ScoreRequest(BaseModel):
@@ -92,6 +88,7 @@ class ScoreResponse(BaseModel):
 
 class RecordRequest(BaseModel):
     entries: list[dict]
+    thread_id: str = "interview"
 
 
 class RecordResponse(BaseModel):
@@ -105,7 +102,6 @@ class GenerateRequest(BaseModel):
     user_resume: str
     jd: str = ""
     thread_id: str = "m1"
-    user_id: str = "u_001"
 
 
 class ResumeChatRequest(BaseModel):
@@ -116,7 +112,6 @@ class ResumeChatRequest(BaseModel):
     resume_text: str = ""
     jd: str = ""
     thread_id: str = "m1"
-    user_id: str = "u_001"
 
 
 # ── Consult（会诊）──
@@ -127,7 +122,6 @@ class ConsultRequest(BaseModel):
     # 会诊已改为总调度官自动编排；该字段仅为向后兼容保留，后端会忽略它。
     agents: list[str] = Field(default_factory=list)
     thread_id: str = "consult"
-    user_id: str = "u_001"
     # 前端"资料填写框"提交的结构化用户画像（current_position / experience_years /
     # skills / target_direction / city / salary / target_companies），后端并入会诊上下文。
     profile: dict[str, str] = Field(default_factory=dict)
@@ -139,5 +133,4 @@ class ConsultRequest(BaseModel):
 class KnowledgeAskRequest(BaseModel):
     question: str = Field(min_length=1)
     thread_id: str = "knowledge"
-    user_id: str = "u_001"
     category: str = ""  # resume / knowledge / interview，空串=全部

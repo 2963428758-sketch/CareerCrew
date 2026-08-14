@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from careercrew_core.state.checkpointer import get_checkpointer
+from careercrew_core.state.checkpointer import get_checkpointer, tenant_checkpoint_config
 from careercrew_core.state.settings import Settings
 from careercrew_core.state.thread_state import STAGES, CareerCrewState
 
@@ -71,7 +71,7 @@ def test_checkpointer_persists_state_across_invokes(tmp_path: Path, valid_config
     g.add_edge("echo", END)
     app = g.compile(checkpointer=cp)
 
-    cfg = {"configurable": {"thread_id": "t1"}}
+    cfg = tenant_checkpoint_config("u1", "t1")
     init = {
         "thread_id": "t1", "user_id": "u1", "stage": "intent", "user_intent": "",
         "messages": [{"role": "user", "content": "hi"}],

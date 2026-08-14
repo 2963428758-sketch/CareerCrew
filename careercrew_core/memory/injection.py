@@ -104,9 +104,12 @@ class MemoryInjector:
                     ep_lines.append(f"- [{e.type}] {e.content}")
             except Exception:
                 pass
-        elif self._episodic is not None:
-            for e in self._episodic.list(limit=top_episodes):
-                ep_lines.append(f"- [{e.type}] {e.content}")
+        elif self._db is not None:
+            # Never fall back to the constructor's legacy u_001 EpisodicMemory:
+            # injection is user-scoped even when no vector index is configured.
+            rows = self._db.list_episodic(user_id, limit=top_episodes)
+            for row in rows:
+                ep_lines.append(f"- [{row['type']}] {row.get('content', '')}")
         if ep_lines:
             ep_text = "[相关历史]\n" + "\n".join(ep_lines)
             if _estimate_tokens(ep_text) <= budget:

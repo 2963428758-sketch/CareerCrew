@@ -76,6 +76,10 @@ class RuntimeInitError(RuntimeError):
     """运行时初始化失败（重组件加载 / 向量库连接失败等），应映射为 503。"""
 
 
+class ResourceNotFoundError(LookupError):
+    """Authenticated tenant does not own the requested resource."""
+
+
 class CareerCrewRuntime:
     """进程级重组件单例 + 会话级 agent/JobCycle 工厂。"""
 
@@ -85,7 +89,7 @@ class CareerCrewRuntime:
         self._encode_lock = threading.Lock()
         self._um_locks: dict[str, threading.Lock] = {}
         self._um_locks_guard = threading.Lock()
-        self._cycles: OrderedDict[str, "JobCycle"] = OrderedDict()
+        self._cycles: OrderedDict[tuple[str, str], "JobCycle"] = OrderedDict()
         self._cycles_lock = threading.Lock()
         self._max_cycles = 32
 
@@ -179,7 +183,7 @@ class CareerCrewRuntime:
                 )
                 for f in ingest_files:
                     try:
-                        pipe.ingest_file(f)
+                        pipe.ingest_file(f, metadata={"user_id": "u_001"})
                     except Exception as e:
                         print(f"[runtime] ingest 跳过 {f}: {e}")
 
@@ -187,7 +191,7 @@ class CareerCrewRuntime:
             episodic = EpisodicMemory(memory_db, user_id="u_001", thread_id="m1")
             fact_store = SemanticFactStore(memory_db, user_id="u_001")
             policy_store = MemoryPolicyStore(memory_db)
-            thread_store = ThreadStore(memory_db, user_id="u_001")
+            thread_store = ThreadStore(memory_db)
             memory_router = MemoryRouter(
                 llm=llm, top_n=settings.memory.router.top_n
             )
@@ -216,22 +220,22 @@ class CareerCrewRuntime:
 
     # ── 会话级 JobCycle（LRU 缓存）──
 
-    def _get_episodic(self, thread_id: str, user_id: str = "u_001"):
+    def _get_episodic(self, thread_id: str, user_id: str):
         """获取 per-thread 情景记忆（统一 Postgres/Fake 后端，行按 user_id 隔离）。"""
         from careercrew_core.memory.episodic import EpisodicMemory
 
         return EpisodicMemory(self.memory_db, user_id=user_id, thread_id=thread_id)
 
-    def _ensure_thread(self, thread_id: str, user_id: str = "u_001", module: str = "chat",
+    def _ensure_thread(self, thread_id: str, user_id: str, module: str = "chat",
                        title: str = "") -> None:
         """确保线程元数据存在（首次使用时登记，供侧边栏列表）。"""
         self._ensure_heavy()
         ts = self.thread_store
-        existing = ts.get(thread_id)
+        existing = ts.get(user_id, thread_id)
         if existing is None:
-            ts.upsert(thread_id, title=title[:50], module=module)
+            ts.upsert(user_id, thread_id, title=title[:50], module=module)
         elif title and not existing.get("title"):
-            ts.upsert(thread_id, title=title[:50], module=module,
+            ts.upsert(user_id, thread_id, title=title[:50], module=module,
                       pinned=bool(existing.get("pinned")))
 
     def record_thread_messages(
@@ -300,44 +304,47 @@ class CareerCrewRuntime:
         ))
         return entry.id
 
-    def get_threads(self, user_id: str = "u_001", module: str | None = None) -> list[dict]:
+    def get_threads(self, user_id: str, module: str | None = None) -> list[dict]:
         """列出用户的所有对话线程（Postgres threads 表，按置顶+更新时间排序）。"""
         self._ensure_heavy()
-        return self.thread_store.list(module=module)
+        return self.thread_store.list(user_id, module=module)
 
-    def register_thread(self, thread_id: str, user_id: str = "u_001",
+    def register_thread(self, thread_id: str, user_id: str,
                         module: str = "chat", title: str = "") -> dict:
         """登记线程（前端新会话时调用）。"""
         self._ensure_heavy()
-        return self.thread_store.upsert(thread_id, title=title, module=module)
+        return self.thread_store.upsert(user_id, thread_id, title=title, module=module)
 
-    def touch_thread(self, thread_id: str, user_id: str = "u_001", title: str | None = None,
+    def touch_thread(self, thread_id: str, user_id: str, title: str | None = None,
                      pinned: bool | None = None, module: str | None = None) -> dict:
         """更新线程标题/置顶（PATCH）。"""
         self._ensure_heavy()
-        row = self.thread_store.get(thread_id) or {
-            "title": "", "pinned": False, "module": "chat",
-        }
+        row = self.thread_store.get(user_id, thread_id)
+        if row is None:
+            raise ResourceNotFoundError(f"thread not found: {thread_id}")
         return self.thread_store.upsert(
-            thread_id,
+            user_id, thread_id,
             title=title if title is not None else row.get("title", ""),
             module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
         )
 
-    def delete_thread(self, thread_id: str, user_id: str = "u_001") -> dict:
+    def delete_thread(self, thread_id: str, user_id: str) -> dict:
         """删除线程：情景事件 + 线程元数据。"""
         self._ensure_heavy()
-        n = self.thread_store.delete_all_for_thread(thread_id)
+        if self.thread_store.get(user_id, thread_id) is None:
+            raise ResourceNotFoundError(f"thread not found: {thread_id}")
+        n = self.thread_store.delete_all_for_thread(user_id, thread_id)
         return {"deleted": n > 0, "thread_id": thread_id, "removed": n}
 
-    def get_cycle(self, thread_id: str, user_id: str = "u_001") -> "JobCycle":
+    def get_cycle(self, thread_id: str, user_id: str) -> "JobCycle":
         """按 thread_id 取/建 JobCycle（承接 match->resume 跨步骤历史与画像 preamble）。"""
         self._ensure_heavy()
+        key = (user_id, thread_id)
         with self._cycles_lock:
-            if thread_id in self._cycles:
-                self._cycles.move_to_end(thread_id)
-                return self._cycles[thread_id]
+            if key in self._cycles:
+                self._cycles.move_to_end(key)
+                return self._cycles[key]
             from careercrew_core.workflow.job_cycle import JobCycle
 
             ep = self._get_episodic(thread_id, user_id)
@@ -346,8 +353,9 @@ class CareerCrewRuntime:
             cycle = JobCycle(
                 jm, ra, user_model_store=self.fact_store,
                 user_id=user_id, streaming=True, history_loader=self._history_loader,
+                thread_id=thread_id,
             )
-            self._cycles[thread_id] = cycle
+            self._cycles[key] = cycle
             if len(self._cycles) > self._max_cycles:
                 self._cycles.popitem(last=False)  # 逐出最旧
             return cycle
@@ -454,7 +462,8 @@ class CareerCrewRuntime:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
         from langchain_core.messages import HumanMessage
 
-        agent = self.new_career_planner(cb)
+        ep = self._get_episodic(thread_id, user_id)
+        agent = self.new_career_planner(cb, episodic=ep)
         try:
             # 先落库用户消息：长工具链（搜岗位/查薪资）中断也不丢问题
             pending_id = self.record_user_message(
@@ -527,7 +536,10 @@ class CareerCrewRuntime:
                 "category": str(r.metadata.get("category", "")),
             })
 
-        agent = self.new_knowledge_advisor(cb, rag_sink=_sink, category=category)
+        ep = self._get_episodic(thread_id, user_id)
+        agent = self.new_knowledge_advisor(
+            cb, episodic=ep, rag_sink=_sink, category=category,
+        )
         try:
             # 先落库用户消息：知识库 agentic 检索 + VLM 读图可能耗时很长，
             # 运行中途被切换/刷新/重启时问题必须仍在
@@ -652,7 +664,7 @@ class CareerCrewRuntime:
             return []
 
     def _make_tools(self, kind: str, episodic=None, rag_sink=None, rag_category=None):
-        """构造 agent 工具集。episodic 为 None 时用默认单例。"""
+        """构造 agent 工具集；必须显式携带认证用户的 episodic 上下文。"""
         from careercrew_core.memory.semantic import SemanticFactStore
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
         from careercrew_core.tools.internal.memory_search import make_memory_search_tool
@@ -663,14 +675,17 @@ class CareerCrewRuntime:
         from careercrew_core.tools.internal.search_jobs import search_jobs
         from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
-        ep = episodic or self.episodic
+        if episodic is None:
+            raise ValueError("episodic context is required for tenant-scoped agent tools")
+        ep = episodic
         hs = self.multimodal_search
-        user_id = getattr(ep, "user_id", "u_001")
+        user_id = ep.user_id
         vi = self._make_vector_index(ep, user_id)
+        user_facts = SemanticFactStore(self.memory_db, user_id)
         tools = ToolRegistry()
         mem_search = make_memory_search_tool(
             vector_index=vi,
-            fact_store=self.fact_store,
+            fact_store=user_facts,
             router=self.memory_router,
         )
         from careercrew_core.rag.categories import categories_for_agent
@@ -679,23 +694,31 @@ class CareerCrewRuntime:
         cats = categories_for_agent(kind)
         if kind == "matcher":
             tools.register(ToolSpec(tool=search_jobs))
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, categories=cats, filters={"user_id": user_id},
+            )))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="job_matcher")))
         elif kind == "resume":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, categories=cats, filters={"user_id": user_id},
+            )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="resume_advisor")))
         elif kind == "interviewer":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, categories=cats, filters={"user_id": user_id},
+            )))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
         elif kind == "salary":
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, categories=cats, filters={"user_id": user_id},
+            )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source=kind)))
@@ -703,7 +726,9 @@ class CareerCrewRuntime:
             tools.register(ToolSpec(tool=make_salary_query_tool()))
         elif kind == "planner":
             # 职业规划师：求职对话页的主理 agent，职责聚焦求职规划
-            tools.register(ToolSpec(tool=make_rag_query_tool(hs, categories=cats)))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, categories=cats, filters={"user_id": user_id},
+            )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="career_planner")))
@@ -712,9 +737,13 @@ class CareerCrewRuntime:
         elif kind == "knowledge":
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, sink=rag_sink, categories=rag_category or None,
+                filters={"user_id": user_id},
             )))
             # 个人背景问题（学校/专业/教育等）常藏在简历页图里，允许顾问按需读图
-            tools.register(ToolSpec(tool=make_read_image_tool(self.settings)))
+            tools.register(ToolSpec(tool=make_read_image_tool(
+                self.settings,
+                path_authorizer=lambda path: self.knowledge_asset_owned(user_id, path),
+            )))
             # "我有哪些项目/技能/目标公司" 等个人记忆问题：允许查语义事实 + 情景事件
             tools.register(ToolSpec(tool=mem_search))
         return tools
@@ -831,16 +860,17 @@ class CareerCrewRuntime:
 
         return score_answer(question, answer, self.llm, max_score=max_score)
 
-    def record_interview_qa(self, entries: list[dict]) -> int:
+    def record_interview_qa(self, user_id: str, thread_id: str, entries: list[dict]) -> int:
         self._ensure_heavy()
         from careercrew_core.agents.interviewer import record_interview_qa
 
-        vi = self._make_vector_index(self.episodic, user_id=self.episodic.user_id)
-        return record_interview_qa(self.episodic, entries, vector_index=vi)
+        episodic = self._get_episodic(thread_id, user_id)
+        vi = self._make_vector_index(episodic, user_id=user_id)
+        return record_interview_qa(episodic, entries, vector_index=vi)
 
     # ── 记忆管理 API（数据看板 / 治理） ──
 
-    def memory_list(self, user_id: str = "u_001", thread_id: str | None = None,
+    def memory_list(self, user_id: str, thread_id: str | None = None,
                     type: str = "") -> list[dict]:
         """列出语义事实 + 情景事件（可过滤）。"""
         self._ensure_heavy()
@@ -879,7 +909,7 @@ class CareerCrewRuntime:
         merged.sort(key=lambda x: x.get("ts", ""))
         return merged
 
-    def memory_delete(self, user_id: str = "u_001", kind: str = "",
+    def memory_delete(self, user_id: str, kind: str = "",
                       name: str | None = None, entry_id: str | None = None,
                       thread_id: str | None = None, type: str = "") -> int:
         """删除语义事实（kind=fact / name）或情景事件（kind=event / entry_id）。"""
@@ -898,7 +928,7 @@ class CareerCrewRuntime:
             )
         return removed
 
-    def memory_policy_get(self, user_id: str = "u_001") -> dict:
+    def memory_policy_get(self, user_id: str) -> dict:
         self._ensure_heavy()
         g = self.policy_store.global_policy()
         u = self.policy_store.user_policy(user_id)
@@ -909,7 +939,7 @@ class CareerCrewRuntime:
             "effective": eff.model_dump(),
         }
 
-    def memory_policy_set(self, user_id: str = "u_001", enabled: bool | None = None,
+    def memory_policy_set(self, user_id: str, enabled: bool | None = None,
                           generate: bool | None = None, use: bool | None = None) -> dict:
         self._ensure_heavy()
         self.policy_store.set_user(user_id, enabled=enabled, generate=generate, use=use)
@@ -938,7 +968,7 @@ class CareerCrewRuntime:
         )
         return self.memory_settings_get()
 
-    def memory_consolidate(self, user_id: str = "u_001", force: bool = False) -> dict:
+    def memory_consolidate(self, user_id: str, force: bool = False) -> dict:
         """触发后台 consolidation（同步执行，供测试/手动触发）。"""
         self._ensure_heavy()
         from careercrew_core.memory.consolidation import Consolidator
@@ -988,6 +1018,7 @@ class CareerCrewRuntime:
     def ingest_document(
         self,
         path: str,
+        user_id: str,
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
@@ -1006,20 +1037,28 @@ class CareerCrewRuntime:
             from careercrew_core.rag.categories import category_for_doc
 
             category = category_for_doc(p.stem)
+        owner_metadata = {**(metadata or {}), "user_id": user_id}
         n = self.ingest_pipeline.ingest_file(
-            p, metadata=metadata, progress_cb=progress_cb, category=category,
+            p, metadata=owner_metadata, progress_cb=progress_cb, category=category,
         )
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
-    def delete_document(self, doc_id: str) -> int:
+    def delete_document(self, user_id: str, doc_id: str) -> int:
         """按 doc_id 删除知识库文档的全部向量点。"""
         self._ensure_heavy()
-        return self.store.delete_by_metadata({"doc": doc_id})
+        return self.store.delete_by_metadata({"user_id": user_id, "doc": doc_id})
 
-    def knowledge_status(self) -> dict:
+    def knowledge_status(self, user_id: str) -> dict:
         """知识库状态：总点数 + 文档列表。"""
         self._ensure_heavy()
-        return {"points": self.store.count(), "docs": self.store.list_docs()}
+        docs = self.store.list_docs(filters={"user_id": user_id})
+        return {"points": sum(int(doc.get("points", 0)) for doc in docs), "docs": docs}
+
+    def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
+        """Verify an image source is referenced by this tenant's vector payload."""
+        self._ensure_heavy()
+        resolved = str(Path(path).resolve())
+        return bool(self.store.metadata_exists({"user_id": user_id, "image_path": resolved}))
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):
@@ -1036,7 +1075,10 @@ class CareerCrewRuntime:
         opinions: dict[str, str] = {}
 
         def _run_one(name: str) -> str:
-            agent = self.new_consult_agent(name)  # 每 agent 独立实例，无跨会话竞态
+            episodic = self._get_episodic("consult", user_id)
+            agent = self.new_consult_agent(
+                name, episodic=episodic,
+            )  # 每 agent 独立实例，无跨会话竞态
             state = {
                 "thread_id": "consult", "user_id": user_id, "stage": "review",
                 "user_intent": question,

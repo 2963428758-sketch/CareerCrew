@@ -11,7 +11,7 @@ LangGraph thread 级短期状态持久化：进程重启可恢复。生产默认
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from careercrew_core.state.settings import Settings
 
@@ -19,6 +19,27 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
 _VALID_CHECKPOINT_BACKENDS = {"postgres", "sqlite", "memory"}
+
+
+def tenant_thread_id(user_id: str, thread_id: str) -> str:
+    """Return a collision-safe internal checkpoint id without changing public ids."""
+    if not user_id or not thread_id:
+        raise ValueError("user_id and thread_id are required for checkpoint isolation")
+    # Length-prefixing is reversible and cannot collide even when public ids contain separators.
+    return f"tenant:{len(user_id)}:{user_id}{thread_id}"
+
+
+def tenant_checkpoint_config(
+    user_id: str,
+    thread_id: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy a LangGraph config and bind its internal thread id to the auth principal."""
+    out = dict(config or {})
+    configurable = dict(out.get("configurable") or {})
+    configurable["thread_id"] = tenant_thread_id(user_id, thread_id)
+    out["configurable"] = configurable
+    return out
 
 
 def get_checkpointer(settings: Settings) -> "BaseCheckpointSaver":

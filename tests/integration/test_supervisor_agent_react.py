@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
 from careercrew_core.agents.base_agent import BaseAgent
-from careercrew_core.state.checkpointer import get_checkpointer
+from careercrew_core.state.checkpointer import get_checkpointer, tenant_checkpoint_config
 from careercrew_core.state.settings import Settings
 from careercrew_core.supervisor.graph import build_graph
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
@@ -58,7 +58,7 @@ def test_supervisor_agent_react_integration(tmp_path: Path, valid_config_data: d
         "messages": [HumanMessage(content="开始规划")],
         "pending_action": None, "agent_outputs": {}, "target_companies": [],
     }
-    result = app.invoke(init, config={"configurable": {"thread_id": "t1"}})
+    result = app.invoke(init, config=tenant_checkpoint_config("u1", "t1"))
 
     # stage 推到 apply（终止）
     assert result["stage"] == "apply"
