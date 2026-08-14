@@ -76,6 +76,40 @@ def test_qdrant_physical_ids_do_not_collide_for_same_tenant_local_id(
     assert not store.metadata_exists({"user_id": "u_bob", "image_path": "F:/alice.png"})
 
 
+def test_qdrant_legacy_id_domain_cannot_construct_tenant_id_collision(
+    valid_config_data: dict,
+) -> None:
+    owner = "u_alice"
+    logical_id = "e_001"
+    former_colliding_legacy_id = f"{len(owner)}:{owner}{logical_id}"
+
+    assert QdrantStore._to_qid(logical_id, owner) == "46157ef9-05d2-57d0-baf9-bf8db2ff2a80"
+    assert QdrantStore._to_qid(former_colliding_legacy_id) != QdrantStore._to_qid(
+        logical_id, owner,
+    )
+
+    settings = Settings.model_validate(valid_config_data)
+    store = QdrantStore(settings, collection_name="legacy-tenant-id-domain-separation")
+    store.upsert([
+        VectorRecord(
+            id=former_colliding_legacy_id,
+            dense=[1.0] * 1024,
+            text="Legacy record",
+            metadata={"type": "note"},
+        ),
+        VectorRecord(
+            id=logical_id,
+            dense=[1.0] * 1024,
+            text="Tenant record",
+            metadata={"user_id": owner, "type": "note"},
+        ),
+    ])
+
+    assert store.count() == 2
+    assert store.get_by_ids([former_colliding_legacy_id])[0].text == "Legacy record"
+    assert store.get_by_ids([logical_id], filters={"user_id": owner})[0].text == "Tenant record"
+
+
 class _CounterState(TypedDict):
     count: int
 

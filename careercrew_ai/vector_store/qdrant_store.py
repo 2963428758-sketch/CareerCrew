@@ -22,7 +22,12 @@ from careercrew_ai.vector_store.base_vector_store import BaseVectorStore, QueryR
 if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
 
-_QID_NS = uuid.UUID("8b1e2f3a-4c5d-4e6f-8a9b-0c1d2e3f4a5b")
+# Keep the tenant namespace stable: existing owner-scoped points must not be
+# silently re-keyed.  Legacy/no-owner IDs use a separate UUIDv5 namespace so a
+# legacy logical ID can never reproduce the same namespace/name input pair as
+# an owner-scoped point (the old single-namespace encoding allowed that).
+_QID_TENANT_NS = uuid.UUID("8b1e2f3a-4c5d-4e6f-8a9b-0c1d2e3f4a5b")
+_QID_LEGACY_NS = uuid.UUID("bb7bb0e5-b634-4da0-8b97-6004cc3b01bd")
 _RRF_K = 60
 _PAYLOAD_RESERVED = {"text", "_id"}
 
@@ -85,8 +90,10 @@ class QdrantStore(BaseVectorStore):
     def _to_qid(sid: str, user_id: str = "") -> str:
         # Qdrant's physical key must include the tenant while payload._id remains
         # the original domain id (for example e_001) used by EpisodicMemory.
-        key = sid if not user_id else f"{len(user_id)}:{user_id}{sid}"
-        return str(uuid.uuid5(_QID_NS, key))
+        if not user_id:
+            return str(uuid.uuid5(_QID_LEGACY_NS, sid))
+        key = f"{len(user_id)}:{user_id}{sid}"
+        return str(uuid.uuid5(_QID_TENANT_NS, key))
 
     @staticmethod
     def _to_list(v: Any) -> list[float]:

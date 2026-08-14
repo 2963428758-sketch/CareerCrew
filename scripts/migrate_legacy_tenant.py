@@ -25,9 +25,11 @@ import shutil
 import sqlite3
 import sys
 from typing import Iterable
+import uuid
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_USER_ID = "u_001"
+_CHECKPOINT_MIGRATION_TABLE = "careercrew_tenant_thread_migrations"
 
 
 @dataclass
@@ -66,6 +68,60 @@ def _checkpoint_tables(conn: sqlite3.Connection) -> list[str]:
     return tables
 
 
+def _backup_checkpoint_sqlite(
+    conn: sqlite3.Connection,
+    db_path: Path,
+) -> Path:
+    """Create a fresh transactionally consistent snapshot, including WAL data."""
+    backup = db_path.with_name(
+        f"{db_path.name}.pre-tenant-migration-{uuid.uuid4().hex}.bak"
+    )
+    with sqlite3.connect(backup) as destination:
+        conn.backup(destination)
+    return backup
+
+
+def _checkpoint_completed_destinations(
+    conn: sqlite3.Connection,
+    target_user_id: str,
+    present_ids: set[str],
+) -> set[str]:
+    """Return destinations proven by the migration journal and current DB state."""
+    from careercrew_core.state.checkpointer import tenant_thread_id
+
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (_CHECKPOINT_MIGRATION_TABLE,),
+    ).fetchone()
+    if exists is None:
+        return set()
+    rows = conn.execute(
+        f'SELECT source_thread_id, destination_thread_id FROM "{_CHECKPOINT_MIGRATION_TABLE}" '
+        "WHERE target_user_id=?",
+        (target_user_id,),
+    ).fetchall()
+    completed: set[str] = set()
+    for source_id, destination_id in rows:
+        source = str(source_id)
+        destination = str(destination_id)
+        if destination != tenant_thread_id(target_user_id, source):
+            continue
+        if destination in present_ids:
+            completed.add(destination)
+    return completed
+
+
+def _ensure_checkpoint_migration_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f'CREATE TABLE IF NOT EXISTS "{_CHECKPOINT_MIGRATION_TABLE}" ('
+        "target_user_id TEXT NOT NULL, "
+        "source_thread_id TEXT NOT NULL, "
+        "destination_thread_id TEXT NOT NULL, "
+        "PRIMARY KEY (target_user_id, source_thread_id)"
+        ")"
+    )
+
+
 def migrate_checkpoint_sqlite(
     path: str | Path,
     target_user_id: str,
@@ -83,18 +139,19 @@ def migrate_checkpoint_sqlite(
     conn = sqlite3.connect(db_path)
     try:
         tables = _checkpoint_tables(conn)
-        legacy_ids: set[str] = set()
+        all_ids: set[str] = set()
         for table in tables:
             rows = conn.execute(f'SELECT DISTINCT thread_id FROM "{table}"').fetchall()
-            legacy_ids.update(
-                str(row[0]) for row in rows
-                if row[0] and not str(row[0]).startswith("tenant:")
-            )
-        if apply and legacy_ids:
-            backup = db_path.with_name(db_path.name + ".pre-tenant-migration.bak")
-            if not backup.exists():
-                shutil.copy2(db_path, backup)
-        for public_id in sorted(legacy_ids):
+            all_ids.update(str(row[0]) for row in rows if row[0])
+
+        # Migration status is durable data, not a string-prefix guess.  This is
+        # necessary because every possible string (including one identical to
+        # the internal encoding shape) is a valid public thread ID.
+        migrated_ids = _checkpoint_completed_destinations(
+            conn, target_user_id, all_ids,
+        )
+        migration_ids: list[str] = []
+        for public_id in sorted(all_ids - migrated_ids):
             internal_id = tenant_thread_id(target_user_id, public_id)
             collision = any(
                 conn.execute(
@@ -109,15 +166,26 @@ def migrate_checkpoint_sqlite(
                 )
                 continue
             result.changed += 1
+            migration_ids.append(public_id)
             mode = "APPLY" if apply else "DRY-RUN"
             result.messages.append(f"{mode} checkpoint {public_id!r} -> {internal_id!r}")
-            if apply:
+
+        if apply and migration_ids:
+            backup = _backup_checkpoint_sqlite(conn, db_path)
+            result.messages.append(f"BACKUP checkpoint -> {backup}")
+            _ensure_checkpoint_migration_table(conn)
+            for public_id in migration_ids:
+                internal_id = tenant_thread_id(target_user_id, public_id)
                 for table in tables:
                     conn.execute(
                         f'UPDATE "{table}" SET thread_id=? WHERE thread_id=?',
                         (internal_id, public_id),
                     )
-        if apply:
+                conn.execute(
+                    f'INSERT OR REPLACE INTO "{_CHECKPOINT_MIGRATION_TABLE}" '
+                    "(target_user_id, source_thread_id, destination_thread_id) VALUES (?, ?, ?)",
+                    (target_user_id, public_id, internal_id),
+                )
             conn.commit()
     except Exception:
         conn.rollback()
@@ -198,6 +266,20 @@ def migrate_qdrant_client(
 
     from careercrew_ai.vector_store.qdrant_store import QdrantStore
 
+    def normalize(value):
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(exclude_none=True)
+        if isinstance(value, dict):
+            return {str(key): normalize(item) for key, item in sorted(value.items())}
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        return value
+
+    def destination_matches(point, payload: dict, vector) -> bool:
+        return normalize(point.payload or {}) == normalize(payload) and normalize(
+            point.vector or {},
+        ) == normalize(vector or {})
+
     result = MigrationResult()
     for collection in dict.fromkeys(collections):
         if not collection or not client.collection_exists(collection):
@@ -225,35 +307,63 @@ def migrate_qdrant_client(
             expected_id = QdrantStore._to_qid(logical_id, target_user_id)
             if owner == target_user_id and str(point.id) == expected_id:
                 continue
+            expected_payload = dict(payload)
+            expected_payload["_id"] = logical_id
+            expected_payload["user_id"] = target_user_id
+            destination_ready = False
             if str(point.id) != expected_id:
-                existing = client.retrieve(collection, ids=[expected_id], with_payload=True)
+                existing = client.retrieve(
+                    collection,
+                    ids=[expected_id],
+                    with_payload=True,
+                    with_vectors=True,
+                )
                 if existing:
-                    result.conflicts += 1
-                    result.messages.append(
-                        f"CONFLICT Qdrant {collection}/{logical_id}: destination exists"
-                    )
-                    continue
+                    if not destination_matches(existing[0], expected_payload, point.vector):
+                        result.conflicts += 1
+                        result.messages.append(
+                            f"CONFLICT Qdrant {collection}/{logical_id}: destination differs"
+                        )
+                        continue
+                    destination_ready = True
             result.changed += 1
             mode = "APPLY" if apply else "DRY-RUN"
-            result.messages.append(
-                f"{mode} Qdrant {collection}/{logical_id} -> owner {target_user_id}"
-            )
+            action = "cleanup" if destination_ready else "migrate"
+            result.messages.append(f"{mode} Qdrant {action} {collection}/{logical_id}")
             if apply:
-                payload["_id"] = logical_id
-                payload["user_id"] = target_user_id
-                client.upsert(
-                    collection,
-                    points=[PointStruct(
-                        id=expected_id, vector=point.vector, payload=payload,
-                    )],
-                    wait=True,
-                )
+                if not destination_ready:
+                    client.upsert(
+                        collection,
+                        points=[PointStruct(
+                            id=expected_id,
+                            vector=point.vector,
+                            payload=expected_payload,
+                        )],
+                        wait=True,
+                    )
+                    copied = client.retrieve(
+                        collection,
+                        ids=[expected_id],
+                        with_payload=True,
+                        with_vectors=True,
+                    )
+                    if not copied or not destination_matches(
+                        copied[0], expected_payload, point.vector,
+                    ):
+                        raise RuntimeError(
+                            f"Qdrant copy verification failed: {collection}/{logical_id}"
+                        )
                 if str(point.id) != expected_id:
                     client.delete(
                         collection,
                         points_selector=PointIdsList(points=[point.id]),
                         wait=True,
                     )
+                    if client.retrieve(collection, ids=[point.id]):
+                        raise RuntimeError(
+                            f"Qdrant source cleanup verification failed: "
+                            f"{collection}/{logical_id}"
+                        )
     return result
 
 
@@ -363,17 +473,21 @@ def main(argv: list[str] | None = None) -> int:
     total.extend(migrate_local_resume_assets(args.data_dir, target, apply=args.apply))
     if args.postgres_dsn:
         total.extend(migrate_postgres(args.postgres_dsn, target, apply=args.apply))
+    qdrant_failed = False
     if not args.skip_qdrant:
         try:
             client, collections = _qdrant_from_settings()
             total.extend(migrate_qdrant_client(client, collections, target, apply=args.apply))
-        except Exception as err:  # explicit report; local file/DB migration can still be used
-            total.messages.append(f"SKIP Qdrant: {type(err).__name__}: {err}")
+        except Exception as err:
+            qdrant_failed = True
+            total.messages.append(f"ERROR Qdrant: {type(err).__name__}: {err}")
 
     print(f"mode={'APPLY' if args.apply else 'DRY-RUN'} target_user={target}")
     for message in total.messages:
         print("-", message)
     print(f"changes={total.changed} conflicts={total.conflicts}")
+    if qdrant_failed:
+        return 3
     return 2 if total.conflicts else 0
 
 
