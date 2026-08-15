@@ -1,8 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
 import { RefreshCw, ShieldCheck, UserPlus } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { Card, CardContent } from "@/components/ui/card"
+import { CreateUserDialog } from "@/components/CreateUserDialog"
 import { apiFetch, getAuthSnapshot, subscribeAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 
@@ -26,9 +26,6 @@ export default function AdminUsersPage() {
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [creating, setCreating] = useState(false)
-  const [username, setUsername] = useState("")
-  const [password, setPassword] = useState("")
-  const [role, setRole] = useState<"user" | "admin">("user")
 
   const me = auth.user?.id
 
@@ -47,27 +44,6 @@ export default function AdminUsersPage() {
 
   useEffect(() => { refresh() }, [])
 
-  const createUser = async () => {
-    if (!username.trim() || password.length < 12) {
-      setError("用户名必填，密码至少 12 个字符")
-      return
-    }
-    setError("")
-    const resp = await apiFetch("/api/auth/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.trim(), password, role }),
-    })
-    const data = await resp.json()
-    if (!resp.ok) { setError(data.detail || `HTTP ${resp.status}`); return }
-    setCreating(false)
-    setUsername("")
-    setPassword("")
-    setRole("user")
-    setNotice(`已创建账号 ${data.username}`)
-    refresh()
-  }
-
   const patch = async (id: string, body: Record<string, string>) => {
     const resp = await apiFetch(`/api/auth/users/${id}`, {
       method: "PATCH",
@@ -81,15 +57,19 @@ export default function AdminUsersPage() {
   }
 
   const resetPassword = async (id: string) => {
-    const next = window.prompt(`为账号输入新密码（至少 12 个字符）：`)
-    if (!next || next.length < 12) { setError("密码至少 12 个字符"); return }
+    const next = window.prompt("为该账号设置新密码（留空=默认 123456；自定义需 8-64 位且含字母和数字）：")
+    if (next === null) return
+    if (next !== "" && !(next.length >= 8 && next.length <= 64 && /[A-Za-z]/.test(next) && /\d/.test(next))) {
+      setError("自定义密码需为 8-64 位，且同时包含字母和数字")
+      return
+    }
     const resp = await apiFetch(`/api/auth/users/${id}/reset-password`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: next }),
+      body: JSON.stringify({ password: next === "" ? null : next }),
     })
     if (!resp.ok) { const data = await resp.json().catch(() => ({})); setError(data.detail || `HTTP ${resp.status}`); return }
-    setNotice("密码已重置，该用户所有会话已失效")
+    setNotice("密码已重置（下次登录需修改密码），该用户所有会话已失效")
   }
 
   return (
@@ -101,7 +81,7 @@ export default function AdminUsersPage() {
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={refresh}><RefreshCw className="mr-1 h-3.5 w-3.5" />刷新</Button>
-          <Button size="sm" onClick={() => setCreating((v) => !v)}><UserPlus className="mr-1 h-3.5 w-3.5" />新建用户</Button>
+          <Button size="sm" onClick={() => setCreating(true)}><UserPlus className="mr-1 h-3.5 w-3.5" />新建用户</Button>
         </div>
       </header>
 
@@ -110,25 +90,15 @@ export default function AdminUsersPage() {
         {notice && <p className="mb-3 rounded-md border border-green-600/40 bg-green-600/10 px-3 py-2 text-sm text-green-700">{notice}</p>}
 
         {creating && (
-          <Card className="mb-4">
-            <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">新建账号</CardTitle></CardHeader>
-            <CardContent className="flex flex-wrap items-end gap-3">
-              <label className="text-xs text-muted-foreground">用户名
-                <Input aria-label="用户名" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1 h-9 w-44 text-sm" placeholder="3-64 位字母数字" />
-              </label>
-              <label className="text-xs text-muted-foreground">密码
-                <Input aria-label="密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 h-9 w-44 text-sm" placeholder="至少 12 个字符" />
-              </label>
-              <label className="text-xs text-muted-foreground">角色
-                <select value={role} onChange={(e) => setRole(e.target.value as "user" | "admin")} className="mt-1 h-9 w-32 rounded-md border border-border bg-card px-2 text-sm">
-                  <option value="user">普通用户</option>
-                  <option value="admin">管理员</option>
-                </select>
-              </label>
-              <Button size="sm" onClick={createUser}>创建</Button>
-              <Button size="sm" variant="ghost" onClick={() => setCreating(false)}>取消</Button>
-            </CardContent>
-          </Card>
+          <CreateUserDialog
+            open={creating}
+            onClose={() => setCreating(false)}
+            onCreated={(name) => {
+              setCreating(false)
+              setNotice(`已创建账号 ${name}`)
+              refresh()
+            }}
+          />
         )}
 
         <Card>

@@ -2,6 +2,8 @@ export interface AuthUser {
   id: string
   username: string
   role: "admin" | "user"
+  /** 新建/重置密码后为 true：进入系统前必须修改密码（后端业务 API 会 403 拦截） */
+  must_change_password?: boolean
 }
 
 interface TokenResponse {

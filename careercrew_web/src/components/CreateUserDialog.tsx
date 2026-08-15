@@ -1,0 +1,152 @@
+import { useEffect, useState } from "react"
+import { X } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { apiFetch } from "@/lib/auth"
+
+interface CreateUserDialogProps {
+  open: boolean
+  onClose: () => void
+  /** 创建成功后回调：传入新账号用户名，由父组件刷新列表并提示。 */
+  onCreated: (username: string) => void
+}
+
+/** "用户管理"里的新建账号弹窗。 */
+export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogProps) {
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
+  const [role, setRole] = useState<"user" | "admin">("user")
+  const [error, setError] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+
+  // 每次打开时清空上一次的填写内容与错误提示
+  useEffect(() => {
+    if (open) {
+      setUsername("")
+      setPassword("")
+      setRole("user")
+      setError("")
+    }
+  }, [open])
+
+  // Esc 关闭 + 锁定背景滚动
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [open, onClose])
+
+  if (!open) return null
+
+  const submit = async () => {
+    if (!username.trim()) {
+      setError("用户名必填")
+      return
+    }
+    if (password && !(password.length >= 8 && password.length <= 64 && /[A-Za-z]/.test(password) && /\d/.test(password))) {
+      setError("自定义密码需为 8-64 位，且同时包含字母和数字；留空则使用默认密码 123456")
+      return
+    }
+    setError("")
+    setSubmitting(true)
+    try {
+      const resp = await apiFetch("/api/auth/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password: password || null, role }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) {
+        setError(data.detail || `HTTP ${resp.status}`)
+        return
+      }
+      onCreated(data.username)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !submitting) onClose()
+      }}
+    >
+      <div className="w-full max-w-md overflow-hidden rounded-xl border bg-card shadow-2xl stream-fade-in">
+        <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="font-display text-base font-semibold">新建账号</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">创建后首次登录需修改密码</p>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            title="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-5 py-4">
+          {error && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+          )}
+          <label className="block">
+            <span className="mb-1 flex items-center gap-1 text-xs font-medium">
+              用户名 <span className="text-destructive">*</span>
+            </span>
+            <Input
+              aria-label="用户名"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="3-64 位字母数字"
+              autoFocus
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 flex items-center gap-1 text-xs font-medium">密码（可选）</span>
+            <Input
+              aria-label="密码"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="留空默认 123456；自定义 8-64 位含字母和数字"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 flex items-center gap-1 text-xs font-medium">角色</span>
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value as "user" | "admin")}
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>
+            取消
+          </Button>
+          <Button size="sm" onClick={submit} disabled={submitting}>
+            {submitting ? "创建中…" : "创建"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}

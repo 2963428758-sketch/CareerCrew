@@ -2,14 +2,15 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from "react"
 import {
   BookOpen, Copy, FileText, GraduationCap, MessageCircle,
-  Loader2, LogOut, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, UserCog, Users,
+  Loader2, MessageSquare, MoreHorizontal, PanelLeftClose, Pencil, Pin, Target, Trash2, UserCog, Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { SettingsDialog } from "@/components/SettingsDialog"
+import { UserMenu } from "@/components/UserMenu"
 import { AuthLoading, AuthScreen } from "@/components/AuthScreen"
-import { apiFetch, getAuthSnapshot, logout, restoreSession, subscribeAuth } from "@/lib/auth"
+import PasswordChangeScreen from "@/components/PasswordChangeScreen"
+import { getAuthSnapshot, restoreSession, subscribeAuth } from "@/lib/auth"
 
 // 路由懒加载：按页拆 chunk，消除首屏大 bundle（Chat/Consult/Knowledge 等重页面按需加载）
 const ChatPage = lazy(() => import("@/pages/ChatPage"))
@@ -19,6 +20,7 @@ const ResumePage = lazy(() => import("@/pages/ResumePage"))
 const KnowledgePage = lazy(() => import("@/pages/KnowledgePage"))
 const ConsultPage = lazy(() => import("@/pages/ConsultPage"))
 const DataPage = lazy(() => import("@/pages/DataPage"))
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"))
 const AdminUsersPage = lazy(() => import("@/pages/AdminUsersPage"))
 
 const NAV: { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean; adminOnly?: boolean }[] = [
@@ -39,6 +41,7 @@ const PAGES: Record<string, ComponentType> = {
   "/knowledge": KnowledgePage,
   "/consult": ConsultPage,
   "/data": DataPage,
+  "/settings": SettingsPage,
   "/admin/users": AdminUsersPage,
 }
 
@@ -48,7 +51,7 @@ const EMPTY_THREADS: ThreadItem[] = []
 export default function App() {
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
   const location = useLocation()
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => { void restoreSession() }, [])
 
@@ -61,70 +64,77 @@ export default function App() {
 
   if (auth.status === "loading") return <AuthLoading />
   if (auth.status === "anonymous") return <AuthScreen />
+  // 新建/重置密码的账号：完成强制改密前只能看到改密页（后端业务 API 同步 403 兜底）
+  if (auth.user?.must_change_password) return <PasswordChangeScreen />
+
+  // 设置页是独立页面：不渲染主侧边栏（页面自带设置导航侧边栏）
+  const isSettings = location.pathname === "/settings"
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <nav className="flex w-56 shrink-0 flex-col bg-sidebar">
-        <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" className="shrink-0">
-            <circle cx="12" cy="5" r="2.5" fill="#0D9488" />
-            <circle cx="5" cy="17" r="2.5" fill="#D97706" />
-            <circle cx="19" cy="17" r="2.5" fill="#7C3AED" />
-            <path d="M12 7.5L5.5 14.5M12 7.5L18.5 14.5M7 17h10" stroke="#2D3340" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-          <span className="font-display text-[17px] font-bold text-white tracking-tight">CareerCrew</span>
-        </div>
+      {!isSettings && (
+        <nav className={cn("relative flex shrink-0 flex-col bg-sidebar transition-[width] duration-200", collapsed ? "w-14" : "w-56")}>
+          <div className={cn("flex h-16 shrink-0 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "gap-2.5 px-4")}>
+            {collapsed ? (
+              <button
+                onClick={() => setCollapsed(false)}
+                className="rounded-md p-1.5 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
+                title="展开侧边栏"
+              >
+                <BrandMark />
+              </button>
+            ) : (
+              <>
+                <BrandMark />
+                <span className="min-w-0 flex-1 truncate font-display text-[17px] font-bold text-white tracking-tight">CareerCrew</span>
+                <button
+                  onClick={() => setCollapsed(true)}
+                  className="rounded-md p-1.5 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
+                  title="收起侧边栏"
+                >
+                  <PanelLeftClose className="h-4 w-4" />
+                </button>
+              </>
+            )}
+          </div>
 
-        <div className="flex flex-col gap-0.5 p-3">
-          {NAV.filter((item) => !item.adminOnly || auth.user?.role === "admin").map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                cn(
-                  "group relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[13px] font-medium transition-all",
-                  isActive
-                    ? "bg-sidebar-hover text-white"
-                    : "text-sidebar-text hover:bg-sidebar-hover/50 hover:text-white/90"
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  {isActive && (
-                    <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r bg-sidebar-active" />
-                  )}
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.label}
-                </>
-              )}
-            </NavLink>
-          ))}
-        </div>
+          <div className={cn("flex flex-col gap-0.5", collapsed ? "p-2" : "p-3")}>
+            {NAV.filter((item) => !item.adminOnly || auth.user?.role === "admin").map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                title={collapsed ? item.label : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "group relative flex items-center rounded-md transition-all",
+                    collapsed ? "justify-center py-2.5" : "gap-3 px-3 py-2.5 text-[13px] font-medium",
+                    isActive
+                      ? "bg-sidebar-hover text-white"
+                      : "text-sidebar-text hover:bg-sidebar-hover/50 hover:text-white/90"
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r bg-sidebar-active" />
+                    )}
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    {!collapsed && item.label}
+                  </>
+                )}
+              </NavLink>
+            ))}
+          </div>
 
-        {/* 对话历史 */}
-        <ThreadList />
+          {/* 对话历史 */}
+          {!collapsed && <ThreadList />}
 
-        <div className="mt-auto flex items-center justify-between gap-1 border-t border-sidebar-border py-1 pl-1 pr-2">
-          <HealthDot />
-          <span className="max-w-20 truncate text-[11px] text-sidebar-text" title={auth.user?.username}>{auth.user?.username}</span>
-          <button
-            onClick={() => { void logout() }}
-            className="rounded-md p-2 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
-            title="退出登录"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="rounded-md p-2 text-sidebar-text transition-colors hover:bg-sidebar-hover hover:text-white"
-            title="设置"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-        </div>
-      </nav>
+          {/* 用户区：头像 + 用户名，点击弹出设置/退出登录 */}
+          <UserMenu collapsed={collapsed} />
+        </nav>
+      )}
 
       <main className="flex-1 overflow-hidden">
         <Suspense
@@ -134,19 +144,32 @@ export default function App() {
             </div>
           }
         >
-          {(() => {
-            const requested = PAGES[location.pathname] ?? ChatPage
-            const Page =
-              location.pathname === "/admin/users" && auth.user?.role !== "admin"
-                ? ChatPage
-                : requested
-            return <Page key={location.pathname} />
-          })()}
+          {isSettings ? (
+            <SettingsPage />
+          ) : (
+            (() => {
+              const requested = PAGES[location.pathname] ?? ChatPage
+              const Page =
+                location.pathname === "/admin/users" && auth.user?.role !== "admin"
+                  ? ChatPage
+                  : requested
+              return <Page key={location.pathname} />
+            })()
+          )}
         </Suspense>
       </main>
-
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+  )
+}
+
+function BrandMark() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" className="shrink-0">
+      <circle cx="12" cy="5" r="2.5" fill="#0D9488" />
+      <circle cx="5" cy="17" r="2.5" fill="#D97706" />
+      <circle cx="19" cy="17" r="2.5" fill="#7C3AED" />
+      <path d="M12 7.5L5.5 14.5M12 7.5L18.5 14.5M7 17h10" stroke="#2D3340" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
   )
 }
 
@@ -341,34 +364,5 @@ function MenuItem({ icon: Icon, label, onClick, danger }: {
       <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{label}</span>
     </button>
-  )
-}
-
-function HealthDot() {
-  const [status, setStatus] = useState<"checking" | "ok" | "down">("checking")
-
-  useEffect(() => {
-    const check = () => {
-      apiFetch("/api/health")
-        .then((r) => r.json())
-        .then((d) => setStatus(d.status === "ok" ? "ok" : "down"))
-        .catch(() => setStatus("down"))
-    }
-    check()
-    const t = setInterval(check, 30000)
-    return () => clearInterval(t)
-  }, [])
-
-  const color = status === "ok" ? "#0D9488" : status === "down" ? "#EF4444" : "#78716C"
-  const label = status === "ok" ? "服务正常" : status === "down" ? "服务异常" : "连接中…"
-
-  return (
-    <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-sidebar-text">
-      <span
-        className="h-2 w-2 rounded-full"
-        style={{ backgroundColor: color, boxShadow: status === "ok" ? `0 0 6px ${color}` : "none" }}
-      />
-      {label}
-    </div>
   )
 }
