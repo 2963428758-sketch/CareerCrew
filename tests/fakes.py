@@ -19,10 +19,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-from careercrew_api.auth.store import AccountExistsError, AccountStore, hash_token
-
-_VALID_ROLES = ("admin", "user", "quality_reviewer")
-_VALID_STATUSES = ("active", "disabled")
+from careercrew_api.auth.store import ROLES, STATUSES, AccountExistsError, AccountStore, hash_token
 
 
 def _now() -> datetime:
@@ -110,7 +107,7 @@ class FakeAccountStore(AccountStore):
 
     def create_account(self, username: str, password_hash: str, role: str,
                        must_change: bool = False) -> dict:
-        if role not in _VALID_ROLES:
+        if role not in ROLES:
             raise ValueError(f"invalid role: {role}")
         if any(a["username"] == username for a in self.accounts.values()):
             raise AccountExistsError("username already exists")
@@ -139,9 +136,9 @@ class FakeAccountStore(AccountStore):
 
     def update_account(self, user_id: str, *, role: str | None = None,
                        status: str | None = None) -> dict:
-        if role is not None and role not in _VALID_ROLES:
+        if role is not None and role not in ROLES:
             raise ValueError(f"invalid role: {role}")
-        if status is not None and status not in _VALID_STATUSES:
+        if status is not None and status not in STATUSES:
             raise ValueError(f"invalid status: {status}")
         if user_id not in self.accounts:
             raise KeyError(user_id)

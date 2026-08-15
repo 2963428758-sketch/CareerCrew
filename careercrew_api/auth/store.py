@@ -16,8 +16,12 @@ from uuid import uuid4
 
 from careercrew_core.state.settings import AuthSettings
 
-_STATUSES = ("active", "disabled")
-_ROLES = ("admin", "user", "quality_reviewer")
+STATUSES = ("active", "disabled")
+ROLES = ("admin", "user", "quality_reviewer")
+
+# 向后兼容别名（历史私有名）。
+_STATUSES = STATUSES
+_ROLES = ROLES
 
 
 class AccountExistsError(Exception):
@@ -141,15 +145,16 @@ class PostgresAccountStore(AccountStore):
             )
             # 幂等迁移：既有库的旧 role CHECK（admin/user）不会随 CREATE TABLE IF NOT EXISTS
             # 更新，需 DROP + ADD。任何已有数据（admin/user）仍满足新约束，故无数据丢失。
-            conn.execute(
-                "ALTER TABLE auth_accounts "
-                "DROP CONSTRAINT IF EXISTS auth_accounts_role_check"
-            )
-            conn.execute(
-                "ALTER TABLE auth_accounts "
-                "ADD CONSTRAINT auth_accounts_role_check "
-                "CHECK (role IN ('admin','user','quality_reviewer'))"
-            )
+            with conn.transaction():
+                conn.execute(
+                    "ALTER TABLE auth_accounts "
+                    "DROP CONSTRAINT IF EXISTS auth_accounts_role_check"
+                )
+                conn.execute(
+                    "ALTER TABLE auth_accounts "
+                    "ADD CONSTRAINT auth_accounts_role_check "
+                    "CHECK (role IN ('admin','user','quality_reviewer'))"
+                )
             conn.execute(
                 "ALTER TABLE auth_accounts "
                 "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false"
