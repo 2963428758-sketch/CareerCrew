@@ -184,4 +184,5 @@ $ uv run pytest -q   (with POSTGRES_TEST_DSN set)
   datetime 对象（含 aware-UTC 断言）。
 
 ### 提交
-`78955cf` — `fix(attachments): single utc clock datetime params full utf8 validation bounded reads`
+### 提交
+`4ba55ce` — `fix(attachments): single utc clock datetime params full utf8 validation bounded reads`
