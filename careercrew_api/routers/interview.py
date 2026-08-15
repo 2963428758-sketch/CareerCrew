@@ -177,7 +177,7 @@ def chat(
                 "",
             )
             ctx = rt._begin_chat_turn(
-                req.thread_id, user_id, module="interview", agent_id="interviewer",
+                req.thread_id, user_id, module="interview", agent_id="interviewer_chat",
                 user_text=last_user or (req.topic or "请开始模拟面试"),
             )
             try:

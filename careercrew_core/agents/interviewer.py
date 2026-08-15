@@ -25,6 +25,12 @@ _DEFAULT_PROMPT = (
 )
 
 
+def prompt_source(prompt_path: Path | None = None) -> str:
+    """返回本 agent 实际使用的 prompt 文本（与 __init__ 读取逻辑完全一致）。"""
+    path = prompt_path or _PROMPT_PATH
+    return path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
+
+
 class Interviewer(BaseAgent):
     """面试官：rag_query 面经/八股 -> 出一组有梯度的面试题。"""
 

@@ -24,6 +24,12 @@ _DEFAULT_PROMPT = (
     "评估匹配度（0-1）并输出改进建议。"
 )
 
+
+def prompt_source(prompt_path: Path | None = None) -> str:
+    """返回本 agent 实际使用的 prompt 文本（与 __init__ 读取逻辑完全一致）。"""
+    path = prompt_path or _PROMPT_PATH
+    return path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
+
 # 简历-JD 匹配评估的常用技能词表
 DEFAULT_SKILLS = [
     "python", "java", "go", "c++", "langchain", "langgraph", "rag", "agent",

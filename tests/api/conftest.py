@@ -94,12 +94,15 @@ class FakeRuntime:
     def _begin_chat_turn(self, thread_id, user_id, module, agent_id, user_text,
                          title=None):
         from careercrew_api.chat_lifecycle import begin_turn
+        from careercrew_core.versioning import agent_version, prompt_version_for_agent
 
         try:
             return begin_turn(
                 self.conversation_store, thread_id=thread_id, user_id=user_id,
                 module=module, agent_id=agent_id, user_text=user_text,
                 model=self._conversation_model(), title=title,
+                prompt_version=prompt_version_for_agent(agent_id),
+                agent_version=agent_version(),
             )
         except Exception:
             return None

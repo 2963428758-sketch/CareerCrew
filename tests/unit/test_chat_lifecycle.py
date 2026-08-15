@@ -216,3 +216,21 @@ def test_done_fields_schema(store):
     assert fields["status"] == "completed"
     assert fields["model"] == "deepseek-v4"
     assert fields["prompt_version"] == "unversioned"
+
+
+def test_begin_turn_passes_versions_to_run_and_turncontext(store):
+    """T1.5：begin_turn 传入的 prompt/agent 版本落到 run 行与 TurnContext。"""
+    ctx = begin_turn(
+        store, thread_id="t-1", user_id="u_1", module="chat",
+        agent_id="career_planner", user_text="你好", model="deepseek-v4",
+        prompt_version="sha256:" + "a" * 64,
+        agent_version="fc4a5f187e5471da41987d2d1a45016047ac92b2",
+    )
+    assert ctx.prompt_version == "sha256:" + "a" * 64
+    assert ctx.agent_version == "fc4a5f187e5471da41987d2d1a45016047ac92b2"
+    run = store._db.get_run("u_1", ctx.run_id)
+    assert run["prompt_version"] == "sha256:" + "a" * 64
+    assert run["agent_version"] == "fc4a5f187e5471da41987d2d1a45016047ac92b2"
+    done = ctx.done_fields()
+    assert done["prompt_version"] == "sha256:" + "a" * 64
+    assert done["agent_version"] == "fc4a5f187e5471da41987d2d1a45016047ac92b2"

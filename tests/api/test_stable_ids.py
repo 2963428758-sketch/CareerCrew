@@ -28,6 +28,9 @@ def _valid_uuid(value: str) -> bool:
         return False
 
 
+import re
+
+
 def _last_done(resp) -> dict:
     events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
     done = events[-1]
@@ -49,11 +52,61 @@ def _assert_done_sect9(done: dict) -> None:
     assert _valid_uuid(done["message_id"])
     assert _valid_uuid(done["run_id"])
     assert done["status"] == "completed"
-    assert done["prompt_version"] == "unversioned"
-    assert done["agent_version"] == "unversioned"
+    # T1.5：有单一 agent prompt 的入口 prompt_version 为 sha256:<64hex>；
+    # consult 编排（无单一 prompt）保持 unversioned。
+    assert done["prompt_version"] in ("unversioned",) or re.fullmatch(
+        r"sha256:[0-9a-f]{64}", done["prompt_version"]
+    )
+    # agent_version 为 git sha 或 unversioned，绝不 "unknown"。
+    assert done["agent_version"] != "unknown"
+    assert done["agent_version"] == "unversioned" or re.fullmatch(
+        r"[0-9a-f]{40}", done["agent_version"]
+    )
 
 
 # ── done 事件 §9 字段 ──
+
+
+@pytest.mark.web
+def test_done_prompt_version_is_sha256_for_prompt_agents(client):
+    """有单一 agent prompt 的端点，done.prompt_version 为 sha256:<64hex>（非 unversioned）。"""
+    import re
+
+    for path, payload in [
+        ("/api/chat/match", {"intent": "求职", "thread_id": "vp-1"}),
+        ("/api/chat/plan", {"intent": "规划", "thread_id": "vp-2"}),
+        ("/api/chat/resume", {"jd_text": "字节", "thread_id": "vp-3"}),
+        ("/api/knowledge/ask", {"question": "RAG", "thread_id": "vp-4"}),
+        ("/api/interview/questions", {"topic": "RAG", "thread_id": "vp-5"}),
+    ]:
+        resp = client.post(path, json=payload)
+        assert resp.status_code == 200, path
+        done = _last_done(resp)
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", done["prompt_version"]), (
+            path, done["prompt_version"],
+        )
+
+
+@pytest.mark.web
+def test_consult_done_prompt_version_unversioned(client):
+    """会诊编排无单一 agent prompt → prompt_version 保持 unversioned（Phase 2/3 再补）。"""
+    resp = client.post("/api/consult", json={"question": "谈薪", "thread_id": "c-vp"})
+    assert resp.status_code == 200
+    done = _last_done(resp)
+    assert done["prompt_version"] == "unversioned"
+    assert done["agent_version"] != "unknown"
+
+
+@pytest.mark.web
+def test_interview_chat_uses_interviewer_chat_prompt_version(client):
+    """面试对话式入口使用 interviewer_chat 独立 prompt，版本与 interviewer.txt 区分。"""
+    from careercrew_core.versioning import prompt_version_for_agent
+
+    resp = client.post("/api/interview/chat", json={"topic": "RAG", "messages": []})
+    assert resp.status_code == 200
+    done = _last_done(resp)
+    assert done["prompt_version"] == prompt_version_for_agent("interviewer_chat")
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", done["prompt_version"])
 
 
 @pytest.mark.web

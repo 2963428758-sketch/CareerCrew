@@ -311,8 +311,15 @@ class CareerCrewRuntime:
 
     def _begin_chat_turn(self, thread_id: str, user_id: str, module: str,
                          agent_id: str, user_text: str, title: str | None = None):
-        """开启一轮对话（conversation 表四件套），失败不阻断主流程（返回 None）。"""
+        """开启一轮对话（conversation 表四件套），失败不阻断主流程（返回 None）。
+
+        prompt_version / agent_version 由 versioning 按 agent_id 计算（T1.5）：
+        - 有单一 agent prompt 的入口写 sha256:<64hex>
+        - 编排类入口（consult_orchestrator 无单一 prompt）→ agent_id 未注册 → unversioned，
+          Phase 2/3 补编排级版本时再换。
+        """
         from careercrew_api.chat_lifecycle import begin_turn
+        from careercrew_core.versioning import agent_version, prompt_version_for_agent
 
         self._ensure_heavy()
         try:
@@ -321,6 +328,8 @@ class CareerCrewRuntime:
                 thread_id=thread_id, user_id=user_id, module=module,
                 agent_id=agent_id, user_text=user_text,
                 model=self._conversation_model(), title=title,
+                prompt_version=prompt_version_for_agent(agent_id),
+                agent_version=agent_version(),
             )
         except Exception:
             import logging
