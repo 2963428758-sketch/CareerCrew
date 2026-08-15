@@ -24,6 +24,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class SequenceCollision(Exception):
+    """turn 插入时 UNIQUE(thread_id, sequence_no) 冲突归一化信号。
+
+    两实现（Postgres / Fake）在撞车时都抛此类型，store 层据此重试一次，
+    其余异常原样上抛，不吞掉非唯一冲突的故障。
+    """
+
+
+def _is_unique_violation(err: BaseException) -> bool:
+    """识别唯一约束冲突：psycopg 的 UniqueViolation（SQLSTATE 23505）。
+
+    用类型名匹配，避免强绑定 psycopg.errors 模块路径（同 auth/store.py）。
+    """
+    return type(err).__name__ == "UniqueViolation" or getattr(
+        err, "sqlstate", None
+    ) == "23505"
+
+
 def _row_to_dict(row: Any) -> dict:
     """psycopg dict_row 行转普通 dict（复制一份，UUID 归一为 str，避免 mutate 影响连接）。"""
     return {k: (str(v) if isinstance(v, UUID) else v) for k, v in dict(row).items()}
@@ -59,6 +77,7 @@ class ConversationDb(ABC):
         module: str,
         title: str | None,
         legacy_thread_id: str | None,
+        retrieval_scope: dict | None = None,
     ) -> dict: ...
 
     @abstractmethod
@@ -243,18 +262,21 @@ class PostgresConversationDb(ConversationDb):
     # ── conversations ──
 
     @_synchronized
-    def upsert_conversation(self, conversation_id, user_id, module, title, legacy_thread_id) -> dict:
+    def upsert_conversation(self, conversation_id, user_id, module, title, legacy_thread_id,
+                            retrieval_scope=None) -> dict:
         with self._connect() as conn, conn.transaction():
             now = _now()
             conn.execute(
                 "INSERT INTO conversations (id, user_id, module, title, legacy_thread_id, "
-                "created_at, updated_at, last_active_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "retrieval_scope, created_at, updated_at, last_active_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "title=EXCLUDED.title, module=EXCLUDED.module, "
                 "legacy_thread_id=COALESCE(EXCLUDED.legacy_thread_id, conversations.legacy_thread_id), "
+                "retrieval_scope=COALESCE(EXCLUDED.retrieval_scope, conversations.retrieval_scope), "
                 "updated_at=EXCLUDED.updated_at, last_active_at=EXCLUDED.last_active_at",
                 (conversation_id, user_id, module, title, legacy_thread_id,
+                 _json_dumps(retrieval_scope) if retrieval_scope is not None else None,
                  now, now, now),
             )
         return self.get_conversation(user_id, conversation_id) or {}
@@ -303,11 +325,18 @@ class PostgresConversationDb(ConversationDb):
     @_synchronized
     def insert_turn(self, turn_id, thread_id, user_id, sequence_no) -> dict:
         with self._connect() as conn, conn.transaction():
-            conn.execute(
-                "INSERT INTO conversation_turns (id, thread_id, user_id, sequence_no, created_at) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (turn_id, thread_id, user_id, sequence_no, _now()),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO conversation_turns (id, thread_id, user_id, sequence_no, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (turn_id, thread_id, user_id, sequence_no, _now()),
+                )
+            except Exception as err:
+                if _is_unique_violation(err):
+                    raise SequenceCollision(
+                        f"turn sequence {sequence_no} already exists for thread {thread_id}"
+                    ) from err
+                raise
         return self.get_turn(user_id, turn_id) or {}
 
     @_synchronized
@@ -361,7 +390,7 @@ class PostgresConversationDb(ConversationDb):
         with self._connect() as conn, conn.transaction():
             completed_at = _now() if status == "completed" else None
             conn.execute(
-                "UPDATE messages SET status=%s, completed_at=COALESCE(%s, completed_at) "
+                "UPDATE messages SET status=%s, completed_at=%s "
                 "WHERE id=%s AND user_id=%s",
                 (status, completed_at, message_id, user_id),
             )
@@ -490,7 +519,8 @@ class FakeConversationDb(ConversationDb):
 
     # ── conversations ──
 
-    def upsert_conversation(self, conversation_id, user_id, module, title, legacy_thread_id) -> dict:
+    def upsert_conversation(self, conversation_id, user_id, module, title, legacy_thread_id,
+                            retrieval_scope=None) -> dict:
         existing = self._conversations.get(conversation_id)
         now = _now()
         row = {
@@ -498,7 +528,8 @@ class FakeConversationDb(ConversationDb):
             "user_id": user_id,
             "module": module,
             "title": title if title is not None else (existing or {}).get("title"),
-            "retrieval_scope": (existing or {}).get("retrieval_scope"),
+            "retrieval_scope": retrieval_scope if retrieval_scope is not None
+            else (existing or {}).get("retrieval_scope"),
             "legacy_thread_id": legacy_thread_id if legacy_thread_id is not None
             else (existing or {}).get("legacy_thread_id"),
             "created_at": (existing or {}).get("created_at") or now,
@@ -532,6 +563,13 @@ class FakeConversationDb(ConversationDb):
     # ── turns ──
 
     def insert_turn(self, turn_id, thread_id, user_id, sequence_no) -> dict:
+        if any(
+            t["thread_id"] == thread_id and t["sequence_no"] == sequence_no
+            for t in self._turns.values()
+        ):
+            raise SequenceCollision(
+                f"turn sequence {sequence_no} already exists for thread {thread_id}"
+            )
         row = {
             "id": turn_id, "thread_id": thread_id, "user_id": user_id,
             "sequence_no": sequence_no, "created_at": _now(),
@@ -576,8 +614,7 @@ class FakeConversationDb(ConversationDb):
         row = self._messages.get(message_id)
         if row and row["user_id"] == user_id:
             row["status"] = status
-            if status == "completed" and row.get("completed_at") is None:
-                row["completed_at"] = _now()
+            row["completed_at"] = _now() if status == "completed" else None
         return dict(row) if row and row["user_id"] == user_id else {}
 
     def list_messages(self, user_id, thread_id) -> list[dict]:

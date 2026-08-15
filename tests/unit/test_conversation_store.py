@@ -11,6 +11,7 @@ import pytest
 
 from careercrew_core.conversation.db import FakeConversationDb
 from careercrew_core.conversation.store import ConversationStore, OwnershipError
+from careercrew_core.conversation.db import SequenceCollision
 
 
 @pytest.fixture
@@ -57,6 +58,25 @@ def test_ensure_conversation_different_legacy_different_uuid(store):
     assert r1["id"] != r2["id"]
 
 
+def test_ensure_conversation_roundtrips_retrieval_scope(store):
+    thread_id = _uuid()
+    scope = {"documents": ["kb_1"], "max_chunks": 5, "nested": {"a": True}}
+    r1 = store.ensure_conversation(thread_id, "u_1", "chat", "T", retrieval_scope=scope)
+    assert r1["retrieval_scope"] == scope
+    # get_conversation 回读同样内容
+    got = store.get_conversation(thread_id, "u_1")
+    assert got["retrieval_scope"] == scope
+
+
+def test_ensure_conversation_scope_preserved_on_reuse(store):
+    thread_id = _uuid()
+    scope = {"documents": ["kb_1"]}
+    store.ensure_conversation(thread_id, "u_1", "chat", "T", retrieval_scope=scope)
+    # 复用时不传 scope，不应清空已存 scope
+    r2 = store.ensure_conversation(thread_id, "u_1", "chat", "T2")
+    assert r2["retrieval_scope"] == scope
+
+
 # ── get_conversation ──
 
 
@@ -97,7 +117,7 @@ def test_next_turn_rejects_wrong_owner(store):
 
 
 class _RacyDb(FakeConversationDb):
-    """模拟并发 MAX+1 撞车：第一次 insert_turn 抛 UNIQUE 冲突，重试后成功。"""
+    """模拟并发 MAX+1 撞车：第一次 insert_turn 抛序列冲突，重试后成功。"""
 
     def __init__(self):
         super().__init__()
@@ -106,12 +126,8 @@ class _RacyDb(FakeConversationDb):
     def insert_turn(self, turn_id, thread_id, user_id, sequence_no):
         self._inserted += 1
         if self._inserted == 1:
-            raise _UniqueViolation()
+            raise SequenceCollision("boom")
         return super().insert_turn(turn_id, thread_id, user_id, sequence_no)
-
-
-class _UniqueViolation(Exception):
-    pass
 
 
 def test_next_turn_retries_on_unique_conflict():
@@ -121,6 +137,19 @@ def test_next_turn_retries_on_unique_conflict():
     turn = store.next_turn("t-1", "u_1")
     assert turn["sequence_no"] == 1
     assert db._inserted == 2  # 第一次撞车，重试成功
+
+
+def test_next_turn_propagates_non_collision_errors():
+    db = FakeConversationDb()
+    store = ConversationStore(db)
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+
+    def boom(turn_id, thread_id, user_id, sequence_no):
+        raise RuntimeError("db down")
+
+    db.insert_turn = boom
+    with pytest.raises(RuntimeError, match="db down"):
+        store.next_turn("t-1", "u_1")
 
 
 # ── messages ──
@@ -183,6 +212,26 @@ def test_set_message_status_sets_completed_at(store):
     updated = store.set_message_status("u_1", msg["id"], "completed")
     assert updated["status"] == "completed"
     assert updated["completed_at"] is not None
+
+
+def test_set_message_status_clears_completed_at_on_non_completed(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "stream", _uuid(), None)
+
+    completed = store.set_message_status("u_1", msg["id"], "completed")
+    assert completed["completed_at"] is not None
+
+    # completed → failed 应清空 completed_at
+    failed = store.set_message_status("u_1", msg["id"], "failed")
+    assert failed["status"] == "failed"
+    assert failed["completed_at"] is None
+
+    # completed → cancelled 同样清空
+    store.set_message_status("u_1", msg["id"], "completed")
+    cancelled = store.set_message_status("u_1", msg["id"], "cancelled")
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["completed_at"] is None
 
 
 def test_set_message_status_rejects_wrong_owner(store):

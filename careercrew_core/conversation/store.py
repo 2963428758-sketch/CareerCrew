@@ -12,7 +12,11 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any
 
-from careercrew_core.conversation.db import ConversationDb, _now
+from careercrew_core.conversation.db import (
+    ConversationDb,
+    SequenceCollision,
+    _now,
+)
 from careercrew_core.conversation.uuid7 import uuid7
 
 
@@ -94,9 +98,8 @@ class ConversationStore:
                 return conv
             conversation_id = str(uuid7())
 
-        # 新建（含 retrieval_scope 由调用方经 upsert 传入的能力，此处不落）。
         return self._db.upsert_conversation(
-            conversation_id, user_id, module, title, legacy
+            conversation_id, user_id, module, title, legacy, retrieval_scope
         )
 
     def get_conversation(self, thread_id: str, user_id: str) -> dict | None:
@@ -115,7 +118,7 @@ class ConversationStore:
         turn_id = str(uuid7())
         try:
             return self._db.insert_turn(turn_id, conv["id"], user_id, seq)
-        except Exception:
+        except SequenceCollision:
             # UNIQUE(thread_id, sequence_no) 冲突：重试一次（并发 MAX+1 撞车）
             seq = self._db.max_sequence_no(user_id, conv["id"]) + 1
             turn_id = str(uuid7())
