@@ -70,17 +70,21 @@ class MultimodalIngestionPipeline:
         self._loader_timeout = loader_timeout
         self._chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-    def _make_loader(self):
-        """按 provider 路由：api（云端，默认）| local（本地子进程）。"""
+    def _make_loader(self, output_dir: str | Path | None = None):
+        """按 provider 路由：api（云端，默认）| local（本地子进程）。
+
+        output_dir：按用户/文档隔离的解析产物目录（None 用管线默认目录）。
+        """
+        out_dir = self._output_dir if output_dir is None else Path(output_dir)
         if self._loader_provider == "local":
             return MinerULoader(
-                self._output_dir,
+                out_dir,
                 device=self._loader_device,
                 method=self._loader_method,
                 formula=self._loader_formula,
             )
         return MinerUApiLoader(
-            self._output_dir,
+            out_dir,
             api_key=self._loader_api_key,
             model_version=self._loader_model_version,
             formula=self._loader_formula,
@@ -148,14 +152,16 @@ class MultimodalIngestionPipeline:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        output_dir: str | Path | None = None,
     ) -> int:
-        """文件入库（根 run careercrew.ingest）。"""
+        """文件入库（根 run careercrew.ingest）；output_dir 按用户/文档隔离解析产物。"""
         return traced_call(
             self._ingest_file_impl,
             name="careercrew.ingest",
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
             path=path, metadata=metadata, progress_cb=progress_cb, category=category,
+            output_dir=output_dir,
         )
 
     def _ingest_file_impl(
@@ -164,6 +170,7 @@ class MultimodalIngestionPipeline:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        output_dir: str | Path | None = None,
     ) -> int:
         """文件入库：md/txt 走文本路径；其余走 MinerU 多模态路径。"""
         p = Path(path)
@@ -175,7 +182,7 @@ class MultimodalIngestionPipeline:
             )
         if progress_cb:
             progress_cb("parse", 0.05)
-        parsed = self._make_loader().parse(p)
+        parsed = self._make_loader(output_dir).parse(p)
         if progress_cb:
             progress_cb("vectorize", 0.6)
         return self._ingest_parsed(parsed, metadata, progress_cb=progress_cb, category=category)

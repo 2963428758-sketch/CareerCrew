@@ -37,6 +37,13 @@ export default function MatcherPage() {
   const meta = AGENT_META.job_matcher
 
   useEffect(() => {
+    if (stream.status === "error") {
+      // 流出错：移除未填充的空助手占位气泡
+      setMessages((prev) =>
+        prev.filter((m) => !(m.role === "assistant" && m.streaming && !m.content))
+      )
+      return
+    }
     if (stream.status === "done" && stream.doneContent) {
       setMessages((prev) => {
         const msgs = [...prev]

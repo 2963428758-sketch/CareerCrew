@@ -174,18 +174,7 @@ class CareerCrewRuntime:
             )
             self.ingest_pipeline = pipe
 
-            # 知识库入库（首次：data/uploads 下的 PDF/图片/docx；data/knowledge 不参与）
-            uploads_dir = Path(__file__).resolve().parents[1] / "data" / "uploads"
-            if store.count() == 0:
-                ingest_files = sorted(
-                    p for p in uploads_dir.glob("*")
-                    if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
-                )
-                for f in ingest_files:
-                    try:
-                        pipe.ingest_file(f, metadata={"user_id": "u_001"})
-                    except Exception as e:
-                        print(f"[runtime] ingest 跳过 {f}: {e}")
+            # 知识库只经由上传端点显式入库（历史首启扫描已移除：简历原件不得自动入知识库）
 
             memory_db = create_memory_db(settings)
             episodic = EpisodicMemory(memory_db, user_id="u_001", thread_id="m1")
@@ -310,14 +299,19 @@ class CareerCrewRuntime:
         return self.thread_store.list(user_id, module=module)
 
     def register_thread(self, thread_id: str, user_id: str,
-                        module: str = "chat", title: str = "") -> dict:
+                        module: str = "chat", title: str = "",
+                        retrieval_scope: dict | None = None) -> dict:
         """登记线程（前端新会话时调用）。"""
         self._ensure_heavy()
-        return self.thread_store.upsert(user_id, thread_id, title=title, module=module)
+        return self.thread_store.upsert(
+            user_id, thread_id, title=title, module=module,
+            retrieval_scope=retrieval_scope,
+        )
 
     def touch_thread(self, thread_id: str, user_id: str, title: str | None = None,
-                     pinned: bool | None = None, module: str | None = None) -> dict:
-        """更新线程标题/置顶（PATCH）。"""
+                     pinned: bool | None = None, module: str | None = None,
+                     retrieval_scope: dict | None = None) -> dict:
+        """更新线程标题/置顶/检索范围（PATCH）。"""
         self._ensure_heavy()
         row = self.thread_store.get(user_id, thread_id)
         if row is None:
@@ -327,6 +321,8 @@ class CareerCrewRuntime:
             title=title if title is not None else row.get("title", ""),
             module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
+            retrieval_scope=retrieval_scope if retrieval_scope is not None
+            else row.get("retrieval_scope"),
         )
 
     def delete_thread(self, thread_id: str, user_id: str) -> dict:
@@ -361,7 +357,8 @@ class CareerCrewRuntime:
             return cycle
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
-                         cb: Callable[[str], None] | None = None) -> str:
+                         cb: Callable[[str], None] | None = None,
+                         cancel_check: Callable[[], None] | None = None) -> str:
         """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。"""
         return traced_call(
             self._run_match_stream_impl,
@@ -372,11 +369,15 @@ class CareerCrewRuntime:
             user_id=user_id,
             intent=intent,
             cb=cb,
+            cancel_check=cancel_check,
         )
 
     def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
-                               cb: Callable[[str], None] | None = None) -> str:
+                               cb: Callable[[str], None] | None = None,
+                               cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
+        if cancel_check:
+            cancel_check()
         cycle = self.get_cycle(thread_id, user_id)
         try:
             # 先落库用户消息：即使后续 agent 运行挂起/失败，问题也不丢
@@ -385,9 +386,15 @@ class CareerCrewRuntime:
             )
         except Exception:
             cycle.pending_user_entry_id = None
+        if cancel_check:
+            cancel_check()
         ep = self._get_episodic(thread_id, user_id)
         cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
+        if cancel_check:
+            cancel_check()
         result = cycle.run_match(intent)
+        if cancel_check:
+            cancel_check()
         # 超轮次兜底：agent 搜索轮次耗尽时补一段结论，避免以"我再搜一下"截断
         lr = getattr(cycle.job_matcher, "last_result", None)
         if lr is not None and getattr(lr, "stopped_reason", "") == "max_iterations":
@@ -402,10 +409,13 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        if cancel_check:
+            cancel_check()
         return result
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
-                          cb: Callable[[str], None] | None = None) -> str:
+                          cb: Callable[[str], None] | None = None,
+                          cancel_check: Callable[[], None] | None = None) -> str:
         """流式 resume：用带 callback 的 agent 替换 cycle 中的 advisor，保留对话历史。"""
         return traced_call(
             self._run_resume_stream_impl,
@@ -416,11 +426,15 @@ class CareerCrewRuntime:
             user_id=user_id,
             jd_text=jd_text,
             cb=cb,
+            cancel_check=cancel_check,
         )
 
     def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
-                                cb: Callable[[str], None] | None = None) -> str:
+                                cb: Callable[[str], None] | None = None,
+                                cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
+        if cancel_check:
+            cancel_check()
         cycle = self.get_cycle(thread_id, user_id)
         user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
         try:
@@ -429,9 +443,15 @@ class CareerCrewRuntime:
             )
         except Exception:
             cycle.pending_user_entry_id = None
+        if cancel_check:
+            cancel_check()
         ep = self._get_episodic(thread_id, user_id)
         cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
+        if cancel_check:
+            cancel_check()
         result = cycle.run_resume(jd_text)
+        if cancel_check:
+            cancel_check()
         try:
             self.record_thread_messages(
                 user_id, thread_id,
@@ -441,10 +461,13 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass
+        if cancel_check:
+            cancel_check()
         return result
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
-                                cb: Callable[[str], None] | None = None) -> str:
+                                cb: Callable[[str], None] | None = None,
+                                cancel_check: Callable[[], None] | None = None) -> str:
         """求职对话：职业规划师主理（聚焦求职规划：画像/目标公司池/阶段规划与复盘）。"""
         return traced_call(
             self._run_planner_chat_stream_impl,
@@ -455,13 +478,17 @@ class CareerCrewRuntime:
             user_id=user_id,
             intent=intent,
             cb=cb,
+            cancel_check=cancel_check,
         )
 
     def _run_planner_chat_stream_impl(self, thread_id: str, user_id: str, intent: str,
-                                      cb: Callable[[str], None] | None = None) -> str:
+                                      cb: Callable[[str], None] | None = None,
+                                      cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
         from langchain_core.messages import HumanMessage
 
+        if cancel_check:
+            cancel_check()
         ep = self._get_episodic(thread_id, user_id)
         agent = self.new_career_planner(cb, episodic=ep)
         try:
@@ -471,6 +498,8 @@ class CareerCrewRuntime:
             )
         except Exception:
             pending_id = None
+        if cancel_check:
+            cancel_check()
         state = {
             "thread_id": thread_id, "user_id": user_id, "stage": "planning",
             "user_intent": intent,
@@ -478,7 +507,11 @@ class CareerCrewRuntime:
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
             "pending_user_entry_id": pending_id,
         }
+        if cancel_check:
+            cancel_check()
         agent.run(state)
+        if cancel_check:
+            cancel_check()
         result = (agent.last_result.content or "").strip() if agent.last_result else ""
         if not result:
             result = "（本轮未产出完整规划，可补充方向/技能/城市/薪资等信息后继续对话）"
@@ -488,11 +521,14 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        if cancel_check:
+            cancel_check()
         return result
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
-                                 category: str = "") -> str:
+                                 category: str = "",
+                                 cancel_check: Callable[[], None] | None = None) -> str:
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
         返回 ``{"content": str, "sources": list[dict]}``：
@@ -510,19 +546,25 @@ class CareerCrewRuntime:
             thread_id=thread_id,
             cb=cb,
             category=category,
+            cancel_check=cancel_check,
         )
 
     def _run_knowledge_ask_stream_impl(self, question: str, user_id: str,
                                        thread_id: str = "knowledge",
                                        cb: Callable[[str], None] | None = None,
-                                       category: str = "") -> str:
+                                       category: str = "",
+                                       cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         from langchain_core.messages import HumanMessage
 
+        if cancel_check:
+            cancel_check()
         sources: list[dict] = []
         seen: set[str] = set()
 
         def _sink(r) -> None:
+            if cancel_check:
+                cancel_check()
             if r.id in seen:
                 return
             seen.add(r.id)
@@ -548,6 +590,8 @@ class CareerCrewRuntime:
             )
         except Exception:
             pending_id = None
+        if cancel_check:
+            cancel_check()
         state = {
             "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
             "user_intent": question,
@@ -557,7 +601,11 @@ class CareerCrewRuntime:
             # 历史恢复时跳过刚写入的当前问题，避免上下文里重复出现
             "pending_user_entry_id": pending_id,
         }
+        if cancel_check:
+            cancel_check()
         agent.run(state)
+        if cancel_check:
+            cancel_check()
         content = (agent.last_result.content or "").strip()
         capped = _cap_sources(
             sources,
@@ -572,6 +620,8 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞问答
+        if cancel_check:
+            cancel_check()
         return {
             "content": content,
             "sources": capped,
@@ -988,14 +1038,18 @@ class CareerCrewRuntime:
         tool = make_read_image_tool(self.settings)
         return tool.invoke({"image_path": path, "prompt": "请描述图片内容并提取其中的文字。"})
 
-    def load_document(self, path: str) -> str:
-        """MinerU 解析为文本（resume 上传 pdf/docx 等；按 provider 走云端 API 或本地子进程）。"""
+    def load_document(self, path: str, output_dir: str | None = None) -> str:
+        """MinerU 解析为文本（resume 上传 pdf/docx 等；按 provider 走云端 API 或本地子进程）。
+
+        output_dir：按用户/文档隔离的解析产物目录（默认取 settings.rag.loaders.output_dir）。
+        """
         loaders = self.settings.rag.loaders
+        out_dir = loaders.output_dir if output_dir is None else output_dir
         if loaders.provider == "local":
             from careercrew_core.rag.loaders.mineru_loader import MinerULoader
 
             parsed = MinerULoader(
-                loaders.output_dir,
+                out_dir,
                 device=loaders.device,
                 method=loaders.method,
                 formula=loaders.formula,
@@ -1004,7 +1058,7 @@ class CareerCrewRuntime:
             from careercrew_core.rag.loaders.mineru_api_loader import MinerUApiLoader
 
             parsed = MinerUApiLoader(
-                loaders.output_dir,
+                out_dir,
                 api_key=loaders.api_key,
                 model_version=loaders.model_version,
                 formula=loaders.formula,
@@ -1022,24 +1076,32 @@ class CareerCrewRuntime:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        output_dir: str | None = None,
+        doc_name: str = "",
     ) -> dict:
         """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。
 
         progress_cb(stage, progress) 可选进度回调：stage ∈ parse/vectorize/store，
         progress ∈ [0, 1]（阶段边界处的真实进度，非秒级平滑值）。
-        category: 内容分类（resume/knowledge/interview）；空串按文档名自动识别。
+        category: 内容分类（resume/knowledge/interview）；空串按 doc_name（原文件名）自动识别。
+        output_dir: 按用户/文档隔离的解析产物目录。
         """
         self._ensure_heavy()
         from pathlib import Path
 
-        p = Path(path)
+        from careercrew_api.storage import DATA_ROOT
+
+        p = Path(path).resolve()
+        if not p.is_relative_to(DATA_ROOT.resolve()):
+            raise ValueError(f"入库路径越界: {p} 不在 {DATA_ROOT} 内")
         if not category:
             from careercrew_core.rag.categories import category_for_doc
 
-            category = category_for_doc(p.stem)
+            category = category_for_doc(doc_name or p.stem)
         owner_metadata = {**(metadata or {}), "user_id": user_id}
         n = self.ingest_pipeline.ingest_file(
             p, metadata=owner_metadata, progress_cb=progress_cb, category=category,
+            output_dir=output_dir,
         )
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
@@ -1057,8 +1119,12 @@ class CareerCrewRuntime:
     def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
         """Verify an image source is referenced by this tenant's vector payload."""
         self._ensure_heavy()
-        resolved = str(Path(path).resolve())
-        return bool(self.store.metadata_exists({"user_id": user_id, "image_path": resolved}))
+        from careercrew_api.storage import DATA_ROOT
+
+        resolved = Path(path).resolve()
+        if not resolved.is_relative_to(DATA_ROOT.resolve()):
+            return False
+        return bool(self.store.metadata_exists({"user_id": user_id, "image_path": str(resolved)}))
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):

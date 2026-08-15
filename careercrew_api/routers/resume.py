@@ -8,7 +8,8 @@
 
 上传与知识库一致改为异步任务：POST /upload 立即返回 job_id，
 GET /upload/{job_id} 轮询进度（queued -> parse -> done），解析结果
-写入简历库（data/uploads/resumes/{resume_id}.txt + .json），
+写入简历库（data/parsed/resumes/{user_id}/{resume_id}/content.txt + meta.json），
+原件按 UUID 落 data/uploads/resumes_raw/{user_id}/{uuid}.{ext}，
 前端可在「简历管理」面板复用历史简历。
 """
 from __future__ import annotations
@@ -29,7 +30,14 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
-from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
+from careercrew_api.sse import (
+    CancellationEvent,
+    done_event,
+    error_event,
+    stage_event,
+    stream_agent,
+)
+from careercrew_api import storage
 
 router = APIRouter()
 
@@ -38,12 +46,7 @@ _MAX_CONTENT_CHARS = 200_000
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 _TEXT_EXTS = {".txt", ".md", ".markdown"}
 _MAX_JOBS = 50
-
-UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data" / "uploads"
-# 对话式简历优化：按 thread_id 持久化简历文本（会话间隔离，重启不丢）
-RESUME_STORE_DIR = UPLOAD_DIR / "resume_threads"
-# 简历库：上传解析结果按 resume_id 落盘（多版本共存，供「简历管理」面板复用/删除）
-RESUME_LIB_DIR = UPLOAD_DIR / "resumes"
+_RESUME_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 # 进程内上传任务表（单进程部署；多 worker 需换外部存储/队列）
 _jobs: dict[str, dict] = {}
@@ -54,7 +57,14 @@ def _resume_path(user_id: str, thread_id: str) -> Path:
     # Public thread ids are untrusted path input. Keep the public id in the API,
     # but use a stable opaque filename under the authenticated user's directory.
     digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
-    return RESUME_STORE_DIR / user_id / f"{digest}.txt"
+    return storage.resolve_under(storage.L.resume_threads, user_id, f"{digest}.txt")
+
+
+def _resume_lib_dir(user_id: str, resume_id: str) -> Path:
+    """简历库条目目录（内容 + 元数据），resume_id 必须为 12 位 hex（UUID 键）。"""
+    if not _RESUME_ID_RE.match(resume_id):
+        raise ValueError(f"非法简历 ID: {resume_id}")
+    return storage.resolve_under(storage.L.parsed_resumes, user_id, resume_id)
 
 
 def _load_resume(user_id: str, thread_id: str) -> str:
@@ -113,7 +123,8 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines))
 
 
-def _parse_resume_file(rt: CareerCrewRuntime, path: str, ext: str) -> tuple[str, str]:
+def _parse_resume_file(rt: CareerCrewRuntime, path: str, ext: str,
+                       output_dir: str | None = None) -> tuple[str, str]:
     """按扩展名解析简历 -> (doc_type, text)；解析失败抛异常（带用户可读信息）。"""
     if ext in _IMAGE_EXTS:
         try:
@@ -124,7 +135,7 @@ def _parse_resume_file(rt: CareerCrewRuntime, path: str, ext: str) -> tuple[str,
         return "text", Path(path).read_text(encoding="utf-8", errors="replace")
     doc_type = ext.lstrip(".") or "unknown"
     try:
-        return doc_type, rt.load_document(path)
+        return doc_type, rt.load_document(path, output_dir=output_dir)
     except RuntimeInitError as e:
         raise RuntimeError(str(e)) from e
     except Exception as e:
@@ -143,7 +154,9 @@ def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
 
     _set(status="running", stage="parse", progress=0.1)
     try:
-        doc_type, text = _parse_resume_file(rt, save_path, ext)
+        doc_type, text = _parse_resume_file(
+            rt, save_path, ext, output_dir=str(storage.resolve_under(storage.L.parsed_resumes, user_id, job_id))
+        )
         truncated = False
         if len(text) > _MAX_CONTENT_CHARS:
             text = text[:_MAX_CONTENT_CHARS]
@@ -151,8 +164,9 @@ def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
         text = _clean_text(text)
 
         resume_id = uuid.uuid4().hex[:12]
-        RESUME_LIB_DIR.mkdir(parents=True, exist_ok=True)
-        (RESUME_LIB_DIR / f"{resume_id}.txt").write_text(text, encoding="utf-8")
+        lib_dir = _resume_lib_dir(user_id, resume_id)
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        (lib_dir / "content.txt").write_text(text, encoding="utf-8")
         meta = {
             "resume_id": resume_id,
             "user_id": user_id,
@@ -162,7 +176,7 @@ def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
             "truncated": truncated,
             "created_at": time.time(),
         }
-        (RESUME_LIB_DIR / f"{resume_id}.json").write_text(
+        (lib_dir / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False), encoding="utf-8"
         )
         _set(status="done", stage="done", progress=1.0, result={**meta, "content": text})
@@ -194,14 +208,14 @@ async def upload(
     if len(content_bytes) > _MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件超过 20MB 限制")
 
-    # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）
+    # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）；
+    # 原名仅存入任务元数据，磁盘键名为 UUID。
     filename = Path(file.filename or "upload").name or "upload"
     ext = Path(filename).suffix.lower()
     user_id = current_user["id"]
     job_id = _new_job(filename, user_id)
-    owner_dir = UPLOAD_DIR / user_id
-    owner_dir.mkdir(parents=True, exist_ok=True)
-    save_path = owner_dir / f"{job_id}_{filename}"
+    save_path = storage.resolve_under(storage.L.resumes_raw, user_id, f"{job_id}{ext}")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     save_path.write_bytes(content_bytes)
 
     threading.Thread(
@@ -231,17 +245,17 @@ def upload_status(job_id: str, current_user: CurrentUser) -> dict:
 @router.get("/library")
 def list_library(current_user: CurrentUser) -> dict:
     """简历库：全部已上传简历的元数据（按上传时间倒序）。"""
-    if not RESUME_LIB_DIR.exists():
-        return {"resumes": []}
+    user_dir = storage.L.parsed_resumes / current_user["id"]
     items: list[dict] = []
-    for meta_path in RESUME_LIB_DIR.glob("*.json"):
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - 元数据损坏时跳过单条，不影响整体列表
-            continue
-        if meta.get("user_id") != current_user["id"]:
-            continue
-        items.append(meta)
+    if user_dir.exists():
+        for meta_path in user_dir.glob("*/meta.json"):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - 元数据损坏时跳过单条，不影响整体列表
+                continue
+            if meta.get("user_id") != current_user["id"]:
+                continue
+            items.append(meta)
     items.sort(key=lambda m: m.get("created_at", 0), reverse=True)
     return {"resumes": items}
 
@@ -249,8 +263,12 @@ def list_library(current_user: CurrentUser) -> dict:
 @router.get("/library/{resume_id}/content")
 def library_content(resume_id: str, current_user: CurrentUser) -> dict:
     """读取某份简历的解析文本（供「用于当前对话」复用）。"""
-    txt_path = RESUME_LIB_DIR / f"{resume_id}.txt"
-    meta_path = RESUME_LIB_DIR / f"{resume_id}.json"
+    try:
+        lib_dir = _resume_lib_dir(current_user["id"], resume_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
+    meta_path = lib_dir / "meta.json"
+    txt_path = lib_dir / "content.txt"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -263,7 +281,11 @@ def library_content(resume_id: str, current_user: CurrentUser) -> dict:
 @router.delete("/library/{resume_id}")
 def delete_library(resume_id: str, current_user: CurrentUser) -> dict:
     """从简历库删除某份简历（文本 + 元数据）。"""
-    meta_path = RESUME_LIB_DIR / f"{resume_id}.json"
+    try:
+        lib_dir = _resume_lib_dir(current_user["id"], resume_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
+    meta_path = lib_dir / "meta.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -271,8 +293,8 @@ def delete_library(resume_id: str, current_user: CurrentUser) -> dict:
     if meta.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
     removed = 0
-    for suffix in (".txt", ".json"):
-        p = RESUME_LIB_DIR / f"{resume_id}{suffix}"
+    for name in ("content.txt", "meta.json"):
+        p = lib_dir / name
         if p.is_file():
             p.unlink()
             removed += 1
@@ -289,26 +311,30 @@ def generate(
 ) -> StreamingResponse:
     """简历顾问以"上传简历 + 目标 JD"为输入流式优化。"""
 
-    def run_fn(cb):
-        from langchain_core.messages import HumanMessage
-
-        user_id = current_user["id"]
-        episodic = rt._get_episodic(req.thread_id, user_id)
-        agent = rt.new_resume_advisor(cb, episodic=episodic)
-        prompt = f"我的简历：\n{req.user_resume}\n\n目标 JD：\n{req.jd or '未指定'}\n\n请帮我优化简历。"
-        state = {
-            "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
-            "user_intent": prompt,
-            "messages": [HumanMessage(content=prompt)],
-            "pending_action": None, "agent_outputs": {}, "target_companies": [],
-        }
-        agent.run(state)
-
     def gen() -> Generator[str, None, None]:
+        cancel = CancellationEvent()
+
+        def run_fn(cb):
+            from langchain_core.messages import HumanMessage
+
+            user_id = current_user["id"]
+            episodic = rt._get_episodic(req.thread_id, user_id)
+            agent = rt.new_resume_advisor(cb, episodic=episodic)
+            prompt = f"我的简历：\n{req.user_resume}\n\n目标 JD：\n{req.jd or '未指定'}\n\n请帮我优化简历。"
+            state = {
+                "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
+                "user_intent": prompt,
+                "messages": [HumanMessage(content=prompt)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            }
+            cancel.check()
+            agent.run(state)
+            cancel.check()
+
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -337,6 +363,7 @@ def chat(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": ""}
+        cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
@@ -369,14 +396,16 @@ def chat(
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
                 "pending_user_entry_id": pending_id,
             }
+            cancel.check()
             agent.run(state)
+            cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
 
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])

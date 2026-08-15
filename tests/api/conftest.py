@@ -41,6 +41,7 @@ class FakeRuntime:
             }
         ]
         self.last_call: dict = {}
+        self.ingest_calls: list = []
         self.knowledge_output_by_user: dict[str, str] = {}
         self.knowledge_sources_by_user: dict[str, list[dict]] = {}
         self.knowledge_asset_owners: dict[str, str] = {}
@@ -107,11 +108,14 @@ class FakeRuntime:
         return FakeCycle()
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
-                         cb: Callable[[str], None] | None = None) -> str:
+                         cb: Callable[[str], None] | None = None,
+                         cancel_check: Callable[[], None] | None = None) -> str:
         self.last_call = {
             "method": "run_match_stream", "thread_id": thread_id,
             "user_id": user_id, "intent": intent,
         }
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -119,7 +123,10 @@ class FakeRuntime:
         return self.match_output
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
-                          cb: Callable[[str], None] | None = None) -> str:
+                          cb: Callable[[str], None] | None = None,
+                          cancel_check: Callable[[], None] | None = None) -> str:
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -127,7 +134,10 @@ class FakeRuntime:
         return self.resume_output
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
-                                cb: Callable[[str], None] | None = None) -> str:
+                                cb: Callable[[str], None] | None = None,
+                                cancel_check: Callable[[], None] | None = None) -> str:
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -136,9 +146,12 @@ class FakeRuntime:
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
-                                 category: str = "") -> str:
+                                 category: str = "",
+                                 cancel_check: Callable[[], None] | None = None) -> str:
         output = self.knowledge_output_by_user.get(user_id, self.knowledge_output)
         sources = self.knowledge_sources_by_user.get(user_id, self.knowledge_sources)
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -238,6 +251,7 @@ class FakeRuntime:
                 "title": r["title"],
                 "module": r["module"],
                 "pinned": r["pinned"],
+                "retrieval_scope": r.get("retrieval_scope"),
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
                 "entries": 0,
@@ -246,11 +260,16 @@ class FakeRuntime:
         ]
 
     def register_thread(self, thread_id: str, user_id: str = "u_001",
-                        module: str = "chat", title: str = "") -> dict:
-        return self.thread_store.upsert(user_id, thread_id, title=title, module=module)
+                        module: str = "chat", title: str = "",
+                        retrieval_scope: dict | None = None) -> dict:
+        return self.thread_store.upsert(
+            user_id, thread_id, title=title, module=module,
+            retrieval_scope=retrieval_scope,
+        )
 
     def touch_thread(self, thread_id: str, user_id: str = "u_001", title: str | None = None,
-                     pinned: bool | None = None, module: str | None = None) -> dict:
+                     pinned: bool | None = None, module: str | None = None,
+                     retrieval_scope: dict | None = None) -> dict:
         from careercrew_api.runtime import ResourceNotFoundError
 
         row = self.thread_store.get(user_id, thread_id)
@@ -261,6 +280,8 @@ class FakeRuntime:
             title=title if title is not None else row.get("title", ""),
             module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
+            retrieval_scope=retrieval_scope if retrieval_scope is not None
+            else row.get("retrieval_scope"),
         )
 
     def delete_thread(self, thread_id: str, user_id: str = "u_001") -> dict:
@@ -381,7 +402,7 @@ class FakeRuntime:
             raise self.upload_error
         return self.upload_content
 
-    def load_document(self, path: str) -> str:
+    def load_document(self, path: str, output_dir: str | None = None) -> str:
         if self.upload_error:
             raise self.upload_error
         return self.upload_content
@@ -393,9 +414,13 @@ class FakeRuntime:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        output_dir: str | None = None,
+        doc_name: str = "",
     ) -> dict:
         from pathlib import Path
 
+        self.ingest_calls.append({"path": path, "user_id": user_id,
+                                  "output_dir": output_dir, "doc_name": doc_name})
         if self.ingest_error:
             raise self.ingest_error
         if progress_cb:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 from collections.abc import Generator
 
@@ -17,6 +18,12 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
+from careercrew_api.sse import (
+    STREAM_IDLE_TIMEOUT_SECONDS,
+    CancellationEvent,
+    StreamCancelled,
+    put_guaranteed,
+)
 from careercrew_core.tracing.langsmith import attach_run_metadata, traced_call
 
 router = APIRouter()
@@ -45,11 +52,13 @@ def _chunk_text(text: str) -> list[str]:
 def _profile_from_model(model) -> dict[str, str]:
     """把 UserModel 画像投影成会诊字段（与 USER_INPUT_FIELDS 对齐），空值省略。
 
-    current_position 在画像中没有直接字段，由缺失字段询问兜底。
+    current_position 持久化在画像中（Task 4），缺失时由询问兜底。
     """
     p = model.profile
     prefs = model.preferences
     out: dict[str, str] = {}
+    if p.current_position:
+        out["current_position"] = p.current_position
     if p.experience_years:
         out["experience_years"] = str(p.experience_years)
     if p.skills:
@@ -65,6 +74,44 @@ def _profile_from_model(model) -> dict[str, str]:
     return out
 
 
+# 会诊资料填写字段 -> 画像白名单字段（只有白名单键会被持久化）
+_FIELD_MAP = {
+    "current_position": "profile.current_position",
+    "experience_years": "profile.experience_years",
+    "skills": "profile.skills",
+    "target_direction": "profile.direction",
+    "city": "preferences.city",
+}
+
+
+def _persist_form_profile(rt, user_id: str, profile: dict[str, str]) -> None:
+    mapped: dict[str, object] = {}
+    for k, key in _FIELD_MAP.items():
+        v = profile.get(k)
+        if v is None or not str(v).strip():
+            continue
+        s = str(v).strip()
+        if key == "profile.skills":
+            mapped[key] = [p.strip() for p in re.split(r"[、,，/]", s) if p.strip()]
+        elif key == "preferences.city":
+            mapped[key] = [p.strip() for p in re.split(r"[、,，/]", s) if p.strip()]
+        elif key == "profile.experience_years":
+            try:
+                mapped[key] = int(s)
+            except ValueError:
+                continue  # 无法转 int：跳过该键，不写畸变值
+        else:
+            mapped[key] = s
+    if "current_position" in profile and not str(profile["current_position"]).strip():
+        mapped["profile.current_position"] = ""
+    if mapped:
+        try:
+            rt.fact_store.update(user_id, mapped, source="consult_form")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("persist consult profile failed")
+
+
 @router.post("")
 def consult(
     req: ConsultRequest,
@@ -76,6 +123,19 @@ def consult(
     def gen() -> Generator[str, None, None]:
         q: queue.Queue = queue.Queue(maxsize=512)
         err: dict[str, BaseException] = {}
+        cancel = CancellationEvent()
+        dropped = [0]
+
+        def _safe_emit(item: dict) -> None:
+            """取消感知 + 背压安全的事件投递：chunk 类可丢弃，终态事件保证投递。"""
+            cancel.check()
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                if item.get("type") in ("done", "input_request", "error"):
+                    put_guaranteed(q, item, cancel)
+                else:
+                    dropped[0] += 1
 
         def _worker_impl():
             user_id = current_user["id"]
@@ -107,6 +167,7 @@ def consult(
                     for k, v in req.profile.items():
                         if v not in (None, ""):
                             merged_profile[k] = str(v)
+                    _persist_form_profile(rt, user_id, req.profile)
 
                 # 画像中已非空字段 = 已知字段；下发 input_request 时过滤掉，不重复弹窗询问
                 known_fields = {
@@ -156,7 +217,7 @@ def consult(
                     lambda name, cb: rt.new_consult_agent(
                         name, cb, episodic=rt._get_episodic(req.thread_id, user_id),
                     ),
-                    emit=q.put,
+                    emit=_safe_emit,
                 )
                 result = graph.invoke(initial_state)
 
@@ -186,16 +247,16 @@ def consult(
                         if f["id"] in wanted and f["id"] not in known_fields
                     ]
                     if fields:
-                        q.put({
+                        _safe_emit({
                             "type": "input_request",
                             "message": final or "请先补充以下基本信息，我再为你做针对性规划。",
                             "fields": fields,
                         })
 
                 # synthesis 流式
-                q.put({"type": "stage", "stage": "synthesis"})
+                _safe_emit({"type": "stage", "stage": "synthesis"})
                 for p in _chunk_text(final):
-                    q.put({"type": "chunk", "text": p})
+                    _safe_emit({"type": "chunk", "text": p})
 
                 try:
                     rt.record_thread_messages(
@@ -206,11 +267,13 @@ def consult(
                     )
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
-                q.put({"type": "done", "content": final, "opinions": opinions, "calls": calls})
+                _safe_emit({"type": "done", "content": final, "opinions": opinions, "calls": calls})
+            except StreamCancelled:
+                pass  # 客户端断开/停止生成：不再投递任何事件
             except Exception as e:
                 err["exc"] = e
             finally:
-                q.put(_SENTINEL)
+                put_guaranteed(q, _SENTINEL, cancel)
 
         def _worker():
             traced_call(
@@ -228,10 +291,14 @@ def consult(
             while True:
                 try:
                     # salary_query 等真实抓取工具单次可能 5-60s，多顾问并行时
-                    # 放宽到 300s，避免工具执行期被误判为流超时（前端已有"思考中"指示）。
-                    item = q.get(timeout=300.0)
+                    # 放宽到统一空闲超时，避免工具执行期被误判为流超时
+                    # （前端已有"思考中"指示）。
+                    item = q.get(timeout=STREAM_IDLE_TIMEOUT_SECONDS)
                 except queue.Empty:
-                    yield _ndjson_line({"type": "error", "message": "stream timeout after 60s"})
+                    yield _ndjson_line({
+                        "type": "error",
+                        "message": f"stream timeout after {STREAM_IDLE_TIMEOUT_SECONDS}s",
+                    })
                     break
                 if item is _SENTINEL:
                     break
@@ -240,6 +307,8 @@ def consult(
                 yield _ndjson_line({"type": "error", "message": str(err["exc"])})
         except RuntimeInitError as e:
             yield _ndjson_line({"type": "error", "message": str(e)})
+        finally:
+            cancel.set()  # 生成器关闭（客户端断开/停止）→ 通知 worker 协作式取消
         t.join(timeout=1)
 
     return StreamingResponse(

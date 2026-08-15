@@ -15,6 +15,7 @@ ALLOWED_FIELDS: dict[str, tuple[str, str]] = {
     "profile.level": ("profile", "level"),
     "profile.direction": ("profile", "direction"),
     "profile.experience_years": ("profile", "experience_years"),
+    "profile.current_position": ("profile", "current_position"),
     "target_companies": ("target_company", "companies"),
     "preferences.salary_min": ("preference", "salary_min"),
     "preferences.salary_max": ("preference", "salary_max"),

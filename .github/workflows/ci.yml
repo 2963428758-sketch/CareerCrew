@@ -1,4 +1,5 @@
-# CareerCrew CI：轻量单测（配置加载 + AI 工厂契约，外部依赖全 mock，无需 API key）。
+# CareerCrew CI：分层流水线（快速单测 / API / Postgres / 类型编译检查 / 前端构建）
+# + PR 变更行 80% 覆盖率门禁（diff-cover）+ nightly integration/e2e。
 # 重 ML 栈（FlagEmbedding / torch / BGE-M3）由本地 conda env 验证（DEV_SPEC §4.4）。
 name: CI
 
@@ -6,6 +7,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
 
 jobs:
   unit:
@@ -23,11 +27,38 @@ jobs:
             "langgraph-checkpoint-sqlite>=3.0.0"
           pip install -e . --no-deps
       - name: Unit tests (config + AI factories)
-        # 测试不调真实 API；只需让 validate_settings 通过（api_key 非空）
         env:
           SILICONFLOW_API_KEY: "sk-test-ci-dummy"
         run: |
           pytest -q tests/unit/test_config_loading.py tests/unit/test_ai_base_factories.py
+
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-mock pytest-check pytest-cov fastapi uvicorn python-multipart \
+            "PyJWT>=2.10" "argon2-cffi>=23.1" pydantic PyYAML python-dotenv numpy \
+            "langgraph>=1.2.0" "langchain>=1.0.0" "langchain-core>=1.0.0" "langchain-openai>=1.0.0" \
+            "qdrant-client>=1.19.0" "langgraph-checkpoint-sqlite>=3.0.0" "psycopg[binary]>=3.1.0"
+          pip install -e . --no-deps
+      - name: API tests (FakeRuntime) with coverage
+        env:
+          SILICONFLOW_API_KEY: "sk-test-ci-dummy"
+          CAREERCREW_ENV: "test"
+        run: |
+          pytest -q tests/api --cov=careercrew_api --cov=careercrew_core --cov-report=xml
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
 
   postgres-memory:
     runs-on: ubuntu-latest
@@ -60,3 +91,109 @@ jobs:
           POSTGRES_TEST_DSN: postgresql://careercrew:careercrew@localhost:5432/careercrew
         run: |
           pytest -q tests/integration/test_postgres_memory_db.py
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile check (syntax + import-free bytecode)
+        run: |
+          python -m compileall -q careercrew_api careercrew_core careercrew_ai
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: careercrew_web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: careercrew_web/package-lock.json
+      - name: Install and verify
+        run: |
+          npm ci
+          npm run lint
+          npm run test
+          npm run build
+
+  eval-sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Offline eval non-regression gate
+        run: |
+          python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail-on-regression
+
+  coverage-gate:
+    needs: [api]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Changed-lines 80% coverage gate (diff-cover)
+        run: |
+          pip install diff-cover
+          git fetch origin main --depth=1 || true
+          diff-cover coverage.xml --compare-branch=origin/main --fail-under=80 \
+            --html-report diff-cover.html
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diff-cover-report
+          path: diff-cover.html
+          retention-days: 7
+
+  nightly:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: careercrew
+          POSTGRES_PASSWORD: careercrew
+          POSTGRES_DB: careercrew
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U careercrew -d careercrew"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install integration deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest "psycopg[binary]>=3.1.0"
+          pip install -e . --no-deps
+      - name: Integration / e2e (nightly, non-blocking)
+        env:
+          POSTGRES_TEST_DSN: postgresql://careercrew:careercrew@localhost:5432/careercrew
+        run: |
+          pytest -q -m "integration or e2e"
+      - name: Real-model eval (optional, non-blocking)
+        # TODO(eval): collect_real 落地（真实模型/服务 + secrets）后启用，当前恒为 skipped 留痕
+        run: |
+          python scripts/eval_runner.py --real || echo "real eval skipped (missing keys/service)"

@@ -96,8 +96,19 @@ export default function KnowledgePage() {
   const [messages, setMessages] = useState<KnowledgeMessage[]>([])
   const [panelOpen, setPanelOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [category, setCategory] = useState("")
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.knowledge)
+  // 检索范围：存于会话元数据（retrieval_scope），切换会话自动恢复，修改即时 PATCH 持久化
+  const threads = useThreadStore((s) => s.threadsByModule.knowledge ?? [])
+  const setThreadScope = useThreadStore((s) => s.setThreadScope)
+  const savedScope = threads.find((t) => t.thread_id === currentThreadId)?.retrieval_scope
+  const category = savedScope?.type === "category" ? savedScope.category_id : ""
+  const changeCategory = (id: string) => {
+    void setThreadScope(
+      "knowledge",
+      currentThreadId,
+      id ? { type: "category", category_id: id } : { type: "all" }
+    )
+  }
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
@@ -107,6 +118,13 @@ export default function KnowledgePage() {
   const meta = AGENT_META.knowledge_advisor
 
   useEffect(() => {
+    if (stream.status === "error") {
+      // 流出错：移除未填充的空助手占位气泡
+      setMessages((prev) =>
+        prev.filter((m) => !(m.role === "assistant" && m.streaming && !m.content))
+      )
+      return
+    }
     if (stream.status === "done" && stream.doneContent) {
       setMessages((prev) => {
         const msgs = [...prev]
@@ -239,7 +257,7 @@ export default function KnowledgePage() {
               {KB_CATEGORIES.map((c) => (
                 <button
                   key={c.id || "all"}
-                  onClick={() => setCategory(c.id)}
+                  onClick={() => changeCategory(c.id)}
                   className={cn(
                     "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all",
                     category === c.id

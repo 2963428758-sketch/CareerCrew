@@ -1,5 +1,5 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
-import { useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from "react"
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from "react"
 import {
   BookOpen, Copy, FileText, GraduationCap, MessageCircle,
   Loader2, LogOut, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
@@ -8,15 +8,17 @@ import { cn } from "@/lib/utils"
 import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { SettingsDialog } from "@/components/SettingsDialog"
-import ChatPage from "@/pages/ChatPage"
-import InterviewPage from "@/pages/InterviewPage"
-import ResumePage from "@/pages/ResumePage"
-import ConsultPage from "@/pages/ConsultPage"
-import DataPage from "@/pages/DataPage"
-import KnowledgePage from "@/pages/KnowledgePage"
-import MatcherPage from "@/pages/MatcherPage"
 import { AuthLoading, AuthScreen } from "@/components/AuthScreen"
 import { apiFetch, getAuthSnapshot, logout, restoreSession, subscribeAuth } from "@/lib/auth"
+
+// 路由懒加载：按页拆 chunk，消除首屏大 bundle（Chat/Consult/Knowledge 等重页面按需加载）
+const ChatPage = lazy(() => import("@/pages/ChatPage"))
+const MatcherPage = lazy(() => import("@/pages/MatcherPage"))
+const InterviewPage = lazy(() => import("@/pages/InterviewPage"))
+const ResumePage = lazy(() => import("@/pages/ResumePage"))
+const KnowledgePage = lazy(() => import("@/pages/KnowledgePage"))
+const ConsultPage = lazy(() => import("@/pages/ConsultPage"))
+const DataPage = lazy(() => import("@/pages/DataPage"))
 
 const NAV = [
   // 按求职流程排序：规划 → 匹配 → 简历 → 面试 → 会诊 → 知识库
@@ -44,6 +46,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => { void restoreSession() }, [])
+
+  // 登出/切换用户：清空会话与线程状态（各 store 里可能残留上一个用户的数据）
+  const userId = auth.user?.id
+  useEffect(() => {
+    useThreadStore.getState().resetAll()
+    useStreamStore.getState().resetAll()
+  }, [userId])
 
   if (auth.status === "loading") return <AuthLoading />
   if (auth.status === "anonymous") return <AuthScreen />
@@ -113,11 +122,18 @@ export default function App() {
       </nav>
 
       <main className="flex-1 overflow-hidden">
-        {Object.entries(PAGES).map(([path, Page]) => (
-          <div key={path} className={cn("h-full", location.pathname === path ? "block" : "hidden")}>
-            <Page />
-          </div>
-        ))}
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              页面加载中…
+            </div>
+          }
+        >
+          {(() => {
+            const Page = PAGES[location.pathname] ?? ChatPage
+            return <Page key={location.pathname} />
+          })()}
+        </Suspense>
       </main>
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />

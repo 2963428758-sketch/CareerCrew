@@ -1,5 +1,12 @@
-{"id": "resume-1", "case_type": "resume_match", "resume_text": "精通 Python，用 LangChain 搭建 RAG 系统，做过 Agent 应用，熟悉向量检索与 Qdrant", "jd_text": "要求 Python、LangChain、RAG、Agent，熟悉向量数据库"}
-{"id": "resume-2", "case_type": "resume_match", "resume_text": "三年 Java 后端，Spring Boot / MyBatis / Redis", "jd_text": "Go 开发，要求 K8s 与分布式经验"}
-{"id": "resume-3", "case_type": "resume_match", "resume_text": "在校生，学习能力强，愿意从零学", "jd_text": "要求 Python 与数据分析经验"}
-{"id": "interview-1", "case_type": "interview_qa", "question": "讲一下 RAG 怎么减少大模型幻觉", "answer": "检索增强生成通过把外部文档切块后向量化，回答时先检索相关片段作为上下文，模型只能基于给定证据作答，并附引用来源，从而降低凭空编造的概率。"}
-{"id": "interview-2", "case_type": "interview_qa", "question": "HashMap 的底层原理是什么", "answer": "HashMap 底层是数组加链表，JDK8 起链表超过阈值会转红黑树，通过扰动函数降低哈希碰撞，扩容时按 2 倍扩容并重新散列。"}
+{"id": "c01-route-salary", "kind": "route", "question": "这个 offer 怎么谈薪？", "expected": {"route": "salary_negotiator"}}
+{"id": "c02-route-job", "kind": "route", "question": "帮我找大模型方向的目标岗位", "expected": {"route": "job_matcher"}}
+{"id": "c03-route-resume", "kind": "route", "question": "按这个 JD 定制我的简历", "expected": {"route": "resume_advisor"}}
+{"id": "c04-route-interview", "kind": "route", "question": "出一组 RAG 面试题", "expected": {"route": "interviewer"}}
+{"id": "c05-retrieval-rag", "kind": "retrieval", "question": "RAG 检索流程分几步？", "expected": {"doc_ids": ["d1", "d2"], "k": 5}}
+{"id": "c06-retrieval-langgraph", "kind": "retrieval", "question": "LangGraph 1.x 的 interrupt 怎么用？", "expected": {"doc_ids": ["d5"], "k": 5}}
+{"id": "c07-retrieval-qdrant", "kind": "retrieval", "question": "Qdrant 双向量 schema 是什么？", "expected": {"doc_ids": ["d7"], "k": 5}}
+{"id": "c08-citation-checkpoint", "kind": "citation", "question": "LangGraph 状态如何持久化？", "expected": {"must_include": ["LangGraph", "checkpoint"]}}
+{"id": "c09-citation-rrf", "kind": "citation", "question": "dense 与 sparse 如何融合？", "expected": {"must_include": ["RRF", "融合"]}}
+{"id": "c10-tool-matcher", "kind": "tool", "question": "搜索最新的猎聘 Java 岗位", "expected": {"tool_names": ["search_jobs"]}}
+{"id": "c11-memory-retention", "kind": "memory", "question": "回顾我的技术栈与向量库偏好", "expected": {"memory_hit": true, "retention_ref": ["RAG", "Qdrant"]}}
+{"id": "c12-consult-planner", "kind": "consult", "question": "帮我规划转岗大模型的方向", "expected": {"expected_agents": ["career_planner"], "max_latency_s": 600, "max_tokens": 8000}}

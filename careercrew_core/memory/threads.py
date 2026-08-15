@@ -15,9 +15,11 @@ class ThreadStore:
         title: str = "",
         module: str = "chat",
         pinned: bool = False,
+        retrieval_scope: dict | None = None,
     ) -> dict:
         return self._db.upsert_thread(
-            user_id, thread_id, title or "", module or "chat", bool(pinned)
+            user_id, thread_id, title or "", module or "chat", bool(pinned),
+            retrieval_scope,
         )
 
     def get(self, user_id: str, thread_id: str) -> dict | None:

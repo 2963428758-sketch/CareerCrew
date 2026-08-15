@@ -15,7 +15,13 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import MatchRequest, ResumeRequest
-from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
+from careercrew_api.sse import (
+    CancellationEvent,
+    done_event,
+    error_event,
+    stage_event,
+    stream_agent,
+)
 
 router = APIRouter()
 
@@ -39,17 +45,19 @@ def match(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": ""}
+        cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
             result["content"] = rt.run_match_stream(
-                req.thread_id, current_user["id"], req.intent, cb
+                req.thread_id, current_user["id"], req.intent, cb,
+                cancel_check=cancel.check,
             ) or ""
 
         try:
             yield stage_event("match")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -74,17 +82,19 @@ def resume(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": ""}
+        cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
             result["content"] = rt.run_resume_stream(
-                req.thread_id, current_user["id"], req.jd_text, cb
+                req.thread_id, current_user["id"], req.jd_text, cb,
+                cancel_check=cancel.check,
             ) or ""
 
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -109,17 +119,19 @@ def plan(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": ""}
+        cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
             result["content"] = rt.run_planner_chat_stream(
-                req.thread_id, current_user["id"], req.intent, cb
+                req.thread_id, current_user["id"], req.intent, cb,
+                cancel_check=cancel.check,
             ) or ""
 
         try:
             yield stage_event("planning")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=180.0):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
