@@ -83,6 +83,18 @@ def _mk(payload: dict | None) -> FakePoint:
     return FakePoint(id=f"p-{len(payload or {})}-{abs(hash(json.dumps(payload, sort_keys=True, default=str)))}", payload=payload)
 
 
+class FailingSetPayloadClient(FakeClient):
+    """set_payload 总是抛异常，用于验证 apply 失败计入 unresolved。"""
+
+    def __init__(self, collection_points, **kwargs):
+        super().__init__(collection_points, **kwargs)
+        self.failed_set_payload_calls = 0
+
+    def set_payload(self, collection, payload, points):
+        self.failed_set_payload_calls += 1
+        raise RuntimeError("set_payload failed")
+
+
 # ── 纯函数：分类逻辑 ──
 
 
@@ -110,10 +122,10 @@ def test_classify_owned_by_owner_when_episodic_user_id_absent():
 def test_verify_dryrun_no_write():
     pts = [FakePoint("p1", {}), FakePoint("p2", {}), FakePoint("p3", {"owner_user_id": "u_001"})]
     client = FakeClient({"c": pts})
-    scanned, unowned, changed, skipped, conflicts = verify_collection(
+    scanned, unowned, changed, skipped, conflicts, unresolved = verify_collection(
         client, "c", "owner_user_id", apply=False, default_owner="u_001"
     )
-    assert (scanned, unowned, changed, skipped, conflicts) == (3, 2, 2, 1, 0)
+    assert (scanned, unowned, changed, skipped, conflicts, unresolved) == (3, 2, 2, 1, 0, 0)
     assert client.set_payload_calls == []  # dry-run 不写
     assert pts[0].payload == {} and pts[1].payload == {}
 
@@ -121,29 +133,64 @@ def test_verify_dryrun_no_write():
 def test_verify_apply_backfills_and_rerun_all_zero():
     pts = [FakePoint("p1", {}), FakePoint("p2", {}), FakePoint("p3", {"owner_user_id": "u_001"})]
     client = FakeClient({"c": pts})
-    scanned, unowned, changed, skipped, conflicts = verify_collection(
+    scanned, unowned, changed, skipped, conflicts, unresolved = verify_collection(
         client, "c", "owner_user_id", apply=True, default_owner="u_001"
     )
-    assert (scanned, unowned, changed, skipped, conflicts) == (3, 2, 2, 1, 0)
+    assert (scanned, unowned, changed, skipped, conflicts, unresolved) == (3, 2, 2, 1, 0, 0)
     assert pts[0].payload == {"owner_user_id": ORPHAN_OWNER}
     assert pts[1].payload == {"owner_user_id": ORPHAN_OWNER}
     # 复跑：全 0
-    scanned2, unowned2, changed2, skipped2, conflicts2 = verify_collection(
+    scanned2, unowned2, changed2, skipped2, conflicts2, unresolved2 = verify_collection(
         client, "c", "owner_user_id", apply=True, default_owner="u_001"
     )
-    assert (scanned2, unowned2, changed2, skipped2, conflicts2) == (3, 0, 0, 3, 0)
+    assert (scanned2, unowned2, changed2, skipped2, conflicts2, unresolved2) == (3, 0, 0, 3, 0, 0)
 
 
 def test_verify_conflict_not_overwritten():
     # 已有 owner_user_id 且不等于 default-owner → 冲突，不覆盖
     pts = [FakePoint("p1", {"owner_user_id": "u_999"})]
     client = FakeClient({"c": pts})
-    scanned, unowned, changed, skipped, conflicts = verify_collection(
+    scanned, unowned, changed, skipped, conflicts, unresolved = verify_collection(
         client, "c", "owner_user_id", apply=True, default_owner="u_001"
     )
-    assert (scanned, unowned, changed, skipped, conflicts) == (1, 0, 0, 0, 1)
+    assert (scanned, unowned, changed, skipped, conflicts, unresolved) == (1, 0, 0, 0, 1, 0)
     assert client.set_payload_calls == []
     assert pts[0].payload["owner_user_id"] == "u_999"  # 未被覆盖
+
+
+def test_verify_conflict_with_non_default_owner():
+    # 非默认 --default-owner：另一 owner 为冲突，默认值本身不作 magic 豁免
+    pts = [FakePoint("p1", {"owner_user_id": "u_001"})]
+    client = FakeClient({"c": pts})
+    scanned, unowned, changed, skipped, conflicts, unresolved = verify_collection(
+        client, "c", "owner_user_id", apply=True, default_owner="u_999"
+    )
+    # owner=u_001 != default u_999 → 冲突；无孤儿，不写
+    assert (scanned, unowned, changed, skipped, conflicts, unresolved) == (1, 0, 0, 0, 1, 0)
+    assert client.set_payload_calls == []
+    assert pts[0].payload["owner_user_id"] == "u_001"
+
+
+def test_verify_apply_set_payload_failure_counts_unresolved():
+    # apply 时 set_payload 抛异常 → 计入 unresolved 而非 changed，且继续跑完
+    pts = [FakePoint("p1", {"owner_user_id": "u_999"}), FakePoint("p2", {})]
+    broken = FailingSetPayloadClient({"c": pts})
+    scanned, unowned, changed, skipped, conflicts, unresolved = verify_collection(
+        broken, "c", "owner_user_id", apply=True, default_owner="u_001"
+    )
+    assert (scanned, unowned, changed, skipped, conflicts, unresolved) == (2, 1, 0, 0, 1, 1)
+    # 回填失败的点未被写入
+    assert pts[1].payload == {}
+
+    # 同一集合（apply 时）reported unresolved 与 conflicts 各自独立
+    report = build_report(
+        {}, {"c": {"key_field": "owner_user_id", "points": scanned, "unowned": unowned,
+                   "changed": changed, "skipped": skipped, "conflicts": conflicts,
+                   "unresolved": unresolved}},
+        "2025-01-01T00:00:00+00:00", "2025-01-01T00:00:05+00:00", "APPLY",
+    )
+    assert report["conflicts"] == 1
+    assert report["unresolved"] == 1
 
 
 # ── snapshot ──

@@ -14,6 +14,7 @@
 - unowned = 既无 owner_user_id 也无 user_id 的孤儿点。
 - changed = 本次会写入 owner_user_id 的点数（仅孤儿点，apply 模式生效时计）。
 - conflicts = owner_user_id 已存在但值与 default-owner 不一致的点数，绝不覆盖。
+- unresolved = 扫描到但在 apply 时写入失败的孤儿点数（区别于 conflicts）。
 - apply 时先对每个集合 snapshot；snapshot 失败则中止（dry-run 仅告警继续）。
 - 迁移后（--apply）自动复跑 dry-run，changed/conflicts/unowned 非 0 则 exit 1。
 """
@@ -75,30 +76,38 @@ def scan_collection(client, collection: str, key_field: str) -> list[dict]:
 
 
 def verify_collection(client, collection: str, key_field: str, *,
-                      apply: bool, default_owner: str) -> tuple[int, int, int, int, int]:
-    """扫描并（apply 时）回填孤儿点。返回 (scanned, unowned, changed, skipped, conflicts)。"""
-    scanned = unowned = changed = skipped = conflicts = 0
+                      apply: bool, default_owner: str) -> tuple[int, int, int, int, int, int]:
+    """扫描并（apply 时）回填孤儿点。
+
+    返回 (scanned, unowned, changed, skipped, conflicts, unresolved)。
+    unresolved = 扫描到但 apply 时写入失败（set_payload 抛异常）的孤儿点数。
+    """
+    scanned = unowned = changed = skipped = conflicts = unresolved = 0
     for row in scan_collection(client, collection, key_field):
         scanned += 1
         payload = row["payload"]
         if row["kind"] == "owned":
             # owned 但 owner_user_id 存在且与默认不一时视为冲突（不覆盖）
             owner = payload.get("owner_user_id")
-            if owner is not None and owner != default_owner and owner != ORPHAN_OWNER:
+            if owner is not None and owner != default_owner:
                 conflicts += 1
             else:
                 skipped += 1
             continue
         # orphan：两键皆无 → 回填 owner_user_id
         unowned += 1
-        changed += 1
         if apply:
-            client.set_payload(
-                collection,
-                payload={"owner_user_id": default_owner},
-                points=[row["id"]],
-            )
-    return scanned, unowned, changed, skipped, conflicts
+            try:
+                client.set_payload(
+                    collection,
+                    payload={"owner_user_id": default_owner},
+                    points=[row["id"]],
+                )
+            except Exception:
+                unresolved += 1
+                continue
+        changed += 1
+    return scanned, unowned, changed, skipped, conflicts, unresolved
 
 
 def snapshot_collection(client, collection: str) -> str | None:
@@ -128,7 +137,7 @@ def build_report(snapshot_ids: dict[str, str | None], per_collection: dict,
     scanned = sum(c["points"] for c in per_collection.values())
     updated = sum(c["changed"] for c in per_collection.values())
     conflicts = sum(c["conflicts"] for c in per_collection.values())
-    unresolved = conflicts  # 冲突无法解决，二者语义一致时同值
+    unresolved = sum(c.get("unresolved", 0) for c in per_collection.values())
     return {
         "snapshot_id": snapshot_ids,
         "scanned": scanned,
@@ -172,7 +181,7 @@ def run(client, collections: dict[str, str], *, apply: bool,
                 raise RuntimeError(f"{msg}（apply 模式中止）")
             warnings.append(msg + "（dry-run 告警继续）")
 
-        scanned, unowned, changed, skipped, conflicts = verify_collection(
+        scanned, unowned, changed, skipped, conflicts, unresolved = verify_collection(
             client, collection, key_field, apply=apply, default_owner=default_owner
         )
         per_collection[collection] = {
@@ -182,6 +191,7 @@ def run(client, collections: dict[str, str], *, apply: bool,
             "changed": changed,
             "skipped": skipped,
             "conflicts": conflicts,
+            "unresolved": unresolved,
         }
 
     finished_at = _now_iso()
