@@ -49,5 +49,14 @@ def require_admin(
     return user
 
 
+def require_quality_reviewer(
+    user: Annotated[dict[str, str], Depends(get_current_user)],
+) -> dict[str, str]:
+    if user["role"] != "quality_reviewer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="quality reviewer required")
+    return user
+
+
 CurrentUser: TypeAlias = Annotated[dict[str, str], Depends(get_current_user)]
 AdminUser: TypeAlias = Annotated[dict[str, str], Depends(require_admin)]
+QualityReviewer: TypeAlias = Annotated[dict[str, str], Depends(require_quality_reviewer)]

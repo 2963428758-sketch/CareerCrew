@@ -21,6 +21,9 @@ from pydantic import Field
 
 from careercrew_api.auth.store import AccountExistsError, AccountStore, hash_token
 
+_VALID_ROLES = ("admin", "user", "quality_reviewer")
+_VALID_STATUSES = ("active", "disabled")
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -107,6 +110,8 @@ class FakeAccountStore(AccountStore):
 
     def create_account(self, username: str, password_hash: str, role: str,
                        must_change: bool = False) -> dict:
+        if role not in _VALID_ROLES:
+            raise ValueError(f"invalid role: {role}")
         if any(a["username"] == username for a in self.accounts.values()):
             raise AccountExistsError("username already exists")
         user_id = f"u_{uuid4().hex}"
@@ -134,6 +139,10 @@ class FakeAccountStore(AccountStore):
 
     def update_account(self, user_id: str, *, role: str | None = None,
                        status: str | None = None) -> dict:
+        if role is not None and role not in _VALID_ROLES:
+            raise ValueError(f"invalid role: {role}")
+        if status is not None and status not in _VALID_STATUSES:
+            raise ValueError(f"invalid status: {status}")
         if user_id not in self.accounts:
             raise KeyError(user_id)
         if role is not None:

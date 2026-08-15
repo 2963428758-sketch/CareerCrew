@@ -17,7 +17,7 @@ from uuid import uuid4
 from careercrew_core.state.settings import AuthSettings
 
 _STATUSES = ("active", "disabled")
-_ROLES = ("admin", "user")
+_ROLES = ("admin", "user", "quality_reviewer")
 
 
 class AccountExistsError(Exception):
@@ -133,11 +133,22 @@ class PostgresAccountStore(AccountStore):
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS auth_accounts ("
                 "id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
-                "role TEXT NOT NULL CHECK (role IN ('admin','user')), "
+                "role TEXT NOT NULL CHECK (role IN ('admin','user','quality_reviewer')), "
                 "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')), "
                 "token_version INTEGER NOT NULL DEFAULT 0, "
                 "must_change_password BOOLEAN NOT NULL DEFAULT false, "
                 "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+            # 幂等迁移：既有库的旧 role CHECK（admin/user）不会随 CREATE TABLE IF NOT EXISTS
+            # 更新，需 DROP + ADD。任何已有数据（admin/user）仍满足新约束，故无数据丢失。
+            conn.execute(
+                "ALTER TABLE auth_accounts "
+                "DROP CONSTRAINT IF EXISTS auth_accounts_role_check"
+            )
+            conn.execute(
+                "ALTER TABLE auth_accounts "
+                "ADD CONSTRAINT auth_accounts_role_check "
+                "CHECK (role IN ('admin','user','quality_reviewer'))"
             )
             conn.execute(
                 "ALTER TABLE auth_accounts "

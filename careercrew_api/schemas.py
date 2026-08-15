@@ -31,20 +31,20 @@ class CredentialsRequest(BaseModel):
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，首次登录强制改密
-    role: Literal["user", "admin"] = "user"
+    role: Literal["user", "admin", "quality_reviewer"] = "user"
 
 
 class PublicUser(BaseModel):
     id: str
     username: str
-    role: Literal["user", "admin"]
+    role: Literal["user", "admin", "quality_reviewer"]
     must_change_password: bool = False
 
 
 class AccountListItem(BaseModel):
     id: str
     username: str
-    role: Literal["user", "admin"]
+    role: Literal["user", "admin", "quality_reviewer"]
     status: Literal["active", "disabled"]
     token_version: int
     must_change_password: bool = False
@@ -60,7 +60,7 @@ class UserListResponse(BaseModel):
 
 
 class UserPatchRequest(BaseModel):
-    role: Literal["user", "admin"] | None = None
+    role: Literal["user", "admin", "quality_reviewer"] | None = None
     status: Literal["active", "disabled"] | None = None
 
     @model_validator(mode="after")

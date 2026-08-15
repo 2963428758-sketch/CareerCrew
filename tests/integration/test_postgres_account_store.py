@@ -102,3 +102,38 @@ def test_postgres_delete_expired_refresh_sessions(store):
     with store._connect() as conn:
         remaining = {r["token_hash"] for r in conn.execute("SELECT token_hash FROM auth_refresh_sessions")}
     assert remaining == {hash_token("alive")}
+
+
+@pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
+def test_postgres_accepts_quality_reviewer_role(store):
+    store.create_first_admin("admin", "$argon2$fake")
+    member = store.create_account("member", "$argon2$fake2", "user")
+    # 写入/读出 quality_reviewer
+    updated = store.update_account(member["id"], role="quality_reviewer")
+    assert updated["role"] == "quality_reviewer"
+    assert store.account_by_id(member["id"])["role"] == "quality_reviewer"
+    # 其余任意字符串一律拒绝（ValueError，与 update_account 现状一致）
+    with pytest.raises(ValueError, match="invalid role"):
+        store.update_account(member["id"], role="superuser")
+
+
+@pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
+def test_postgres_role_migration_is_idempotent(store):
+    """迁移幂等：对已有旧约束的库重复执行不报错，且 CHECK 约束放开 quality_reviewer。"""
+    # 模拟旧约束：先 DROP 新约束并恢复旧 CHECK（admin/user），再重建 store 触发迁移。
+    with store._connect() as conn, conn.transaction():
+        conn.execute("ALTER TABLE auth_accounts DROP CONSTRAINT IF EXISTS auth_accounts_role_check")
+        conn.execute(
+            "ALTER TABLE auth_accounts ADD CONSTRAINT auth_accounts_role_check "
+            "CHECK (role IN ('admin','user'))"
+        )
+    # 重建 store 会执行迁移（DROP 旧约束 + ADD 新的含 quality_reviewer）
+    migrated = PostgresAccountStore(DSN)
+    # 迁移后 quality_reviewer 写入成功
+    migrated.create_first_admin("admin2", "$argon2$fake")
+    member = migrated.create_account("member2", "$argon2$fake2", "user")
+    updated = migrated.update_account(member["id"], role="quality_reviewer")
+    assert updated["role"] == "quality_reviewer"
+    # 再次重建（重复迁移）不报错
+    PostgresAccountStore(DSN)
+

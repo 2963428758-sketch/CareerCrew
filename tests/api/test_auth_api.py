@@ -262,6 +262,46 @@ def test_refresh_rejects_untrusted_origin(auth_client):
 
 
 @pytest.mark.web
+def test_admin_assigns_quality_reviewer_and_dependency_gates(auth_client):
+    from careercrew_api.auth.dependencies import require_quality_reviewer
+
+    _bootstrap(auth_client)
+    admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
+
+    # 普通 user
+    member = auth_client.post(
+        "/api/auth/users", json={"username": "member", "password": USER_PASSWORD}, headers=admin_headers
+    )
+    assert member.status_code == 201
+    member_id = member.json()["id"]
+
+    # admin 将其设为 quality_reviewer（写审计 + token_version 递增沿用 update_user）
+    patched = auth_client.patch(
+        f"/api/auth/users/{member_id}", json={"role": "quality_reviewer"}, headers=admin_headers
+    )
+    assert patched.status_code == 200
+    assert patched.json()["role"] == "quality_reviewer"
+
+    # 该用户登录后，access token role claim == quality_reviewer
+    login = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD})
+    assert login.status_code == 200
+    assert login.json()["user"]["role"] == "quality_reviewer"
+
+    # reviewer 访问 require_admin 端点 → 403
+    reviewer_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert auth_client.get("/api/auth/users", headers=reviewer_headers).status_code == 403
+
+    # 普通 user 访问 reviewer 依赖 → 403（直接用依赖函数验证，Phase 5 才建端点）
+    with pytest.raises(Exception) as user_err:
+        require_quality_reviewer({"id": "u", "username": "u", "role": "user"})
+    assert getattr(user_err.value, "status_code", None) == 403
+
+    # reviewer 通过自己的依赖 → 200（依赖函数直接返回 user dict，不抛异常）
+    assert require_quality_reviewer({"id": member_id, "username": "member", "role": "quality_reviewer"}) \
+        == {"id": member_id, "username": "member", "role": "quality_reviewer"}
+
+
+@pytest.mark.web
 def test_login_lock_returns_429_with_retry_after(auth_client):
     _bootstrap(auth_client)
     for _ in range(5):
