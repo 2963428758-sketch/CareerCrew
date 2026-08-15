@@ -89,6 +89,19 @@ def test_usage_middleware_snapshot() -> None:
     assert mw.input_tokens == 11
 
 
+def test_usage_middleware_snapshot_no_usage_is_none() -> None:
+    """从未观测到 usage 时 snapshot 返回 (None, None)。"""
+    mw = UsageAccumulatorMiddleware()
+    assert mw.snapshot() == (None, None)
+
+
+def test_usage_middleware_snapshot_preserves_zero() -> None:
+    """观测到 usage（即使 0）后 snapshot 返回 (0, 0)，不被 or None 折叠。"""
+    mw = UsageAccumulatorMiddleware()
+    mw._add_usage({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+    assert mw.snapshot() == (0, 0)
+
+
 # ── ObservabilityMiddleware 单元（tool 计时） ──
 
 
@@ -156,6 +169,18 @@ def test_run_agent_populates_tokens_and_tool_details() -> None:
     # 老字段不受影响
     assert result.tool_calls_total == 1
     assert len(result.iterations) == 2
+
+
+def test_run_agent_zero_tokens_preserved() -> None:
+    """模型上报 usage_metadata 且 input_tokens=0 时，input_tokens==0（非 None）。"""
+    llm = FakeChatModel([
+        _msg("hello", usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+    ])
+    agent = build_agent(llm=llm, tools=None, system_prompt="sys", max_iterations=5)
+    result = run_agent(agent, [HumanMessage(content="hi")])
+    assert result.content == "hello"
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
 
 
 def test_run_agent_no_usage_tokens_none() -> None:

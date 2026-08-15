@@ -203,18 +203,22 @@ def _redact_truncate(text: str | None) -> str | None:
     return _truncate(redacted, limit=_OBSERVABILITY_TEXT_LIMIT)
 
 
+def _redact_value(value: object) -> object:
+    """脱敏任意嵌套结构：str 脱敏截断、dict 递归、list 逐项递归、其余原样。"""
+    if isinstance(value, str):
+        return _redact_truncate(value)
+    if isinstance(value, dict):
+        return _redact_dict(value)
+    if isinstance(value, list):
+        return [_redact_value(x) for x in value]
+    return value
+
+
 def _redact_dict(value: dict | None) -> dict | None:
     """递归脱敏 dict（字符串叶子脱敏 + 截断，保留结构与数值）；None 透传。"""
     if value is None:
         return None
     out: dict = {}
     for k, v in value.items():
-        if isinstance(v, str):
-            out[k] = _redact_truncate(v)
-        elif isinstance(v, dict):
-            out[k] = _redact_dict(v)
-        elif isinstance(v, list):
-            out[k] = [_redact_truncate(x) if isinstance(x, str) else x for x in v]
-        else:
-            out[k] = v
+        out[k] = _redact_value(v)
     return out

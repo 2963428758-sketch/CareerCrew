@@ -119,6 +119,7 @@ class UsageAccumulatorMiddleware(AgentMiddleware):
         super().__init__()
         self.input_tokens = 0
         self.output_tokens = 0
+        self._seen = False
 
     @staticmethod
     def _usage_of(msg: BaseMessage) -> dict | None:
@@ -128,6 +129,7 @@ class UsageAccumulatorMiddleware(AgentMiddleware):
     def _add_usage(self, usage: dict | None) -> None:
         if not usage:
             return
+        self._seen = True
         try:
             self.input_tokens += int(usage.get("input_tokens") or 0)
             self.output_tokens += int(usage.get("output_tokens") or 0)
@@ -145,8 +147,13 @@ class UsageAccumulatorMiddleware(AgentMiddleware):
                 self._add_usage(self._usage_of(m))
         return response
 
-    def snapshot(self) -> tuple[int, int]:
-        """返回 (input_tokens, output_tokens) 累计快照（供 run_agent 落 AgentResult）。"""
+    def snapshot(self) -> tuple[int | None, int | None]:
+        """返回 (input_tokens, output_tokens) 累计快照，供 run_agent 落 AgentResult。
+
+        从未观测到 usage 时返回 (None, None)；观测到但累计为 0 时返回 (0, 0)。
+        """
+        if not self._seen:
+            return None, None
         return self.input_tokens, self.output_tokens
 
 
@@ -421,8 +428,8 @@ def run_agent(
     tool_call_details: list[dict] = []
     if usage_mw is not None:
         in_tok, out_tok = usage_mw.snapshot()
-        input_tokens = in_tok or None
-        output_tokens = out_tok or None
+        input_tokens = in_tok
+        output_tokens = out_tok
     if obs_mw is not None:
         tool_call_details = list(obs_mw.tool_call_details)
 

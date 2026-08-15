@@ -171,6 +171,36 @@ def test_finish_turn_redacts_and_truncates_sensitive_inputs(store):
     assert len(calls[0]["output_summary"]) <= 220
 
 
+def test_finish_turn_redacts_list_of_dict_inputs(store):
+    """红action：list 内嵌套 dict（含 list）同样递归脱敏，秘密不落库。"""
+    ctx = _begin(store)
+    secret = "sk-" + "B" * 40
+    finish_turn(
+        store, ctx, "回答",
+        tool_calls=[
+            {
+                "tool_name": "search",
+                "input_redacted": {
+                    "items": [
+                        {"api_key": secret, "count": 3},
+                        {"nested": [{"token": secret}]},
+                    ],
+                    "notes": ["list 内字符串 {secret}", 42],
+                },
+                "output_summary": "ok",
+                "status": "completed",
+            },
+        ],
+    )
+    calls = [c for c in store._db._tool_calls.values() if c["run_id"] == ctx.run_id]
+    persisted = str(calls[0]["input_redacted"])
+    assert secret not in persisted
+    assert "[REDACTED]" in persisted
+    # 结构与非字符串叶子保留
+    assert calls[0]["input_redacted"]["items"][0]["count"] == 3
+    assert calls[0]["input_redacted"]["notes"][1] == 42
+
+
 def test_turn_context_langsmith_run_id_default_none(store):
     ctx = _begin(store)
     assert ctx.langsmith_run_id is None
