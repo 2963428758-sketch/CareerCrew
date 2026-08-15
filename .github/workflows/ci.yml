@@ -34,6 +34,20 @@ jobs:
 
   api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: careercrew
+          POSTGRES_PASSWORD: careercrew
+          POSTGRES_DB: careercrew
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U careercrew -d careercrew"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,7 +64,8 @@ jobs:
       - name: API tests (FakeRuntime) with coverage
         env:
           SILICONFLOW_API_KEY: "sk-test-ci-dummy"
-          # 新 auth 校验要求 DSN（load_auth_settings 强制）；api 测试用 FakeAccountStore，不会真实连接
+          # 新 auth 要求 DSN（load_auth_settings 强制）；lifespan 的 get_auth_service
+          # 会构造 PostgresAccountStore（立即建表），故提供真实 postgres service
           DATABASE_URL: "postgresql://careercrew:careercrew@localhost:5432/careercrew"
         run: |
           pytest -q tests/api --cov=careercrew_api --cov=careercrew_core --cov-report=xml
