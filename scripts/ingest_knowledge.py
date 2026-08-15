@@ -1,6 +1,7 @@
 """知识库摄取（多模态 RAG）：文档 -> Qdrant。
 
 跑法：conda run -n careercrew python scripts/ingest_knowledge.py [路径...]
+        [--user-id u_001] [--visibility private|public]
 默认语料：data/uploads/*.pdf/png/docx（data/knowledge 不参与知识库）
 流程：
 - md/txt：Markdown 直读 -> 切分 -> Contextual Chunking -> BGE-M3 -> Qdrant
@@ -8,6 +9,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -23,10 +25,16 @@ from careercrew_core.state.settings import load_settings
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="*")
+    parser.add_argument("--user-id", default="u_001")
+    parser.add_argument("--visibility", default="private", choices=["private", "public"])
+    args = parser.parse_args()
+
     settings = load_settings()
     files: list[Path] = []
-    if len(sys.argv) > 1:
-        for raw in sys.argv[1:]:
+    if args.paths:
+        for raw in args.paths:
             p = Path(raw)
             files.extend(p.glob("**/*") if p.is_dir() else [p])
     else:
@@ -73,7 +81,10 @@ def main() -> None:
     total = 0
     for f in files:
         try:
-            n = pipe.ingest_file(f)
+            n = pipe.ingest_file(
+                f,
+                metadata={"owner_user_id": args.user_id, "visibility": args.visibility},
+            )
             print(f"  {f}: {n} points")
             total += n
         except ParsingError as e:
