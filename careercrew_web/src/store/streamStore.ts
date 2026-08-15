@@ -101,26 +101,29 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
         return { sessions: { ...s.sessions, [sessionKey]: { ...cur, ...p } } }
       })
 
+    // thinkTimers / controllers 始终 keyed 到 sessionKey（可变）：legacy remap 后
+    // sessionKey 指向新 UUID，同一把 timer/controller 需要跟着搬到新 key，
+    // 否则 remap 前 arm 的 thinking timer 会残留旧 id、stop(newId) 也无法 abort 在途 fetch。
     const armThinking = () => {
-      const prev = thinkTimers.get(threadId)
+      const prev = thinkTimers.get(sessionKey)
       if (prev) clearTimeout(prev)
       thinkTimers.set(
-        threadId,
+        sessionKey,
         setTimeout(() => patchS({ thinking: true }), 2000)
       )
     }
     const disarmThinking = () => {
-      const prev = thinkTimers.get(threadId)
+      const prev = thinkTimers.get(sessionKey)
       if (prev) {
         clearTimeout(prev)
-        thinkTimers.delete(threadId)
+        thinkTimers.delete(sessionKey)
       }
       patchS({ thinking: false })
     }
 
     armThinking()
     const controller = new AbortController()
-    controllers.set(threadId, controller)
+    controllers.set(sessionKey, controller)
     patchS({ dispatch: null, calls: [] })
 
     try {
@@ -219,6 +222,18 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
               if (evt.thread_id && evt.thread_id !== threadId) {
                 useChatStore.getState().setThreadId(evt.thread_id)
                 useThreadStore.getState().remapLegacyThread(threadId, evt.thread_id)
+                // re-key 在途 controller + thinking timer 到新 UUID：否则 stop(newId)
+                // 查不到 controller、无法 abort 本请求，thinkTimers 也残留旧 id。
+                const ctrl = controllers.get(sessionKey)
+                if (ctrl) {
+                  controllers.delete(sessionKey)
+                  controllers.set(evt.thread_id, ctrl)
+                }
+                const prevTimer = thinkTimers.get(sessionKey)
+                if (prevTimer) {
+                  thinkTimers.delete(sessionKey)
+                  thinkTimers.set(evt.thread_id, prevTimer)
+                }
                 sessionKey = evt.thread_id
                 set((s) => {
                   const cur = s.sessions[threadId]
@@ -229,7 +244,10 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
                   return { sessions }
                 })
               }
-              // 会话完成（可能发生在用户正看着别的会话时）：刷新侧边栏列表
+              // 会话完成（可能发生在用户正看着别的会话时）：刷新侧边栏列表。
+              // 注意顺序：此判断必须在 remap 之后读取 currentThreadByModule——remap 已把
+              // 当前 module 的 currentThreadByModule 切到新 UUID，所以「正在看的会话」仍被
+              // newThreadId（新 UUID）命中也算 active，不会误打未读圆点。
               const newThreadId = evt.thread_id ?? threadId
               const activeIds = Object.values(useThreadStore.getState().currentThreadByModule)
               if (!activeIds.includes(newThreadId)) {
@@ -259,7 +277,8 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
       patchS({ errorMsg: (e as Error).message, status: "error" })
     } finally {
       disarmThinking()
-      controllers.delete(threadId)
+      // sessionKey（可能已被 remap 成新 UUID）才是 controller 当前所在 key
+      controllers.delete(sessionKey)
     }
   },
 

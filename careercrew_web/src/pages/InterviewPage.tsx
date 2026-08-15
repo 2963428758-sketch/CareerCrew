@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Plus, BookOpen, Check } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Flag, Check } from "lucide-react"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
-import { EmptyState } from "@/components/workspace/EmptyState"
+import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
+import { ConversationHeader, HeaderIconAction } from "@/components/conversation/ConversationHeader"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { groupTurns } from "@/components/conversation/turn"
@@ -15,7 +14,9 @@ import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
+import { apiFetch } from "@/lib/auth"
 import { restoreHistory } from "@/lib/historyRestore"
+import type { InterviewQA } from "@/types"
 
 const INTERVIEWER = { label: "面试官", color: "#BE185D" }
 
@@ -38,6 +39,7 @@ export default function InterviewPage() {
   const [topic, setTopic] = useState("")
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState("")
+  const [qaList, setQaList] = useState<InterviewQA[]>([])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.interview)
   // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
   const threadTitle = useThreadStore((s) =>
@@ -49,6 +51,8 @@ export default function InterviewPage() {
   const stopStream = useStreamStore((s) => s.stop)
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
+  /** 当前作答对应的题目（用户回答前最近一条面试官消息），done 评分后入 qaList */
+  const pendingRef = useRef<{ q: string; a: string } | null>(null)
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -57,9 +61,11 @@ export default function InterviewPage() {
   const { toast, showToast } = useToast()
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
-  // 流结束：把最终内容写回最后一条 assistant 气泡
+  // 流结束：把最终内容写回最后一条 assistant 气泡；若带评分则计入 qaList
   useEffect(() => {
     if (stream.status !== "done" || !stream.doneContent) return
+    const pending = pendingRef.current
+    pendingRef.current = null
     const patch: Partial<ChatMsg> = {
       content: stream.doneContent,
       streaming: false,
@@ -67,8 +73,18 @@ export default function InterviewPage() {
       turnId: stream.doneIds?.turnId,
       runId: stream.doneIds?.runId,
     }
+    if (stream.doneScore !== undefined && pending) {
+      patch.score = stream.doneScore
+      patch.feedback = stream.doneFeedback
+      setQaList((prev) => [...prev, {
+        question: pending.q,
+        answer: pending.a,
+        score: stream.doneScore,
+        feedback: stream.doneFeedback,
+      }])
+    }
     setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)))
-  }, [stream.status, stream.doneContent, stream.doneIds])
+  }, [stream.status, stream.doneContent, stream.doneIds, stream.doneScore, stream.doneFeedback])
 
   // 流失败：用错误信息填充空气泡
   useEffect(() => {
@@ -81,7 +97,9 @@ export default function InterviewPage() {
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
+    pendingRef.current = null
     setMessages([])
+    setQaList([])
     setTopic("")
     void restoreHistory(tid).then((restored) => {
       const msgs: ChatMsg[] = restored.map((r) => ({
@@ -105,6 +123,10 @@ export default function InterviewPage() {
     const trimmed = text.trim()
     if (!trimmed || stream.status === "streaming") return
     const isFirst = messages.length === 0
+    const prev = messages[messages.length - 1]
+    pendingRef.current = prev?.role === "assistant" && prev.content
+      ? { q: prev.content, a: trimmed }
+      : null
     setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }])
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     setInput("")
@@ -156,24 +178,25 @@ export default function InterviewPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        title="面试练习"
+      <ConversationHeader
+        parent="面试练习"
+        title={threadTitle ?? "新面试"}
         subtitle="对话式模拟面试 · 出题 → 作答 → 评分 → 追问"
-        actions={
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={() => composerRef.current?.focus()}
+        extra={
           <>
-            {messages.length > 0 && (
-              <Button variant="outline" size="sm" onClick={handleEnd} disabled={lastIsStreaming}>
-                结束面试
-              </Button>
-            )}
             {qaList.length > 0 && (
-              <Button variant="outline" size="sm" onClick={handleRecord}>
-                <Check className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />保存 {qaList.length} 条到记忆
-              </Button>
+              <HeaderIconAction label={`保存 ${qaList.length} 条到记忆`} onClick={() => void handleRecord()}>
+                <Check className="h-4 w-4" strokeWidth={1.7} />
+              </HeaderIconAction>
             )}
-            <Button variant="outline" size="sm" onClick={handleNew}>
-              <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新面试
-            </Button>
+            {messages.length > 0 ? (
+              <HeaderIconAction label="结束面试" onClick={handleEnd} disabled={lastIsStreaming}>
+                <Flag className="h-4 w-4" strokeWidth={1.7} />
+              </HeaderIconAction>
+            ) : undefined}
           </>
         }
       />
@@ -191,26 +214,8 @@ export default function InterviewPage() {
                     作答后自动评分、给出黄金回答范例并继续追问。
                   </>
                 }
-                accent={
-                  <span
-                    className="flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11.5px] font-medium"
-                    style={{ color: INTERVIEWER.color, borderColor: `${INTERVIEWER.color}40`, backgroundColor: `${INTERVIEWER.color}10` }}
-                  >
-                    <BookOpen className="h-3.5 w-3.5" strokeWidth={1.7} /> 面试官已就位
-                  </span>
-                }
-              >
-                <div className="mt-6 text-left">
-                  <PromptComposer
-                    value={input}
-                    onChange={setInput}
-                    onSend={() => startWithTopic(input)}
-                    placeholder="输入您的薄弱知识点，留空则随机出题…"
-                    sendLabel="开始面试"
-                    allowEmptySend
-                  />
-                </div>
-              </EmptyState>
+                accent={<AgentDots colors={["#BE185D", "#0D9488", "#D97706", "#7C3AED", "#2563EB"]} />}
+              />
             ) : (
               <div className="flex flex-col gap-10">
                 {turns.map((turn, i) => {
@@ -252,22 +257,25 @@ export default function InterviewPage() {
         <ConversationRail turns={turns} activeTurnId={activeId} onSelect={selectTurn} />
         <div className="composer-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[150px]" />
         <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} className="bottom-[110px]" />
-        {messages.length > 0 && (
-          <div className="absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-3 sm:px-6 sm:pb-4">
-            <PromptComposer
-              value={input}
-              onChange={setInput}
-              onSend={() => send(input)}
-              disabled={lastIsStreaming}
-              streaming={lastIsStreaming}
-              onStop={() => stopStream(currentThreadId)}
-              placeholder="作答，或输入「结束面试」获取总结…"
-              hint="面试官一轮一问，回答后自动评分并追问"
-              textareaRef={composerRef}
-              className="w-full"
-            />
-          </div>
-        )}
+        <div className="absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-3 sm:px-6 sm:pb-4">
+          <PromptComposer
+            value={input}
+            onChange={setInput}
+            onSend={() => (messages.length === 0 ? startWithTopic(input) : send(input))}
+            disabled={lastIsStreaming}
+            streaming={lastIsStreaming}
+            onStop={() => stopStream(currentThreadId)}
+            placeholder={
+              messages.length === 0
+                ? "输入您的薄弱知识点，留空则随机出题…"
+                : "作答，或输入「结束面试」获取总结…"
+            }
+            allowEmptySend
+            toolbar
+            textareaRef={composerRef}
+            className="w-full"
+          />
+        </div>
         <ToastBubble message={toast} />
       </div>
     </div>

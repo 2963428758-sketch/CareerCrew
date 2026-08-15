@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Plus, Users, ChevronDown } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Users, ChevronDown } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
 import { AgentPanel } from "@/components/agent/AgentThread"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
+import { ConversationHeader } from "@/components/conversation/ConversationHeader"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { FeedbackArea } from "@/components/conversation/FeedbackArea"
@@ -46,6 +45,10 @@ export default function ConsultPage() {
   const [dismissedThreads, setDismissedThreads] = useState<Record<string, boolean>>({})
   const lastAssistantIdRef = useRef<string | null>(null)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.consult)
+  // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
+  const threadTitle = useThreadStore((s) =>
+    s.threadsByModule.consult?.find((t) => t.thread_id === s.currentThreadByModule.consult)?.title
+  )
   const formDismissed = dismissedThreads[currentThreadId] ?? false
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
@@ -180,14 +183,13 @@ export default function ConsultPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        title="会诊"
+      <ConversationHeader
+        parent="会诊"
+        title={threadTitle ?? "新对话"}
         subtitle="总调度官自动调度顾问，综合给出建议"
-        actions={
-          <Button variant="outline" size="sm" onClick={handleNew}>
-            <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新对话
-          </Button>
-        }
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={() => composerRef.current?.focus()}
       />
 
       <div className="relative flex-1 overflow-hidden">
@@ -243,6 +245,7 @@ export default function ConsultPage() {
             onStop={() => stopStream(currentThreadId)}
             placeholder="输入需要会诊的问题…"
             hint="总调度官自动调度顾问，综合给出建议"
+            toolbar
             textareaRef={composerRef}
             className="w-full"
           />
@@ -315,7 +318,8 @@ function HistoryAssistant({ msg, onFeedback }: { msg: ConsultMessage; onFeedback
   const calls = msg.calls ?? []
   const ids = Object.keys(opinions)
   const groups = calls.reduce<Record<number, ConsultCall[]>>((acc, call) => {
-    ;(acc[call.round] ||= []).push(call)
+    // round 可能缺失（异常兜底只写 {content}）；缺省归入第 0 轮，渲染时再兜底文案。
+    ;(acc[call.round ?? 0] ||= []).push(call)
     return acc
   }, {})
   return (
@@ -329,7 +333,7 @@ function HistoryAssistant({ msg, onFeedback }: { msg: ConsultMessage; onFeedback
           <div className="mt-2 space-y-2">
             {Object.entries(groups).map(([round, roundCalls]) => (
               <div key={round} className="space-y-1.5">
-                <p className="text-[11px] font-medium text-ink-faint">第 {round} 轮</p>
+                <p className="text-[11px] font-medium text-ink-faint">{round === "0" ? "调度过程" : `第 ${round} 轮`}</p>
                 {roundCalls.map((call) => {
                   const meta = AGENT_META[call.agent] ?? { label: call.agent, color: "#78716C" }
                   return (

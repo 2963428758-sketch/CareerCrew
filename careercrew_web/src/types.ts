@@ -71,9 +71,14 @@ export interface KnowledgeSource {
 
 /** 会诊总调度官一次顾问调用记录。 */
 export interface ConsultCall {
-  round: number
+  /**
+   * round/task 在存储的原始 consult_calls 字典里可能缺失（如 agent 异常兜底只写
+   * {@code {content: ""}}，或首轮调度未带上 task），故二者为可选；agent 是 opinions 的 key
+   * 必填。渲染时对缺省值做兜底（分组/文案跳过）。
+   */
+  round?: number
   agent: string
-  task: string
+  task?: string
   content: string
 }
 

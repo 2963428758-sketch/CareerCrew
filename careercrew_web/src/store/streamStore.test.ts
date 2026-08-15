@@ -96,4 +96,49 @@ describe("streamStore done 解析", () => {
     expect(session?.doneContent).toBe("ans")
     expect(useStreamStore.getState().sessions["t-legacy"]).toBeUndefined()
   })
+
+  it("remap 后 stop(新 UUID) 能 abort 在途请求（controller 已被 re-key 到新 id）", async () => {
+    const done = {
+      type: "done",
+      content: "ans",
+      thread_id: "uuid-new",
+      turn_id: "uuid-turn",
+      message_id: "uuid-msg",
+      run_id: "uuid-run",
+      legacy_thread_id: "t-legacy",
+      status: "completed",
+    }
+    // 一次 read 吐 done（触发 remap），第二次 read 挂起等待 abort 才 resolve
+    const encoder = new TextEncoder()
+    const body = JSON.stringify(done) + "\n"
+    let signal: AbortSignal | undefined
+    const chunks = [encoder.encode(body)]
+    let i = 0
+    apiFetch.mockImplementation(async (_url: string, init?: RequestInit) => {
+      signal = init?.signal as AbortSignal | undefined
+      const reader = {
+        read: async () => {
+          if (i < chunks.length) {
+            const value = chunks[i++]
+            return { done: false, value }
+          }
+          if (signal?.aborted) return { done: true, value: undefined }
+          await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }))
+          return { done: true, value: undefined }
+        },
+      }
+      return { ok: true, status: 200, body: { getReader: () => reader } } as unknown as Response
+    })
+
+    const startP = useStreamStore.getState().start("t-legacy", "/chat/plan", { intent: "hi", thread_id: "t-legacy" })
+    // 等 done 行被消费、remap 完成（session 重挂到 uuid-new）
+    await vi.waitFor(() => {
+      expect(useStreamStore.getState().sessions["uuid-new"]).toBeDefined()
+    })
+    expect(signal?.aborted).toBe(false)
+    // 关键：用新 UUID 停止，应命中 re-key 后的 controller 并 abort 在途 fetch
+    useStreamStore.getState().stop("uuid-new")
+    await startP
+    expect(signal?.aborted).toBe(true)
+  })
 })
