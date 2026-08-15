@@ -160,6 +160,30 @@ class ConversationStore:
             )
         return self._db.update_message_status(user_id, message_id, status)
 
+    def set_message_content(
+        self, user_id: str, message_id: str, content: str, status: str = "completed"
+    ) -> dict:
+        """流式结束写入 assistant 消息最终内容，并同步更新状态与 completed_at。
+
+        所有权不匹配抛 OwnershipError，找不到返回 {}。
+        """
+        if self._db.get_message(user_id, message_id) is None:
+            raise OwnershipError(
+                f"message {message_id!r} 不属于或不存在于用户 {user_id!r}"
+            )
+        return self._db.update_message_content(user_id, message_id, content, status)
+
+    def set_message_run_id(self, user_id: str, message_id: str, run_id: str) -> dict:
+        """回填 assistant message 的 run_id（message 先于 run 创建，run 生成后再关联）。
+
+        所有权不匹配抛 OwnershipError，找不到返回 {}。
+        """
+        if self._db.get_message(user_id, message_id) is None:
+            raise OwnershipError(
+                f"message {message_id!r} 不属于或不存在于用户 {user_id!r}"
+            )
+        return self._db.update_message_run_id(user_id, message_id, run_id)
+
     def list_messages(self, thread_id: str, user_id: str) -> list[dict]:
         conv = self._require_owned(thread_id, user_id)
         return self._db.list_messages(user_id, conv["id"])

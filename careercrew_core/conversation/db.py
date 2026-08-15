@@ -128,6 +128,13 @@ class ConversationDb(ABC):
     def update_message_status(self, user_id: str, message_id: str, status: str) -> dict: ...
 
     @abstractmethod
+    def update_message_content(self, user_id: str, message_id: str, content: str,
+                               status: str) -> dict: ...
+
+    @abstractmethod
+    def update_message_run_id(self, user_id: str, message_id: str, run_id: str) -> dict: ...
+
+    @abstractmethod
     def list_messages(self, user_id: str, thread_id: str) -> list[dict]: ...
 
     # ── runs ──
@@ -405,6 +412,37 @@ class PostgresConversationDb(ConversationDb):
         return _row_to_dict(row) if row else {}
 
     @_synchronized
+    def update_message_content(self, user_id, message_id, content, status) -> dict:
+        with self._connect() as conn, conn.transaction():
+            completed_at = _now() if status == "completed" else None
+            conn.execute(
+                "UPDATE messages SET content=%s, status=%s, completed_at=%s "
+                "WHERE id=%s AND user_id=%s",
+                (content, status, completed_at, message_id, user_id),
+            )
+        return self._read_message(user_id, message_id)
+
+    @_synchronized
+    def update_message_run_id(self, user_id, message_id, run_id) -> dict:
+        with self._connect() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE messages SET run_id=%s WHERE id=%s AND user_id=%s",
+                (run_id, message_id, user_id),
+            )
+        return self._read_message(user_id, message_id)
+
+    @_synchronized
+    def _read_message(self, user_id, message_id) -> dict:
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "SELECT id, thread_id, turn_id, user_id, role, content, run_id, "
+                "regenerated_from_message_id, status, created_at, completed_at, deleted_at "
+                "FROM messages WHERE id=%s AND user_id=%s",
+                (message_id, user_id),
+            ).fetchone()
+        return _row_to_dict(row) if row else {}
+
+    @_synchronized
     def list_messages(self, user_id, thread_id) -> list[dict]:
         with self._connect() as conn, conn.transaction():
             rows = conn.execute(
@@ -615,6 +653,20 @@ class FakeConversationDb(ConversationDb):
         if row and row["user_id"] == user_id:
             row["status"] = status
             row["completed_at"] = _now() if status == "completed" else None
+        return dict(row) if row and row["user_id"] == user_id else {}
+
+    def update_message_content(self, user_id, message_id, content, status) -> dict:
+        row = self._messages.get(message_id)
+        if row and row["user_id"] == user_id:
+            row["content"] = content
+            row["status"] = status
+            row["completed_at"] = _now() if status == "completed" else None
+        return dict(row) if row and row["user_id"] == user_id else {}
+
+    def update_message_run_id(self, user_id, message_id, run_id) -> dict:
+        row = self._messages.get(message_id)
+        if row and row["user_id"] == user_id:
+            row["run_id"] = run_id
         return dict(row) if row and row["user_id"] == user_id else {}
 
     def list_messages(self, user_id, thread_id) -> list[dict]:
