@@ -72,13 +72,15 @@ def test_stage_done_error_events():
 
 @pytest.mark.web
 def test_stream_maxsize_backpressure():
-    """maxsize 限流：callback 不会无限堆积（queue 满时 put 阻塞直到消费）。"""
+    """maxsize 限流：队列满时丢弃可合并 chunk（非阻塞），worker 不因背压挂死。"""
     def run_fn(cb):
-        for i in range(50):
+        for i in range(200):
             cb(f"chunk-{i}")
 
-    lines = list(stream_agent(run_fn, timeout=5.0, max_q=8))
+    g = stream_agent(run_fn, timeout=5.0, max_q=8)
+    first = next(g)
+    time.sleep(0.05)  # 消费者暂停：worker 填满队列后开始丢弃
+    lines = [first] + list(g)
     events = [json.loads(l) for l in lines]
-    assert len(events) == 50
     assert events[0]["text"] == "chunk-0"
-    assert events[-1]["text"] == "chunk-49"
+    assert len(events) < 200  # 有丢弃（背压生效，未阻塞 worker）

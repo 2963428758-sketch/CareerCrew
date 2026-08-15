@@ -76,7 +76,7 @@ def questions(
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -159,7 +159,7 @@ def chat(
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])

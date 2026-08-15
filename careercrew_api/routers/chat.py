@@ -49,7 +49,7 @@ def match(
         try:
             yield stage_event("match")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -84,7 +84,7 @@ def resume(
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=120.0):
+            for line in stream_agent(run_fn):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -119,7 +119,7 @@ def plan(
         try:
             yield stage_event("planning")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn, timeout=180.0):
+            for line in stream_agent(run_fn):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
