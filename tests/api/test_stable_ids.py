@@ -151,6 +151,30 @@ def test_messages_roundtrip_user_and_assistant(client):
 
 
 @pytest.mark.web
+def test_knowledge_messages_include_metadata_sources(client):
+    """knowledge 流结束 → assistant message 的 metadata 含 sources。"""
+    resp = client.post("/api/knowledge/ask", json={"question": "RAG", "thread_id": "k-meta"})
+    done = _last_done(resp)
+    msgs = client.get(f"/api/threads/{done['thread_id']}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][0]
+    assert asst["metadata"] is not None
+    assert "sources" in asst["metadata"]
+    assert asst["metadata"]["sources"] == done.get("sources", [])
+
+
+@pytest.mark.web
+def test_consult_messages_include_metadata_opinions(client):
+    """consult 流结束 → assistant message 的 metadata 含 opinions。"""
+    resp = client.post("/api/consult", json={"question": "谈薪", "thread_id": "c-meta"})
+    done = _last_done(resp)
+    msgs = client.get(f"/api/threads/{done['thread_id']}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][0]
+    assert asst["metadata"] is not None
+    assert "opinions" in asst["metadata"]
+    assert asst["metadata"]["opinions"] == done.get("opinions", {})
+
+
+@pytest.mark.web
 def test_messages_cross_user_404(tenant_api):
     """User B GET User A 的 messages → 404。"""
     client, _rt, headers, _ids = tenant_api

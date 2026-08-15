@@ -129,7 +129,7 @@ class ConversationDb(ABC):
 
     @abstractmethod
     def update_message_content(self, user_id: str, message_id: str, content: str,
-                               status: str) -> dict: ...
+                               status: str, metadata: dict | None = None) -> dict: ...
 
     @abstractmethod
     def update_message_run_id(self, user_id: str, message_id: str, run_id: str) -> dict: ...
@@ -212,6 +212,19 @@ class PostgresConversationDb(ConversationDb):
                 "run_id UUID, regenerated_from_message_id UUID, status VARCHAR(20) NOT NULL, "
                 "created_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ)"
             )
+            # metadata JSONB：assistant 富结构（knowledge sources / consult opinions+calls），
+            # 幂等迁移追加；历史行回退 NULL（见 T1.3 brief）。
+            conn.execute("SET lock_timeout = '5s'")
+            try:
+                conn.execute(
+                    "DO $$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'messages' AND column_name = 'metadata') THEN "
+                    "ALTER TABLE messages ADD COLUMN metadata JSONB; "
+                    "END IF; END $$"
+                )
+            finally:
+                conn.execute("SET lock_timeout = '0'")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS agent_runs ("
                 "id UUID PRIMARY KEY, user_id VARCHAR(64) NOT NULL, thread_id UUID NOT NULL, "
@@ -386,7 +399,7 @@ class PostgresConversationDb(ConversationDb):
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
                 "SELECT id, thread_id, turn_id, user_id, role, content, run_id, "
-                "regenerated_from_message_id, status, created_at, completed_at, deleted_at "
+                "regenerated_from_message_id, status, created_at, completed_at, deleted_at, metadata "
                 "FROM messages WHERE id=%s AND user_id=%s",
                 (message_id, user_id),
             ).fetchone()
@@ -412,13 +425,16 @@ class PostgresConversationDb(ConversationDb):
         return _row_to_dict(row) if row else {}
 
     @_synchronized
-    def update_message_content(self, user_id, message_id, content, status) -> dict:
+    def update_message_content(self, user_id, message_id, content, status, metadata=None) -> dict:
         with self._connect() as conn, conn.transaction():
             completed_at = _now() if status == "completed" else None
             conn.execute(
-                "UPDATE messages SET content=%s, status=%s, completed_at=%s "
+                "UPDATE messages SET content=%s, status=%s, completed_at=%s, "
+                "metadata=COALESCE(%s::jsonb, metadata) "
                 "WHERE id=%s AND user_id=%s",
-                (content, status, completed_at, message_id, user_id),
+                (content, status, completed_at,
+                 _json_dumps(metadata) if metadata is not None else None,
+                 message_id, user_id),
             )
         return self._read_message(user_id, message_id)
 
@@ -436,7 +452,7 @@ class PostgresConversationDb(ConversationDb):
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
                 "SELECT id, thread_id, turn_id, user_id, role, content, run_id, "
-                "regenerated_from_message_id, status, created_at, completed_at, deleted_at "
+                "regenerated_from_message_id, status, created_at, completed_at, deleted_at, metadata "
                 "FROM messages WHERE id=%s AND user_id=%s",
                 (message_id, user_id),
             ).fetchone()
@@ -448,7 +464,7 @@ class PostgresConversationDb(ConversationDb):
             rows = conn.execute(
                 "SELECT m.id, m.thread_id, m.turn_id, m.user_id, m.role, m.content, "
                 "m.run_id, m.regenerated_from_message_id, m.status, m.created_at, "
-                "m.completed_at, m.deleted_at "
+                "m.completed_at, m.deleted_at, m.metadata "
                 "FROM messages m "
                 "JOIN conversation_turns t ON t.id = m.turn_id "
                 "WHERE m.thread_id=%s AND m.user_id=%s "
@@ -637,7 +653,7 @@ class FakeConversationDb(ConversationDb):
             "user_id": user_id, "role": role, "content": content, "run_id": run_id,
             "regenerated_from_message_id": regenerated_from_message_id,
             "status": status, "created_at": _now(), "completed_at": None,
-            "deleted_at": None,
+            "deleted_at": None, "metadata": None,
         }
         self._messages[message_id] = row
         return dict(row)
@@ -655,12 +671,14 @@ class FakeConversationDb(ConversationDb):
             row["completed_at"] = _now() if status == "completed" else None
         return dict(row) if row and row["user_id"] == user_id else {}
 
-    def update_message_content(self, user_id, message_id, content, status) -> dict:
+    def update_message_content(self, user_id, message_id, content, status, metadata=None) -> dict:
         row = self._messages.get(message_id)
         if row and row["user_id"] == user_id:
             row["content"] = content
             row["status"] = status
             row["completed_at"] = _now() if status == "completed" else None
+            if metadata is not None:
+                row["metadata"] = metadata
         return dict(row) if row and row["user_id"] == user_id else {}
 
     def update_message_run_id(self, user_id, message_id, run_id) -> dict:

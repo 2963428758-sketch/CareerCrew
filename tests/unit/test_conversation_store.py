@@ -242,6 +242,27 @@ def test_set_message_status_rejects_wrong_owner(store):
         store.set_message_status("u_2", msg["id"], "completed")
 
 
+def test_set_message_content_metadata_roundtrip(store):
+    """set_message_content 携带 metadata 富结构写入，None 时保持既有值。"""
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "in-progress", _uuid(), None)
+    # 首次写入 metadata
+    updated = store.set_message_content("u_1", msg["id"], "done", metadata={"sources": [{"doc": "d"}]})
+    assert updated["metadata"] == {"sources": [{"doc": "d"}]}
+    # 再次写入（content 更新）不传 metadata → metadata 保持不变
+    updated2 = store.set_message_content("u_1", msg["id"], "done2")
+    assert updated2["metadata"] == {"sources": [{"doc": "d"}]}
+
+
+def test_set_message_content_rejects_wrong_owner(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "s", _uuid(), None)
+    with pytest.raises(OwnershipError):
+        store.set_message_content("u_2", msg["id"], "x")
+
+
 def test_list_messages_rejects_wrong_owner(store):
     store.ensure_conversation("t-1", "u_1", "chat", "T")
     turn = store.next_turn("t-1", "u_1")

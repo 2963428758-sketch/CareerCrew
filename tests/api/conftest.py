@@ -104,13 +104,13 @@ class FakeRuntime:
         except Exception:
             return None
 
-    def _finish_chat_turn(self, ctx, content, status="completed"):
+    def _finish_chat_turn(self, ctx, content, status="completed", metadata=None):
         from careercrew_api.chat_lifecycle import finish_turn
 
         if ctx is None:
             return
         try:
-            finish_turn(self.conversation_store, ctx, content, status=status)
+            finish_turn(self.conversation_store, ctx, content, status=status, metadata=metadata)
         except Exception:
             pass
 
@@ -233,7 +233,7 @@ class FakeRuntime:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(output)
-        self._finish_chat_turn(ctx, output)
+        self._finish_chat_turn(ctx, output, metadata={"sources": sources})
         return StreamResult(content=output, sources=sources, turn=ctx)
 
     def record_thread_messages(self, user_id: str, thread_id: str,

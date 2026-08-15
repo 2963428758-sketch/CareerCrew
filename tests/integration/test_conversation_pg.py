@@ -172,6 +172,21 @@ def test_set_message_content_roundtrip(store_and_db):
         store.set_message_content("u_other", asst["id"], "x")
 
 
+def test_set_message_content_metadata_roundtrip(store_and_db):
+    """metadata JSONB 列：set_message_content 写入富结构并在真库持久化。"""
+    store, db = store_and_db
+    uid = "u_meta"
+    _, _, _, asst, _ = _begin_chat_turn(store, uid)
+    updated = store.set_message_content(uid, asst["id"], "done", metadata={"sources": [{"doc": "note"}]})
+    assert updated["metadata"] == {"sources": [{"doc": "note"}]}
+    persisted = db.get_message(uid, asst["id"])
+    assert persisted["metadata"] == {"sources": [{"doc": "note"}]}
+    # 再次写入不传 metadata → 保持不变
+    again = store.set_message_content(uid, asst["id"], "done2")
+    assert again["metadata"] == {"sources": [{"doc": "note"}]}
+    assert db.get_message(uid, asst["id"])["metadata"] == {"sources": [{"doc": "note"}]}
+
+
 def test_set_message_run_id_roundtrip(store_and_db):
     """set_message_run_id：run_id 回填 message 并持久化。"""
     store, db = store_and_db

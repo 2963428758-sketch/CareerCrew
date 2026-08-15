@@ -272,7 +272,9 @@ def consult(
                     )
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
-                rt._finish_chat_turn(ctx, final)
+                rt._finish_chat_turn(
+                    ctx, final, metadata={"opinions": opinions, "calls": calls}
+                )
                 _safe_emit({
                     "type": "done", "content": final, "opinions": opinions, "calls": calls,
                     **turn_done_fields(ctx),

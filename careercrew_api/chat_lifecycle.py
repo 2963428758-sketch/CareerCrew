@@ -114,10 +114,13 @@ def begin_turn(
 
 
 def finish_turn(
-    store: ConversationStore, ctx: TurnContext, content: str, status: str = "completed"
+    store: ConversationStore, ctx: TurnContext, content: str, status: str = "completed",
+    metadata: dict | None = None,
 ) -> None:
-    """流结束：写 assistant message 内容 + 状态，并收尾 run（status + latency + finished_at）。"""
-    store.set_message_content(ctx.user_id, ctx.assistant_message_id, content, status=status)
+    """流结束：写 assistant message 内容 + 状态（+ 可选 metadata 富结构），并收尾 run。"""
+    store.set_message_content(
+        ctx.user_id, ctx.assistant_message_id, content, status=status, metadata=metadata
+    )
     store.finish_run(
         ctx.user_id, ctx.run_id, status=status, latency_ms=ctx.latency_ms()
     )

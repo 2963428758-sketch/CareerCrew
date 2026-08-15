@@ -91,6 +91,7 @@ def list_messages(thread_id: str, current_user: CurrentUser,
             "regenerated_from_message_id": m.get("regenerated_from_message_id"),
             "created_at": m.get("created_at"),
             "completed_at": m.get("completed_at"),
+            "metadata": m.get("metadata"),
         }
         for m in msgs
     ]

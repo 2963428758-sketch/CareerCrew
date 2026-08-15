@@ -60,6 +60,13 @@ def test_finish_turn_sets_content_status_and_run(store):
     assert run["finished_at"] is not None
 
 
+def test_finish_turn_persists_metadata(store):
+    ctx = _begin(store)
+    finish_turn(store, ctx, "回答", metadata={"sources": [{"doc": "note"}]})
+    asst = [m for m in store.list_messages("t-1", "u_1") if m["role"] == "assistant"][0]
+    assert asst["metadata"] == {"sources": [{"doc": "note"}]}
+
+
 def test_fail_turn_records_error(store):
     ctx = _begin(store)
     fail_turn(store, ctx, ValueError("bad input"))

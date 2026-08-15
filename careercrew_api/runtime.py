@@ -247,14 +247,16 @@ class CareerCrewRuntime:
             logging.getLogger(__name__).exception("begin_chat_turn failed")
             return None
 
-    def _finish_chat_turn(self, ctx, content: str, status: str = "completed") -> None:
-        """收尾一轮对话（写 assistant content + 状态 + run latency）；ctx 为 None 时跳过。"""
+    def _finish_chat_turn(self, ctx, content: str, status: str = "completed",
+                          metadata: dict | None = None) -> None:
+        """收尾一轮对话（写 assistant content + 状态 + 可选 metadata 富结构 + run latency）；
+        ctx 为 None 时跳过。"""
         from careercrew_api.chat_lifecycle import finish_turn
 
         if ctx is None:
             return
         try:
-            finish_turn(self.conversation_store, ctx, content, status=status)
+            finish_turn(self.conversation_store, ctx, content, status=status, metadata=metadata)
         except Exception:
             import logging
             logging.getLogger(__name__).exception("finish_chat_turn failed")
@@ -741,7 +743,7 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞问答
-        self._finish_chat_turn(ctx, content)
+        self._finish_chat_turn(ctx, content, metadata={"sources": capped})
         if cancel_check:
             cancel_check()
         return StreamResult(content=content, sources=capped, turn=ctx)
