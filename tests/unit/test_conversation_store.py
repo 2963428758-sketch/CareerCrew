@@ -295,6 +295,32 @@ def test_run_lifecycle(store):
     assert finished["finished_at"] is not None
 
 
+def test_start_run_status_param(store):
+    """start_run(status=...) 直接以给定状态插入 run（无需 finish_run 兜底转 streaming）。"""
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    run = store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+        status="streaming",
+    )
+    assert run["status"] == "streaming"
+    assert run["finished_at"] is None  # streaming 非终态，不写 finished_at
+
+
+def test_start_run_default_pending(store):
+    """start_run 缺省 status 仍为 pending（向后兼容既有调用方）。"""
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    run = store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+    )
+    assert run["status"] == "pending"
+
+
 def test_run_requires_user_ownership(store):
     store.ensure_conversation("t-1", "u_1", "chat", "T")
     turn = store.next_turn("t-1", "u_1")

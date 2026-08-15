@@ -95,9 +95,9 @@ def begin_turn(
         thread_id=conv["id"], turn_id=turn["id"], message_id=asst_msg["id"],
         user_id=user_id, module=module, agent_id=agent_id, model=model,
         prompt_version="unversioned", agent_version="unversioned",
+        status="streaming",
     )
     store.set_message_run_id(user_id, asst_msg["id"], run["id"])
-    store.finish_run(user_id, run["id"], status="streaming")
 
     return TurnContext(
         thread_id=conv["id"],

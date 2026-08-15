@@ -518,6 +518,10 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
+        # 注意（绑定的决策，勿改动）：conversation 表用 module="resume"（canonical，
+        # 对齐前端模块分类 sidebar/threadStore），而下方 episodic 双写
+        # （record_user_message / record_thread_messages）沿用遗留值 module="matcher"。
+        # 二者有意不一致，T1.5/T1.6 请勿把 episodic 的 "matcher" 迁移到 conversation。
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="resume", agent_id="resume_advisor",
             user_text=user_text,

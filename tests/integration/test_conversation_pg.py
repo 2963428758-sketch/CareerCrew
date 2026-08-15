@@ -105,6 +105,7 @@ def _begin_chat_turn(store, uid, module="chat", title="T", model="m"):
         thread_id=conv["id"], turn_id=turn["id"], message_id=asst["id"],
         user_id=uid, module=module, agent_id="a", model=model,
         prompt_version="unversioned", agent_version="1",
+        status="streaming",
     )
     # run 生成后回填 message.run_id（begin_turn 顺序）
     asst = store.set_message_run_id(uid, asst["id"], run["id"])
@@ -199,8 +200,8 @@ def test_run_lifecycle(store_and_db):
     store, db = store_and_db
     uid = "u_run"
     _, _, _, asst, run = _begin_chat_turn(store, uid)
-    # 起始态 pending，finished_at 为 NULL
-    assert db.get_run(uid, run["id"])["status"] == "pending"
+    # T1.2 接线：begin_turn 直接以 streaming 插入（非终态，finished_at 为 NULL）
+    assert db.get_run(uid, run["id"])["status"] == "streaming"
     assert db.get_run(uid, run["id"])["finished_at"] is None
     # finish_run 写 status + tokens + latency + finished_at
     finished = store.finish_run(
@@ -219,6 +220,21 @@ def test_run_lifecycle(store_and_db):
     assert persisted["status"] == "completed"
     assert persisted["latency_ms"] == 420
     assert persisted["finished_at"] is not None
+
+
+def test_start_run_streaming_status(store_and_db):
+    """start_run(status="streaming") 在真实 Postgres 上直接落 streaming 初始态。"""
+    store, db = store_and_db
+    uid = "u_run_stream"
+    _, _, _, asst, run = _begin_chat_turn(store, uid)
+    # 直接以 streaming 插入，非终态 → finished_at 为 NULL
+    persisted = db.get_run(uid, run["id"])
+    assert persisted["status"] == "streaming"
+    assert persisted["finished_at"] is None
+    # 终态迁移（finish_run 保留给终态）从 streaming 正常收尾
+    finished = store.finish_run(user_id=uid, run_id=run["id"], status="completed")
+    assert finished["status"] == "completed"
+    assert db.get_run(uid, run["id"])["finished_at"] is not None
 
 
 def test_run_failure_persisted(store_and_db):

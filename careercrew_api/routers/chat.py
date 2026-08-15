@@ -27,10 +27,6 @@ from careercrew_api.sse import (
 router = APIRouter()
 
 
-def _turn_done_fields(turn) -> dict:
-    return turn_done_fields(turn)
-
-
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
     """统一 NDJSON 响应头。"""
     return StreamingResponse(
@@ -72,7 +68,7 @@ def match(
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
             yield done_event(
                 result["content"] or "".join(content_parts),
-                **_turn_done_fields(result["turn"]),
+                **turn_done_fields(result["turn"]),
             )
         except RuntimeInitError as e:
             yield error_event(str(e))
@@ -114,7 +110,7 @@ def resume(
             # 最终内容以 agent 最后一轮回答为准
             yield done_event(
                 result["content"] or "".join(content_parts),
-                **_turn_done_fields(result["turn"]),
+                **turn_done_fields(result["turn"]),
             )
         except RuntimeInitError as e:
             yield error_event(str(e))
@@ -156,7 +152,7 @@ def plan(
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
             yield done_event(
                 result["content"] or "".join(content_parts),
-                **_turn_done_fields(result["turn"]),
+                **turn_done_fields(result["turn"]),
             )
         except RuntimeInitError as e:
             yield error_event(str(e))
