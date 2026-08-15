@@ -528,6 +528,7 @@ class CareerCrewRuntime:
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "",
+                                 scope: str = "all",
                                  cancel_check: Callable[[], None] | None = None) -> str:
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
@@ -535,6 +536,7 @@ class CareerCrewRuntime:
         sources 为 agent 实际检索到的结构化片段（doc/source/score/text/image_path/page），
         供前端标注来源并点击查看原文。
         category: 检索范围（resume / knowledge / interview），空串检索全部。
+        scope: 可见范围（all=公共+本人私有 / public / private）。
         """
         return traced_call(
             self._run_knowledge_ask_stream_impl,
@@ -546,6 +548,7 @@ class CareerCrewRuntime:
             thread_id=thread_id,
             cb=cb,
             category=category,
+            scope=scope,
             cancel_check=cancel_check,
         )
 
@@ -553,6 +556,7 @@ class CareerCrewRuntime:
                                        thread_id: str = "knowledge",
                                        cb: Callable[[str], None] | None = None,
                                        category: str = "",
+                                       scope: str = "all",
                                        cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         from langchain_core.messages import HumanMessage
@@ -581,6 +585,7 @@ class CareerCrewRuntime:
         ep = self._get_episodic(thread_id, user_id)
         agent = self.new_knowledge_advisor(
             cb, episodic=ep, rag_sink=_sink, category=category,
+            knowledge_access_filters=self._knowledge_scope_filters(user_id, scope),
         )
         try:
             # 先落库用户消息：知识库 agentic 检索 + VLM 读图可能耗时很长，
@@ -713,7 +718,8 @@ class CareerCrewRuntime:
         except Exception:
             return []
 
-    def _make_tools(self, kind: str, episodic=None, rag_sink=None, rag_category=None):
+    def _make_tools(self, kind: str, episodic=None, rag_sink=None, rag_category=None,
+                    knowledge_access_filters: dict | None = None):
         """构造 agent 工具集；必须显式携带认证用户的 episodic 上下文。"""
         from careercrew_core.memory.semantic import SemanticFactStore
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
@@ -787,7 +793,7 @@ class CareerCrewRuntime:
         elif kind == "knowledge":
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, sink=rag_sink, categories=rag_category or None,
-                filters={"user_id": user_id},
+                filters=knowledge_access_filters or {"__access_user": user_id},
             )))
             # 个人背景问题（学校/专业/教育等）常藏在简历页图里，允许顾问按需读图
             tools.register(ToolSpec(tool=make_read_image_tool(
@@ -833,7 +839,8 @@ class CareerCrewRuntime:
         )
 
     def new_knowledge_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
-                              rag_sink=None, category: str = ""):
+                              rag_sink=None, category: str = "",
+                              knowledge_access_filters: dict | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.knowledge_advisor import KnowledgeAdvisor
 
@@ -849,6 +856,7 @@ class CareerCrewRuntime:
             llm=self.llm,
             tools=self._make_tools(
                 "knowledge", episodic=episodic, rag_sink=rag_sink, rag_category=category,
+                knowledge_access_filters=knowledge_access_filters,
             ),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
@@ -1078,6 +1086,7 @@ class CareerCrewRuntime:
         category: str = "",
         output_dir: str | None = None,
         doc_name: str = "",
+        visibility: str = "private",
     ) -> dict:
         """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。
 
@@ -1085,6 +1094,7 @@ class CareerCrewRuntime:
         progress ∈ [0, 1]（阶段边界处的真实进度，非秒级平滑值）。
         category: 内容分类（resume/knowledge/interview）；空串按 doc_name（原文件名）自动识别。
         output_dir: 按用户/文档隔离的解析产物目录。
+        visibility: private | public（公共仅管理员上传时指定）。
         """
         self._ensure_heavy()
         from pathlib import Path
@@ -1098,33 +1108,69 @@ class CareerCrewRuntime:
             from careercrew_core.rag.categories import category_for_doc
 
             category = category_for_doc(doc_name or p.stem)
-        owner_metadata = {**(metadata or {}), "user_id": user_id}
+        if visibility not in ("private", "public"):
+            raise ValueError(f"invalid visibility: {visibility}")
+        owner_metadata = {**(metadata or {}), "owner_user_id": user_id, "visibility": visibility}
         n = self.ingest_pipeline.ingest_file(
             p, metadata=owner_metadata, progress_cb=progress_cb, category=category,
             output_dir=output_dir,
         )
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
-    def delete_document(self, user_id: str, doc_id: str) -> int:
-        """按 doc_id 删除知识库文档的全部向量点。"""
-        self._ensure_heavy()
-        return self.store.delete_by_metadata({"user_id": user_id, "doc": doc_id})
+    def delete_document(self, user_id: str, doc_id: str, is_admin: bool = False) -> tuple[int, bool]:
+        """删除知识文档向量点。返回 (deleted, public_blocked)。
 
-    def knowledge_status(self, user_id: str) -> dict:
-        """知识库状态：总点数 + 文档列表。"""
+        非 admin 只能删本人私有；admin 可额外删除公共条目。
+        """
         self._ensure_heavy()
-        docs = self.store.list_docs(filters={"user_id": user_id})
+        visible = self.store.list_docs(filters={"__access_user": user_id, "doc": doc_id})
+        if not visible:
+            return 0, False
+        has_public = any(d.get("visibility") == "public" for d in visible)
+        if has_public and not is_admin:
+            return 0, True
+        deleted = self.store.delete_by_metadata(
+            {"owner_user_id": user_id, "doc": doc_id, "visibility": "private"}
+        )
+        if has_public and is_admin:
+            deleted += self.store.delete_by_metadata({"doc": doc_id, "visibility": "public"})
+        return deleted, False
+
+    def publish_document(self, user_id: str, doc_id: str) -> int:
+        self._ensure_heavy()
+        return self.store.set_payload_by_filter(
+            {"visibility": "public"}, {"owner_user_id": user_id, "doc": doc_id}
+        )
+
+    def unpublish_document(self, user_id: str, doc_id: str) -> int:
+        self._ensure_heavy()
+        return self.store.set_payload_by_filter(
+            {"visibility": "private"}, {"owner_user_id": user_id, "doc": doc_id}
+        )
+
+    def knowledge_status(self, user_id: str, scope: str = "all") -> dict:
+        """知识库状态：总点数 + 文档列表。scope: all（公共+本人私有）/public/private。"""
+        self._ensure_heavy()
+        docs = self.store.list_docs(filters=self._knowledge_scope_filters(user_id, scope))
         return {"points": sum(int(doc.get("points", 0)) for doc in docs), "docs": docs}
 
+    @staticmethod
+    def _knowledge_scope_filters(user_id: str, scope: str) -> dict:
+        if scope == "public":
+            return {"visibility": "public"}
+        if scope == "private":
+            return {"owner_user_id": user_id}
+        return {"__access_user": user_id}
+
     def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
-        """Verify an image source is referenced by this tenant's vector payload."""
+        """Verify an image source is visible to this tenant (own private or public)."""
         self._ensure_heavy()
         from careercrew_api.storage import DATA_ROOT
 
         resolved = Path(path).resolve()
         if not resolved.is_relative_to(DATA_ROOT.resolve()):
             return False
-        return bool(self.store.metadata_exists({"user_id": user_id, "image_path": str(resolved)}))
+        return bool(self.store.metadata_exists({"__access_user": user_id, "image_path": str(resolved)}))
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):

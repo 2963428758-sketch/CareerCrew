@@ -43,6 +43,7 @@ class FakeRuntime:
         self.last_call: dict = {}
         self.ingest_calls: list = []
         self.knowledge_output_by_user: dict[str, str] = {}
+        self.knowledge_ask_scopes: list[str] = []
         self.knowledge_sources_by_user: dict[str, list[dict]] = {}
         self.knowledge_asset_owners: dict[str, str] = {}
         self.match_chunks: list[str] = []
@@ -147,7 +148,9 @@ class FakeRuntime:
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "",
+                                 scope: str = "all",
                                  cancel_check: Callable[[], None] | None = None) -> str:
+        self.knowledge_ask_scopes.append(scope)
         output = self.knowledge_output_by_user.get(user_id, self.knowledge_output)
         sources = self.knowledge_sources_by_user.get(user_id, self.knowledge_sources)
         if cancel_check:
@@ -416,11 +419,13 @@ class FakeRuntime:
         category: str = "",
         output_dir: str | None = None,
         doc_name: str = "",
+        visibility: str = "private",
     ) -> dict:
         from pathlib import Path
 
         self.ingest_calls.append({"path": path, "user_id": user_id,
-                                  "output_dir": output_dir, "doc_name": doc_name})
+                                  "output_dir": output_dir, "doc_name": doc_name,
+                                  "visibility": visibility})
         if self.ingest_error:
             raise self.ingest_error
         if progress_cb:
@@ -429,22 +434,63 @@ class FakeRuntime:
         doc_id = Path(path).stem
         self.knowledge_docs_by_user.setdefault(user_id, []).append({
             "doc": doc_id, "source": path, "points": 2,
+            "owner_user_id": user_id, "visibility": visibility,
         })
         return {"doc_id": doc_id, "points": 2, "path": path}
 
-    def delete_document(self, user_id: str, doc_id: str) -> int:
-        docs = self.knowledge_docs_by_user.setdefault(user_id, [])
-        matched = [doc for doc in docs if doc.get("doc") == doc_id]
-        if not matched:
-            return 0
-        self.knowledge_docs_by_user[user_id] = [
-            doc for doc in docs if doc.get("doc") != doc_id
+    def delete_document(self, user_id: str, doc_id: str, is_admin: bool = False) -> tuple[int, bool]:
+        visible = [
+            (owner, d) for owner, docs in self.knowledge_docs_by_user.items()
+            for d in docs
+            if d.get("doc") == doc_id
+            and (d.get("visibility", "private") == "public" or owner == user_id)
         ]
-        return sum(int(doc.get("points", 0)) for doc in matched)
+        if not visible:
+            return 0, False
+        if any(d.get("visibility") == "public" for _o, d in visible) and not is_admin:
+            return 0, True
+        deleted = 0
+        for owner, d in visible:
+            docs = self.knowledge_docs_by_user.get(owner, [])
+            if d in docs:
+                docs.remove(d)
+                deleted += int(d.get("points", 0))
+        return deleted, False
 
-    def knowledge_status(self, user_id: str) -> dict:
-        docs = self.knowledge_docs_by_user.get(user_id, [])
-        return {"points": sum(d["points"] for d in docs), "docs": docs}
+    def publish_document(self, user_id: str, doc_id: str) -> int:
+        n = 0
+        for d in self.knowledge_docs_by_user.get(user_id, []):
+            if d.get("doc") == doc_id:
+                d["visibility"] = "public"
+                n += int(d.get("points", 0))
+        return n
+
+    def unpublish_document(self, user_id: str, doc_id: str) -> int:
+        n = 0
+        for d in self.knowledge_docs_by_user.get(user_id, []):
+            if d.get("doc") == doc_id:
+                d["visibility"] = "private"
+                n += int(d.get("points", 0))
+        return n
+
+    def knowledge_status(self, user_id: str, scope: str = "all") -> dict:
+        all_docs: list[dict] = []
+        for owner, docs in self.knowledge_docs_by_user.items():
+            for doc in docs:
+                entry = dict(doc)
+                entry.setdefault("owner_user_id", owner)
+                entry.setdefault("visibility", "private")
+                all_docs.append(entry)
+        if scope == "public":
+            all_docs = [d for d in all_docs if d["visibility"] == "public"]
+        elif scope == "private":
+            all_docs = [d for d in all_docs if d["owner_user_id"] == user_id]
+        else:
+            all_docs = [
+                d for d in all_docs
+                if d["visibility"] == "public" or d["owner_user_id"] == user_id
+            ]
+        return {"points": sum(int(d.get("points", 0)) for d in all_docs), "docs": all_docs}
 
     def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
         if not self.knowledge_asset_owners:

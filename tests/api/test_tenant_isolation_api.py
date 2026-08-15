@@ -18,7 +18,8 @@ def tenant_api(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from careercrew_api.auth.dependencies import get_auth_service
-    from careercrew_api.auth.service import AccountStore, AuthService
+    from careercrew_api.auth.service import AuthService
+    from careercrew_api.auth.store import create_account_store
     from careercrew_api.deps import get_runtime_dep
     from careercrew_api.main import create_app
     from careercrew_api.routers import knowledge, resume
@@ -33,10 +34,11 @@ def tenant_api(tmp_path, monkeypatch):
 
     settings = AuthSettings(
         environment="test",
+        backend="sqlite",
         jwt_secret="tenant-isolation-test-signing-secret-with-enough-entropy",
         account_db_path=str(tmp_path / "accounts.db"),
     )
-    auth = AuthService(settings, AccountStore(settings.account_db_path))
+    auth = AuthService(settings, create_account_store(settings))
     runtime = FakeRuntime()
     app = create_app()
     app.dependency_overrides[get_auth_service] = lambda: auth
@@ -225,3 +227,47 @@ def test_knowledge_records_retrieval_jobs_and_images_enforce_owner(tenant_api, t
     assert client.get(
         "/api/knowledge/image", params={"path": str(image)}, headers=headers["bob"]
     ).status_code == 404
+
+
+@pytest.mark.web
+def test_knowledge_public_visibility_matrix(tenant_api) -> None:
+    client, runtime, headers, ids = tenant_api
+    runtime.knowledge_docs_by_user[ids["alice"]] = [
+        {"doc": "alice-private", "source": "a.md", "points": 2,
+         "owner_user_id": ids["alice"], "visibility": "private"},
+        {"doc": "alice-public", "source": "a2.md", "points": 3,
+         "owner_user_id": ids["alice"], "visibility": "public"},
+    ]
+    runtime.knowledge_docs_by_user[ids["bob"]] = [
+        {"doc": "bob-private", "source": "b.md", "points": 1,
+         "owner_user_id": ids["bob"], "visibility": "private"},
+    ]
+    alice_all = {d["doc"] for d in client.get("/api/knowledge", headers=headers["alice"]).json()["docs"]}
+    bob_all = {d["doc"] for d in client.get("/api/knowledge", headers=headers["bob"]).json()["docs"]}
+    assert alice_all == {"alice-private", "alice-public"}
+    assert bob_all == {"alice-public", "bob-private"}  # 公共对所有人可见
+    public_only = {d["doc"] for d in client.get("/api/knowledge", params={"scope": "public"}, headers=headers["bob"]).json()["docs"]}
+    assert public_only == {"alice-public"}
+    private_only = {d["doc"] for d in client.get("/api/knowledge", params={"scope": "private"}, headers=headers["bob"]).json()["docs"]}
+    assert private_only == {"bob-private"}
+    # 非 admin 删除公共 → 403；删除他人私有 → 404
+    assert client.delete("/api/knowledge/alice-public", headers=headers["bob"]).status_code == 403
+    assert client.delete("/api/knowledge/alice-private", headers=headers["bob"]).status_code == 404
+    # 非 admin 发布 → 403
+    assert client.post("/api/knowledge/bob-private/publish", headers=headers["bob"]).status_code == 403
+    # admin（alice）发布自己名下私有文档成功；下架成功
+    assert client.post("/api/knowledge/alice-private/publish", headers=headers["alice"]).status_code == 200
+    assert client.post("/api/knowledge/alice-private/unpublish", headers=headers["alice"]).status_code == 200
+    # 非 admin 上传公共库 → 403；admin 上传公共库 → 202
+    assert client.post(
+        "/api/knowledge/upload",
+        files={"file": ("pub.md", b"x", "text/markdown")},
+        data={"visibility": "public"},
+        headers=headers["bob"],
+    ).status_code == 403
+    assert client.post(
+        "/api/knowledge/upload",
+        files={"file": ("pub2.md", b"x", "text/markdown")},
+        data={"visibility": "public"},
+        headers=headers["alice"],
+    ).status_code == 202
