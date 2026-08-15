@@ -12,6 +12,7 @@ import { useChatStore } from "@/store/chatStore"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 import { AGENT_META } from "@/types"
 import type { ChatMessage } from "@/types"
 
@@ -45,7 +46,7 @@ export default function ChatPage() {
   useEffect(() => {
     const tid = currentThreadId
     useChatStore.setState({ messages: [], threadId: tid })
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: ChatMessage[] = []

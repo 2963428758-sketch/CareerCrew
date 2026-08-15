@@ -13,6 +13,7 @@ from collections.abc import Generator
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
@@ -65,7 +66,11 @@ def _profile_from_model(model) -> dict[str, str]:
 
 
 @router.post("")
-def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def consult(
+    req: ConsultRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """会诊总调度官：自动编排顾问 -> 多轮并行调度 -> 最终答案。"""
 
     def gen() -> Generator[str, None, None]:
@@ -73,7 +78,8 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
         err: dict[str, BaseException] = {}
 
         def _worker_impl():
-            attach_run_metadata(user_id=req.user_id, thread_id=req.thread_id, stage="consult")
+            user_id = current_user["id"]
+            attach_run_metadata(user_id=user_id, thread_id=req.thread_id, stage="consult")
             try:
                 from careercrew_core.supervisor.consult_orchestrator import (
                     USER_INPUT_FIELDS,
@@ -84,7 +90,7 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
 
                 try:
                     pending_id = rt.record_user_message(
-                        req.user_id, req.thread_id, req.question, module="consult"
+                        user_id, req.thread_id, req.question, module="consult"
                     )
                 except Exception:
                     pending_id = None
@@ -93,7 +99,7 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
                 # 读取失败（后端未初始化等）则退化为仅用请求携带的 profile。
                 merged_profile: dict[str, str] = {}
                 try:
-                    model = rt.fact_store.load(req.user_id)
+                    model = rt.fact_store.load(user_id)
                     merged_profile = _profile_from_model(model)
                 except Exception:
                     merged_profile = {}
@@ -127,7 +133,7 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
 
                 initial_state = {
                     "thread_id": req.thread_id,
-                    "user_id": req.user_id,
+                    "user_id": user_id,
                     "stage": "consult",
                     "user_intent": context,
                     "messages": [HumanMessage(content=context)],
@@ -147,7 +153,9 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
                 }
                 graph = build_consult_orchestrator_graph(
                     rt.llm,
-                    lambda name, cb: rt.new_consult_agent(name, cb),
+                    lambda name, cb: rt.new_consult_agent(
+                        name, cb, episodic=rt._get_episodic(req.thread_id, user_id),
+                    ),
                     emit=q.put,
                 )
                 result = graph.invoke(initial_state)
@@ -191,7 +199,7 @@ def consult(req: ConsultRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
 
                 try:
                     rt.record_thread_messages(
-                        req.user_id, req.thread_id,
+                        user_id, req.thread_id,
                         user_text="", agent_text=final,
                         module="consult",
                         metadata={"consult_calls": calls},

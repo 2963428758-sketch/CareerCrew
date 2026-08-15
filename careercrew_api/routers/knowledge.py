@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
@@ -27,11 +28,12 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
-def _new_job(filename: str) -> str:
+def _new_job(filename: str, user_id: str) -> str:
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
         _jobs[job_id] = {
             "job_id": job_id,
+            "user_id": user_id,
             "filename": filename,
             "status": "queued",
             "stage": "queued",
@@ -52,7 +54,7 @@ def _new_job(filename: str) -> str:
 
 
 def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
-                    category: str = "") -> None:
+                    user_id: str, category: str = "") -> None:
     """后台线程执行入库，通过进度回调更新任务状态。"""
 
     def cb(stage: str, progress: float) -> None:
@@ -70,7 +72,9 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
             job["status"] = "running"
 
     try:
-        result = rt.ingest_document(save_path, progress_cb=cb, category=category)
+        result = rt.ingest_document(
+            save_path, user_id=user_id, progress_cb=cb, category=category,
+        )
         with _jobs_lock:
             job = _jobs.get(job_id)
             if job is not None:
@@ -89,6 +93,7 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
 
 @router.post("/upload", status_code=202)
 async def upload_knowledge(
+    current_user: CurrentUser,
     file: UploadFile = File(...),
     category: str = Form(""),
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
@@ -103,14 +108,16 @@ async def upload_knowledge(
 
     # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）
     filename = Path(file.filename or "upload").name or "upload"
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    save_path = UPLOAD_DIR / filename
+    user_id = current_user["id"]
+    owner_dir = UPLOAD_DIR / user_id
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    save_path = owner_dir / filename
     save_path.write_bytes(content)
 
-    job_id = _new_job(filename)
+    job_id = _new_job(filename, user_id)
     threading.Thread(
         target=_run_ingest_job,
-        args=(rt, job_id, str(save_path), category),
+        args=(rt, job_id, str(save_path), user_id, category),
         daemon=True,
     ).start()
     return {
@@ -123,22 +130,23 @@ async def upload_knowledge(
 
 
 @router.get("/upload/{job_id}")
-def upload_status(job_id: str) -> dict:
+def upload_status(job_id: str, current_user: CurrentUser) -> dict:
     """查询上传任务进度：{status, stage, progress, error, result}。"""
     with _jobs_lock:
         job = _jobs.get(job_id)
-    if job is None:
+    if job is None or job.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail=f"上传任务不存在：{job_id}")
     return dict(job)
 
 
 @router.get("")
 def list_knowledge(
+    current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
     """知识库状态：总点数 + 文档列表。"""
     try:
-        return rt.knowledge_status()
+        return rt.knowledge_status(current_user["id"])
     except RuntimeInitError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -146,19 +154,23 @@ def list_knowledge(
 @router.delete("/{doc_id}")
 def delete_knowledge(
     doc_id: str,
+    current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
     """删除指定文档的全部向量点。"""
     try:
-        n = rt.delete_document(doc_id)
+        n = rt.delete_document(current_user["id"], doc_id)
     except RuntimeInitError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    if n == 0:
+        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
     return {"deleted": n, "doc_id": doc_id}
 
 
 @router.post("/ask")
 def ask_knowledge(
     req: KnowledgeAskRequest,
+    current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> StreamingResponse:
     """知识库问答：KnowledgeAdvisor 基于检索流式回答。
@@ -173,7 +185,7 @@ def ask_knowledge(
         def _run(cb):
             nonlocal result
             result = rt.run_knowledge_ask_stream(
-                req.question, req.user_id, thread_id=req.thread_id, cb=cb,
+                req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
                 category=req.category,
             )
 
@@ -204,7 +216,11 @@ def ask_knowledge(
 
 
 @router.get("/image")
-def knowledge_image(path: str) -> FileResponse:
+def knowledge_image(
+    path: str,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> FileResponse:
     """返回知识库图片文件（页面图 / 对象裁剪图），供前端标注来源时内嵌与放大查看。
 
     安全约束：路径必须解析到 data/ 目录内且为真实文件，防止目录穿越读取任意文件。
@@ -212,5 +228,11 @@ def knowledge_image(path: str) -> FileResponse:
     root = _DATA_ROOT.resolve()
     p = Path(path).resolve()
     if not p.is_relative_to(root) or not p.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+    try:
+        owned = rt.knowledge_asset_owned(current_user["id"], str(p))
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if not owned:
         raise HTTPException(status_code=404, detail="图片不存在")
     return FileResponse(p)

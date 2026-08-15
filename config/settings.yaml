@@ -119,3 +119,13 @@ langsmith:
   api_key: "${LANGSMITH_API_KEY}"
   masking: true              # 默认脱敏：截断 + 打码手机号/邮箱/薪资
   max_chars: 2000            # 单条字符串上传上限（超出截断）
+
+# ── 本地账号认证 ──
+# 开发环境可使用进程内随机回退密钥；生产环境必须设置 AUTH_JWT_SECRET。
+auth:
+  environment: development   # 可用 CAREERCREW_ENV 覆盖为 production
+  jwt_secret: "${AUTH_JWT_SECRET}"
+  access_token_minutes: 15
+  refresh_token_days: 7
+  cookie_secure: false       # 生产环境必须为 true
+  account_db_path: ./data/db/accounts.db

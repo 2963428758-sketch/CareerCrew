@@ -116,6 +116,7 @@ def test_thread_transcript_restore_roundtrip(client, fake_runtime):
 @pytest.mark.web
 def test_knowledge_thread_stays_in_knowledge_module(client, fake_runtime):
     """知识库会话 touch_thread 后 module 保持 knowledge，列表按模块隔离。"""
+    fake_runtime.register_thread("k-tid-1", "u_001", module="knowledge")
     fake_runtime.touch_thread(
         "k-tid-1", "u_001", title="什么是 RAG", module="knowledge",
     )

@@ -22,6 +22,7 @@ def make_rag_query_tool(
     mm_search: MultimodalSearch,
     sink: Callable[[QueryResult], None] | None = None,
     categories: str | list[str] | None = None,
+    filters: dict | None = None,
 ) -> BaseTool:
     """构造 rag_query 工具。categories 限定检索分类（str 或 list），None/空 = 检索全部。"""
     bound: list[str] = [categories] if isinstance(categories, str) else list(categories or [])
@@ -33,8 +34,12 @@ def make_rag_query_tool(
     )
 
     def _run(query: str, top_k: int = 5) -> str:
-        filters = {"category": bound} if bound else None
-        results = mm_search.search(query, top_k=top_k, filters=filters)
+        scoped_filters = dict(filters or {})
+        if bound:
+            scoped_filters["category"] = bound
+        results = mm_search.search(
+            query, top_k=top_k, filters=scoped_filters or None,
+        )
         if not results:
             return "（无检索结果）"
         lines = []

@@ -13,6 +13,7 @@ import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META } from "@/types"
 import { cn } from "@/lib/utils"
 import { pollResumeUpload, type ActiveResume } from "@/lib/resumeUpload"
+import { apiFetch } from "@/lib/auth"
 
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
@@ -66,7 +67,7 @@ export default function ResumePage() {
     pendingResumeRef.current = null
     setActiveResume(null)
     setMessages([])
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: ChatMsg[] = []
@@ -104,7 +105,7 @@ export default function ResumePage() {
     try {
       const form = new FormData()
       form.append("file", file)
-      const resp = await fetch("/api/resume/upload", { method: "POST", body: form })
+      const resp = await apiFetch("/api/resume/upload", { method: "POST", body: form })
       const data = await resp.json()
       if (!resp.ok) {
         setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `上传失败：${data.detail || `HTTP ${resp.status}`}` }])

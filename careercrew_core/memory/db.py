@@ -263,7 +263,7 @@ class PostgresMemoryDb(MemoryDb):
         conn = self._ensure()
         row = conn.execute(
             "SELECT id, user_id, thread_id, parent_id, type, content, ts FROM episodic_events "
-            "WHERE user_id=%s AND thread_id=%s ORDER BY ts, id DESC LIMIT 1",
+            "WHERE user_id=%s AND thread_id=%s ORDER BY ts DESC, id DESC LIMIT 1",
             (user_id, thread_id),
         ).fetchone()
         return _row_to_dict(row) if row else None

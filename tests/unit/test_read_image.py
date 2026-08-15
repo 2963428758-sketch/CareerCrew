@@ -38,6 +38,22 @@ def test_read_image_missing_file(tmp_path) -> None:
     assert "error" in out
 
 
+def test_read_image_authorizer_hides_foreign_asset(tmp_path) -> None:
+    img = tmp_path / "foreign.png"
+    img.write_bytes(b"not-used")
+    called = []
+    tool = make_read_image_tool(
+        None,
+        vision_caller=lambda *_: called.append(True) or "leaked",
+        path_authorizer=lambda _: False,
+    )
+
+    out = tool.invoke({"image_path": str(img)})
+
+    assert "无权访问" in out
+    assert called == []
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not os.environ.get("SILICONFLOW_API_KEY"), reason="需 SILICONFLOW_API_KEY")
 def test_read_image_real(tmp_path) -> None:

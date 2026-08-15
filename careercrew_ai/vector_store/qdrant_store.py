@@ -22,7 +22,12 @@ from careercrew_ai.vector_store.base_vector_store import BaseVectorStore, QueryR
 if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
 
-_QID_NS = uuid.UUID("8b1e2f3a-4c5d-4e6f-8a9b-0c1d2e3f4a5b")
+# Keep the tenant namespace stable: existing owner-scoped points must not be
+# silently re-keyed.  Legacy/no-owner IDs use a separate UUIDv5 namespace so a
+# legacy logical ID can never reproduce the same namespace/name input pair as
+# an owner-scoped point (the old single-namespace encoding allowed that).
+_QID_TENANT_NS = uuid.UUID("8b1e2f3a-4c5d-4e6f-8a9b-0c1d2e3f4a5b")
+_QID_LEGACY_NS = uuid.UUID("bb7bb0e5-b634-4da0-8b97-6004cc3b01bd")
 _RRF_K = 60
 _PAYLOAD_RESERVED = {"text", "_id"}
 
@@ -70,7 +75,7 @@ class QdrantStore(BaseVectorStore):
             vectors_config=vectors_config,
             sparse_vectors_config={"text_sparse": SparseVectorParams()},
         )
-        for field in ("doc", "type", "page", "source"):
+        for field in ("doc", "type", "page", "source", "category", "user_id", "image_path"):
             try:
                 self._client.create_payload_index(
                     self._collection, field_name=field,
@@ -82,8 +87,13 @@ class QdrantStore(BaseVectorStore):
     # ── id 映射 ──
 
     @staticmethod
-    def _to_qid(sid: str) -> str:
-        return str(uuid.uuid5(_QID_NS, sid))
+    def _to_qid(sid: str, user_id: str = "") -> str:
+        # Qdrant's physical key must include the tenant while payload._id remains
+        # the original domain id (for example e_001) used by EpisodicMemory.
+        if not user_id:
+            return str(uuid.uuid5(_QID_LEGACY_NS, sid))
+        key = f"{len(user_id)}:{user_id}{sid}"
+        return str(uuid.uuid5(_QID_TENANT_NS, key))
 
     @staticmethod
     def _to_list(v: Any) -> list[float]:
@@ -145,7 +155,8 @@ class QdrantStore(BaseVectorStore):
                     payload[k] = v
                 elif v is not None:
                     payload[k] = str(v)
-            points.append(PointStruct(id=self._to_qid(r.id), vector=vectors, payload=payload))
+            owner = str(payload.get("user_id", ""))
+            points.append(PointStruct(id=self._to_qid(r.id, owner), vector=vectors, payload=payload))
         self._client.upsert(self._collection, points)
 
     def query(
@@ -215,11 +226,26 @@ class QdrantStore(BaseVectorStore):
             self._client.delete(self._collection, points_selector=PointIdsList(points=qids))
         return len(qids)
 
-    def get_by_ids(self, ids: list[str]) -> list[VectorRecord]:
+    def get_by_ids(
+        self, ids: list[str], filters: dict | None = None,
+    ) -> list[VectorRecord]:
         if not ids:
             return []
-        qids = [self._to_qid(i) for i in ids]
-        res = self._client.retrieve(self._collection, ids=qids, with_vectors=True)
+        combined = {**(filters or {}), "_id": list(ids)}
+        res = []
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                self._collection,
+                scroll_filter=self._filter_expr(combined),
+                limit=1000,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            res.extend(points)
+            if offset is None:
+                break
         records = []
         for p in res:
             payload = p.payload or {}
@@ -245,16 +271,19 @@ class QdrantStore(BaseVectorStore):
             )
         return records
 
-    def count(self) -> int:
-        return int(self._client.count(self._collection, exact=True).count)
+    def count(self, filters: dict | None = None) -> int:
+        return int(self._client.count(
+            self._collection, count_filter=self._filter_expr(filters), exact=True,
+        ).count)
 
-    def list_docs(self, limit: int = 1000) -> list[dict]:
+    def list_docs(self, limit: int = 1000, filters: dict | None = None) -> list[dict]:
         """按 payload.doc 聚合列出已入库文档（知识库管理用）。"""
         docs: dict[str, dict] = {}
         offset = None
         while True:
             points, offset = self._client.scroll(
                 self._collection, limit=1000, offset=offset,
+                scroll_filter=self._filter_expr(filters),
                 with_payload=True, with_vectors=False,
             )
             for p in points:
@@ -272,6 +301,18 @@ class QdrantStore(BaseVectorStore):
             if offset is None or len(docs) >= limit:
                 break
         return list(docs.values())
+
+    def metadata_exists(self, filters: dict) -> bool:
+        if not filters:
+            return False
+        points, _ = self._client.scroll(
+            self._collection,
+            scroll_filter=self._filter_expr(filters),
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        return bool(points)
 
     # ── 客户端 RRF（契约路径，等权重；加权融合由 MultimodalSearch 走 fusion.rrf_fuse）──
 

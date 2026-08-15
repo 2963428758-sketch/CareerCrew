@@ -11,6 +11,7 @@ from collections.abc import Generator
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import MatchRequest, ResumeRequest
@@ -29,7 +30,11 @@ def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
 
 
 @router.post("/match")
-def match(req: MatchRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def match(
+    req: MatchRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
 
     def gen() -> Generator[str, None, None]:
@@ -38,7 +43,7 @@ def match(req: MatchRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -
         def run_fn(cb):
             nonlocal result
             result["content"] = rt.run_match_stream(
-                req.thread_id, req.user_id, req.intent, cb
+                req.thread_id, current_user["id"], req.intent, cb
             ) or ""
 
         try:
@@ -60,7 +65,11 @@ def match(req: MatchRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -
 
 
 @router.post("/resume")
-def resume(req: ResumeRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def resume(
+    req: ResumeRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
 
     def gen() -> Generator[str, None, None]:
@@ -69,7 +78,7 @@ def resume(req: ResumeRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep))
         def run_fn(cb):
             nonlocal result
             result["content"] = rt.run_resume_stream(
-                req.thread_id, req.user_id, req.jd_text, cb
+                req.thread_id, current_user["id"], req.jd_text, cb
             ) or ""
 
         try:
@@ -91,7 +100,11 @@ def resume(req: ResumeRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep))
 
 
 @router.post("/plan")
-def plan(req: MatchRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def plan(
+    req: MatchRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """求职对话：职业规划师主理（一站式画像/规划/匹配/简历/薪资），流式输出。"""
 
     def gen() -> Generator[str, None, None]:
@@ -100,7 +113,7 @@ def plan(req: MatchRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) ->
         def run_fn(cb):
             nonlocal result
             result["content"] = rt.run_planner_chat_stream(
-                req.thread_id, req.user_id, req.intent, cb
+                req.thread_id, current_user["id"], req.intent, cb
             ) or ""
 
         try:

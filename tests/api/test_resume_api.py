@@ -204,7 +204,9 @@ def test_chat_stream_reuses_stored_resume(client, fake_runtime, tmp_path):
         "thread_id": "r-test-2",
     })
     assert resp.status_code == 200
-    assert (tmp_path / "resume_threads" / "r-test-2.txt").exists()
+    from careercrew_api.routers.resume import _resume_path
+
+    assert _resume_path("u_001", "r-test-2").exists()
 
     resp2 = client.post("/api/resume/chat", json={
         "question": "再优化一下项目经历",

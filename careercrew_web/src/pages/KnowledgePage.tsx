@@ -13,6 +13,7 @@ import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, type KnowledgeSource } from "@/types"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 
 interface KnowledgeMessage {
   id: string
@@ -25,17 +26,69 @@ interface KnowledgeMessage {
 let msgId = 0
 const nextId = () => `kb-msg-${++msgId}`
 
-/** 知识库图片 -> 后端安全代理 URL（浏览器无法直接加载本地绝对路径）。 */
-function imageUrl(path: string): string {
-  return path ? `/api/knowledge/image?path=${encodeURIComponent(path.replace(/\\/g, "/"))}` : ""
+type AuthenticatedImage = { status: "loading" | "ready" | "error"; url?: string }
+
+const imageEndpoint = (path: string) =>
+  `/api/knowledge/image?path=${encodeURIComponent(path.replace(/\\/g, "/"))}`
+
+/**
+ * <img> 不能携带 Authorization 请求头，所以先通过 apiFetch 取回受保护图片，
+ * 再把 Blob URL 交给图片元素。每轮请求产生的 URL 都会在替换或卸载时释放。
+ */
+function useAuthenticatedImages(paths: readonly (string | undefined)[]) {
+  const signature = [...new Set(paths.filter((path): path is string => Boolean(path)))].sort().join("\u0000")
+
+  const [images, setImages] = useState<Record<string, AuthenticatedImage>>({})
+
+  useEffect(() => {
+    const uniquePaths = signature ? signature.split("\u0000") : []
+    if (uniquePaths.length === 0) {
+      setImages({})
+      return
+    }
+
+    let disposed = false
+    const objectUrls: string[] = []
+    setImages(Object.fromEntries(uniquePaths.map((path) => [path, { status: "loading" }])) as Record<string, AuthenticatedImage>)
+
+    void Promise.all(uniquePaths.map(async (path) => {
+      try {
+        const response = await apiFetch(imageEndpoint(path))
+        if (!response.ok) throw new Error(`Image request failed: ${response.status}`)
+        if (!response.headers.get("Content-Type")?.startsWith("image/")) {
+          throw new Error("Image request returned a non-image response")
+        }
+        const url = URL.createObjectURL(await response.blob())
+        objectUrls.push(url)
+        return [path, { status: "ready", url }] as const
+      } catch {
+        return [path, { status: "error" }] as const
+      }
+    })).then((entries) => {
+      if (disposed) return
+      setImages(Object.fromEntries(entries))
+    })
+
+    return () => {
+      disposed = true
+      objectUrls.forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [signature])
+
+  return images
 }
 
-/** 把 rag_query 返回的 [image: 绝对路径] 行转为 markdown 图片语法（仅本页）。 */
-function renderKnowledgeText(text: string): string {
-  return text.replace(
-    /^\[image:\s*(.+?)\]\s*$/gm,
-    (_m, path: string) => `![知识库图片](${imageUrl(String(path))})`
-  )
+function imagePathsIn(text: string): string[] {
+  return [...text.matchAll(/^\[image:\s*(.+?)\]\s*$/gm)].map((match) => match[1])
+}
+
+/** 把 rag_query 返回的 [image: 绝对路径] 行转为已鉴权的 Blob 图片。 */
+function renderKnowledgeText(text: string, images: Record<string, AuthenticatedImage>): string {
+  return text.replace(/^\[image:\s*(.+?)\]\s*$/gm, (_m, rawPath: string) => {
+    const image = images[rawPath]
+    if (image?.status === "ready" && image.url) return `![知识库图片](${image.url})`
+    return image?.status === "error" ? "知识库图片加载失败。" : "知识库图片加载中…"
+  })
 }
 
 export default function KnowledgePage() {
@@ -73,7 +126,7 @@ export default function KnowledgePage() {
     const tid = currentThreadId
     setMessages([])
     setPreviewUrl(null)
-    fetch(`/api/memory?thread_id=${tid}`)
+    apiFetch(`/api/memory?thread_id=${tid}`)
       .then((r) => r.json())
       .then((entries: Record<string, unknown>[]) => {
         const msgs: KnowledgeMessage[] = []
@@ -247,6 +300,7 @@ function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing
   const isUser = msg.role === "user"
   const meta = AGENT_META.knowledge_advisor
   const content = isStreaming ? streamingText : msg.content
+  const images = useAuthenticatedImages(isUser ? [] : imagePathsIn(content))
 
   if (isUser) {
     return (
@@ -270,7 +324,7 @@ function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing
         ) : (
           <>
             <MarkdownContent className={cn(isStreaming && content && !thinking && "typing-cursor")}>
-              {renderKnowledgeText(content || "")}
+              {renderKnowledgeText(content || "", images)}
             </MarkdownContent>
             {isStreaming && content && thinking && <ThinkingPulse />}
             {!isStreaming && msg.sources && msg.sources.length > 0 && (
@@ -285,7 +339,8 @@ function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing
 
 function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPreview: (url: string) => void }) {
   const [open, setOpen] = useState<Set<number>>(new Set())
-  const [failedImgs, setFailedImgs] = useState<Set<number>>(new Set())
+  const [failedImgs, setFailedImgs] = useState<Set<string>>(new Set())
+  const images = useAuthenticatedImages(sources.map((source) => source.image_path))
 
   const toggle = (i: number) => {
     setOpen((prev) => {
@@ -307,6 +362,7 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
         // 原始相关度百分比（0-1 -> 0-100%），不做相对归一化，避免低分片段显示成 100%
         const pct = Math.round(s.score * 100)
         const imgPath = s.image_path
+        const image = imgPath ? images[imgPath] : undefined
         return (
           <div key={`${s.doc}-${i}`} className="overflow-hidden rounded-md border bg-muted/30">
             <button
@@ -332,21 +388,23 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
             {expanded && (
               <div className="border-t bg-card px-3 py-2">
                 {imgPath && (
-                  failedImgs.has(i) ? (
+                  failedImgs.has(imgPath) || image?.status === "error" ? (
                     <p className="mb-1.5 truncate text-[10px] text-muted-foreground">
                       图片：{imgPath.replace(/\\/g, "/")}
                     </p>
+                  ) : image?.status !== "ready" || !image.url ? (
+                    <p className="mb-1.5 text-[10px] text-muted-foreground">图片加载中…</p>
                   ) : (
                     <button
-                      onClick={() => onPreview(imageUrl(imgPath))}
+                      onClick={() => onPreview(image.url!)}
                       className="mb-2 block w-full"
                       title="点击查看大图（滚轮缩放）"
                     >
                       <img
-                        src={imageUrl(imgPath)}
+                        src={image.url}
                         alt={name}
                         className="max-h-44 w-full bg-muted object-contain transition-opacity hover:opacity-90"
-                        onError={() => setFailedImgs((prev) => new Set(prev).add(i))}
+                        onError={() => setFailedImgs((prev) => new Set(prev).add(imgPath))}
                       />
                     </button>
                   )

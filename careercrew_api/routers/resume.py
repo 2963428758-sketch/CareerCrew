@@ -14,6 +14,7 @@ GET /upload/{job_id} 轮询进度（queued -> parse -> done），解析结果
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import threading
 import time
@@ -24,6 +25,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 
+from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
@@ -48,28 +50,32 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
-def _resume_path(thread_id: str) -> Path:
-    # thread_id 由前端生成（前缀 + 时间戳 + 随机串），仅作文件名使用
-    return RESUME_STORE_DIR / f"{thread_id}.txt"
+def _resume_path(user_id: str, thread_id: str) -> Path:
+    # Public thread ids are untrusted path input. Keep the public id in the API,
+    # but use a stable opaque filename under the authenticated user's directory.
+    digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    return RESUME_STORE_DIR / user_id / f"{digest}.txt"
 
 
-def _load_resume(thread_id: str) -> str:
+def _load_resume(user_id: str, thread_id: str) -> str:
     try:
-        return _resume_path(thread_id).read_text(encoding="utf-8")
+        return _resume_path(user_id, thread_id).read_text(encoding="utf-8")
     except FileNotFoundError:
         return ""
 
 
-def _save_resume(thread_id: str, text: str) -> None:
-    RESUME_STORE_DIR.mkdir(parents=True, exist_ok=True)
-    _resume_path(thread_id).write_text(text, encoding="utf-8")
+def _save_resume(user_id: str, thread_id: str, text: str) -> None:
+    path = _resume_path(user_id, thread_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
-def _new_job(filename: str) -> str:
+def _new_job(filename: str, user_id: str) -> str:
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
         _jobs[job_id] = {
             "job_id": job_id,
+            "user_id": user_id,
             "filename": filename,
             "status": "queued",
             "stage": "queued",
@@ -126,7 +132,7 @@ def _parse_resume_file(rt: CareerCrewRuntime, path: str, ext: str) -> tuple[str,
 
 
 def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
-                    filename: str, ext: str) -> None:
+                    filename: str, ext: str, user_id: str) -> None:
     """后台线程解析简历并写入简历库，通过任务状态向前端反馈进度。"""
 
     def _set(**updates: object) -> None:
@@ -149,6 +155,7 @@ def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
         (RESUME_LIB_DIR / f"{resume_id}.txt").write_text(text, encoding="utf-8")
         meta = {
             "resume_id": resume_id,
+            "user_id": user_id,
             "filename": filename,
             "doc_type": doc_type,
             "char_count": len(text),
@@ -175,6 +182,7 @@ def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
 
 @router.post("/upload", status_code=202)
 async def upload(
+    current_user: CurrentUser,
     file: UploadFile = File(...),
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
@@ -189,14 +197,16 @@ async def upload(
     # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）
     filename = Path(file.filename or "upload").name or "upload"
     ext = Path(filename).suffix.lower()
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    save_path = UPLOAD_DIR / filename
+    user_id = current_user["id"]
+    job_id = _new_job(filename, user_id)
+    owner_dir = UPLOAD_DIR / user_id
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    save_path = owner_dir / f"{job_id}_{filename}"
     save_path.write_bytes(content_bytes)
 
-    job_id = _new_job(filename)
     threading.Thread(
         target=_run_upload_job,
-        args=(rt, job_id, str(save_path), filename, ext),
+        args=(rt, job_id, str(save_path), filename, ext, user_id),
         daemon=True,
     ).start()
     return {
@@ -209,17 +219,17 @@ async def upload(
 
 
 @router.get("/upload/{job_id}")
-def upload_status(job_id: str) -> dict:
+def upload_status(job_id: str, current_user: CurrentUser) -> dict:
     """查询上传任务进度：{status, stage, progress, error, result}。"""
     with _jobs_lock:
         job = _jobs.get(job_id)
-    if job is None:
+    if job is None or job.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail=f"上传任务不存在：{job_id}")
     return dict(job)
 
 
 @router.get("/library")
-def list_library() -> dict:
+def list_library(current_user: CurrentUser) -> dict:
     """简历库：全部已上传简历的元数据（按上传时间倒序）。"""
     if not RESUME_LIB_DIR.exists():
         return {"resumes": []}
@@ -229,23 +239,37 @@ def list_library() -> dict:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 - 元数据损坏时跳过单条，不影响整体列表
             continue
+        if meta.get("user_id") != current_user["id"]:
+            continue
         items.append(meta)
     items.sort(key=lambda m: m.get("created_at", 0), reverse=True)
     return {"resumes": items}
 
 
 @router.get("/library/{resume_id}/content")
-def library_content(resume_id: str) -> dict:
+def library_content(resume_id: str, current_user: CurrentUser) -> dict:
     """读取某份简历的解析文本（供「用于当前对话」复用）。"""
     txt_path = RESUME_LIB_DIR / f"{resume_id}.txt"
-    if not txt_path.is_file():
+    meta_path = RESUME_LIB_DIR / f"{resume_id}.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        meta = {}
+    if meta.get("user_id") != current_user["id"] or not txt_path.is_file():
         raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
     return {"resume_id": resume_id, "content": txt_path.read_text(encoding="utf-8")}
 
 
 @router.delete("/library/{resume_id}")
-def delete_library(resume_id: str) -> dict:
+def delete_library(resume_id: str, current_user: CurrentUser) -> dict:
     """从简历库删除某份简历（文本 + 元数据）。"""
+    meta_path = RESUME_LIB_DIR / f"{resume_id}.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        meta = {}
+    if meta.get("user_id") != current_user["id"]:
+        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
     removed = 0
     for suffix in (".txt", ".json"):
         p = RESUME_LIB_DIR / f"{resume_id}{suffix}"
@@ -258,16 +282,22 @@ def delete_library(resume_id: str) -> dict:
 
 
 @router.post("/generate")
-def generate(req: GenerateRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def generate(
+    req: GenerateRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """简历顾问以"上传简历 + 目标 JD"为输入流式优化。"""
 
     def run_fn(cb):
         from langchain_core.messages import HumanMessage
 
-        agent = rt.new_resume_advisor(cb)
+        user_id = current_user["id"]
+        episodic = rt._get_episodic(req.thread_id, user_id)
+        agent = rt.new_resume_advisor(cb, episodic=episodic)
         prompt = f"我的简历：\n{req.user_resume}\n\n目标 JD：\n{req.jd or '未指定'}\n\n请帮我优化简历。"
         state = {
-            "thread_id": req.thread_id, "user_id": req.user_id, "stage": "resume",
+            "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
             "user_intent": prompt,
             "messages": [HumanMessage(content=prompt)],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
@@ -293,7 +323,11 @@ def generate(req: GenerateRequest, rt: CareerCrewRuntime = Depends(get_runtime_d
 
 
 @router.post("/chat")
-def chat(req: ResumeChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> StreamingResponse:
+def chat(
+    req: ResumeChatRequest,
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> StreamingResponse:
     """对话式简历优化：简历按 thread 持久化，多轮提问 / 追问优化。
 
     - resume_text 非空：新上传的简历，写入该线程存储（后续轮次自动复用）
@@ -308,13 +342,15 @@ def chat(req: ResumeChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
             nonlocal result
             from langchain_core.messages import HumanMessage
 
-            agent = rt.new_resume_advisor(cb)
+            user_id = current_user["id"]
+            episodic = rt._get_episodic(req.thread_id, user_id)
+            agent = rt.new_resume_advisor(cb, episodic=episodic)
             if req.resume_text.strip():
-                _save_resume(req.thread_id, req.resume_text)
-            resume = req.resume_text.strip() or _load_resume(req.thread_id)
+                _save_resume(user_id, req.thread_id, req.resume_text)
+            resume = req.resume_text.strip() or _load_resume(user_id, req.thread_id)
             try:
                 pending_id = rt.record_user_message(
-                    req.user_id, req.thread_id, req.question, module="resume"
+                    user_id, req.thread_id, req.question, module="resume"
                 )
             except Exception:
                 pending_id = None
@@ -327,7 +363,7 @@ def chat(req: ResumeChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
             else:
                 current = req.question
             state = {
-                "thread_id": req.thread_id, "user_id": req.user_id, "stage": "resume",
+                "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
                 "user_intent": current,
                 "messages": [HumanMessage(content=current)],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
@@ -349,7 +385,7 @@ def chat(req: ResumeChatRequest, rt: CareerCrewRuntime = Depends(get_runtime_dep
             content = result["content"] or "".join(content_parts)
             try:
                 rt.record_thread_messages(
-                    req.user_id, req.thread_id, user_text="", agent_text=content,
+                    current_user["id"], req.thread_id, user_text="", agent_text=content,
                     module="resume",
                 )
             except Exception:

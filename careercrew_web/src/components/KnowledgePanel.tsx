@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { KB_CATEGORIES, KB_CATEGORY_LABELS } from "@/types"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/auth"
 
 interface KnowledgeDoc {
   doc: string
@@ -61,7 +62,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
   const refresh = () => {
     setLoading(true)
     setError("")
-    fetch("/api/knowledge")
+    apiFetch("/api/knowledge")
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
       .then((d) => setStatus(d))
       .catch((e) => setError((e as Error).message))
@@ -77,7 +78,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     if (!jobId || jobStatus === "done" || jobStatus === "error") return
     const timer = setInterval(async () => {
       try {
-        const resp = await fetch(`/api/knowledge/upload/${jobId}`)
+        const resp = await apiFetch(`/api/knowledge/upload/${jobId}`)
         if (!resp.ok) return
         const next: UploadJob = await resp.json()
         setJob(next)
@@ -124,7 +125,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     fd.append("file", files[0])
     fd.append("category", uploadCategory)
     try {
-      const resp = await fetch("/api/knowledge/upload", { method: "POST", body: fd })
+      const resp = await apiFetch("/api/knowledge/upload", { method: "POST", body: fd })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
       setJob(data as UploadJob)
@@ -135,7 +136,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
 
   const handleDelete = async (doc: string) => {
     if (!window.confirm(`确定从知识库删除「${doc}」吗？删除后需重新上传才能恢复。`)) return
-    await fetch(`/api/knowledge/${encodeURIComponent(doc)}`, { method: "DELETE" })
+    await apiFetch(`/api/knowledge/${encodeURIComponent(doc)}`, { method: "DELETE" })
     refresh()
   }
 

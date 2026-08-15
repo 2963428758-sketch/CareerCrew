@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from careercrew_core.state.checkpointer import get_checkpointer
+from careercrew_core.state.checkpointer import get_checkpointer, tenant_checkpoint_config
 from careercrew_core.state.settings import Settings
 from careercrew_core.supervisor.graph import build_graph
 from careercrew_core.supervisor.router import route
@@ -47,7 +47,7 @@ def test_build_graph_routes_and_terminates(tmp_path: Path, valid_config_data: di
         "messages": [HumanMessage(content="开始")],
         "pending_action": None, "agent_outputs": {}, "target_companies": [],
     }
-    result = app.invoke(init, config={"configurable": {"thread_id": "t1"}})
+    result = app.invoke(init, config=tenant_checkpoint_config("u1", "t1"))
     assert result["stage"] == "apply"
     contents = [getattr(m, "content", "") for m in result["messages"]]
     assert "planned" in contents

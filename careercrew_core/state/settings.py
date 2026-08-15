@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,10 @@ _LOADER_BACKEND_MIGRATION = {
 
 class SettingsError(Exception):
     """配置加载或校验失败（fail-fast）。"""
+
+
+# 仅开发进程内的随机回退：不把可预测密钥带入生产，也避免写入仓库。
+_DEVELOPMENT_AUTH_SECRET = secrets.token_urlsafe(48)
 
 
 # ── 嵌套模型：镜像 config/settings.yaml 结构 ──
@@ -213,6 +218,33 @@ class LangSmithSettings(BaseModel):
     max_chars: int = 2000
 
 
+class AuthSettings(BaseModel):
+    """本地账号认证配置。
+
+    开发/测试允许进程内随机回退；测试可显式配置 jwt_secret 以获得确定性。
+    任何其他环境都必须显式提供足够强度的 AUTH_JWT_SECRET。
+    """
+
+    environment: str = "development"
+    jwt_secret: str = ""
+    access_token_minutes: int = 15
+    refresh_token_days: int = 7
+    cookie_secure: bool = False
+    account_db_path: str = "./data/db/accounts.db"
+
+    @property
+    def is_development(self) -> bool:
+        return self.environment.strip().lower() in {"development", "dev", "test"}
+
+    def signing_secret(self) -> str:
+        secret = self.jwt_secret.strip()
+        if secret:
+            return secret
+        if self.is_development:
+            return _DEVELOPMENT_AUTH_SECRET
+        raise SettingsError("auth.jwt_secret 未设置（生产环境必须设置 AUTH_JWT_SECRET）")
+
+
 class Settings(BaseModel):
     """顶层配置，结构与 config/settings.yaml 一一对应。"""
 
@@ -227,6 +259,7 @@ class Settings(BaseModel):
     tools: ToolsSettings
     hitl: HitlSettings
     langsmith: LangSmithSettings
+    auth: AuthSettings = AuthSettings()
 
 
 # ── 环境变量替换 ──
@@ -266,6 +299,7 @@ def _resolve_paths(settings: Settings) -> Settings:
     settings.embedding.model_path = _resolve_path(settings.embedding.model_path)
     settings.rag.loaders.output_dir = _resolve_path(settings.rag.loaders.output_dir)
     settings.supervisor.checkpointer.path = _resolve_path(settings.supervisor.checkpointer.path)
+    settings.auth.account_db_path = _resolve_path(settings.auth.account_db_path)
     return settings
 
 
@@ -335,6 +369,17 @@ def validate_settings(settings: Settings) -> None:
             f"应为 {sorted(_VALID_LOADER_MODEL_VERSIONS)} 之一"
         )
 
+    # 认证密钥与 Cookie：生产环境绝不能静默使用开发默认值。
+    try:
+        auth_secret = settings.auth.signing_secret()
+        if not settings.auth.is_development:
+            if len(auth_secret) < 32:
+                problems.append("auth.jwt_secret 过短（生产环境至少 32 个字符）")
+            if not settings.auth.cookie_secure:
+                problems.append("auth.cookie_secure 必须为 true（生产环境）")
+    except SettingsError as err:
+        problems.append(str(err))
+
     if problems:
         raise SettingsError("配置语义校验失败:\n" + "\n".join(f"  - {p}" for p in problems))
 
@@ -359,3 +404,40 @@ def load_settings(path: str | Path | None = None) -> Settings:
 
     validate_settings(settings)
     return _resolve_paths(settings)
+
+
+def load_auth_settings(path: str | Path | None = None) -> AuthSettings:
+    """只读取认证段，保证应用启动能单独对认证生产配置 fail-fast。
+
+    API 应用的重组件仍按首请求惰性初始化；因此不能为了验证 JWT 密钥而要求
+    LLM、向量库等所有配置在 import 时可用。环境变量 CAREERCREW_ENV 明确覆盖
+    YAML 的 auth.environment，方便生产部署与隔离测试。
+    """
+    load_dotenv()
+    config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        raise SettingsError(f"配置文件不存在: {config_path}")
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise SettingsError(f"配置文件顶层应为映射，实际: {type(raw).__name__}")
+    auth_raw = _substitute_env(raw.get("auth", {}))
+    if not isinstance(auth_raw, dict):
+        raise SettingsError("auth 配置应为映射")
+    environment_override = os.environ.get("CAREERCREW_ENV", "").strip()
+    if environment_override:
+        auth_raw["environment"] = environment_override
+    try:
+        auth = AuthSettings.model_validate(auth_raw)
+    except ValidationError as err:
+        raise SettingsError(_format_validation_errors(err)) from None
+    try:
+        secret = auth.signing_secret()
+    except SettingsError:
+        raise
+    if not auth.is_development:
+        if len(secret) < 32:
+            raise SettingsError("auth.jwt_secret 过短（生产环境至少 32 个字符）")
+        if not auth.cookie_secure:
+            raise SettingsError("auth.cookie_secure 必须为 true（生产环境）")
+    auth.account_db_path = _resolve_path(auth.account_db_path) or auth.account_db_path
+    return auth

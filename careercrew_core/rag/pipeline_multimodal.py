@@ -189,6 +189,7 @@ class MultimodalIngestionPipeline:
     ) -> int:
         meta = metadata or {}
         base_meta = {
+            **meta,
             "doc": parsed.doc_id,
             "source": meta.get("source", "") or parsed.metadata.get("source_path", ""),
             "category": category,

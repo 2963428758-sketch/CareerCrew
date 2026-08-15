@@ -69,7 +69,7 @@ def test_record_user_message_persists_before_run() -> None:
     rt._initialized = True  # 跳过重组件初始化，只测记忆层
     db = FakeMemoryDb()
     rt.memory_db = db
-    rt.thread_store = ThreadStore(db, user_id="u1")
+    rt.thread_store = ThreadStore(db)
     entry_id = rt.record_user_message("u1", "k-t1", "我有什么项目", module="knowledge")
     assert entry_id
     rows = db.list_episodic("u1", thread_id="k-t1")

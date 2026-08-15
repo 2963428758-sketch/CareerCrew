@@ -11,6 +11,7 @@ import {
   type ResumeLibraryItem,
   type ResumeUploadJob,
 } from "@/lib/resumeUpload"
+import { apiFetch } from "@/lib/auth"
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -49,7 +50,7 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
   const refresh = () => {
     setLoading(true)
     setError("")
-    fetch("/api/resume/library")
+    apiFetch("/api/resume/library")
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
       .then((d: { resumes: ResumeLibraryItem[] }) => setResumes(d.resumes))
       .catch((e) => setError((e as Error).message))
@@ -65,7 +66,7 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
     if (!jobId || jobStatus === "done" || jobStatus === "error") return
     const timer = setInterval(async () => {
       try {
-        const resp = await fetch(`/api/resume/upload/${jobId}`)
+        const resp = await apiFetch(`/api/resume/upload/${jobId}`)
         if (!resp.ok) return
         const next: ResumeUploadJob = await resp.json()
         setJob(next)
@@ -125,7 +126,7 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
     const fd = new FormData()
     fd.append("file", files[0])
     try {
-      const resp = await fetch("/api/resume/upload", { method: "POST", body: fd })
+      const resp = await apiFetch("/api/resume/upload", { method: "POST", body: fd })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
       setJob(data as ResumeUploadJob)
@@ -156,7 +157,7 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
   const handleDelete = async (item: ResumeLibraryItem) => {
     if (!window.confirm(`确定从简历库删除「${item.filename}」吗？删除后需重新上传才能恢复。`)) return
     try {
-      const resp = await fetch(`/api/resume/library/${encodeURIComponent(item.resume_id)}`, {
+      const resp = await apiFetch(`/api/resume/library/${encodeURIComponent(item.resume_id)}`, {
         method: "DELETE",
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)

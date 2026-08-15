@@ -133,6 +133,7 @@ def test_make_tools_registers_salary_query_for_salary_and_planner() -> None:
     from careercrew_api.runtime import CareerCrewRuntime
 
     from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.episodic import EpisodicMemory
     from careercrew_core.memory.router import MemoryRouter
     from careercrew_core.memory.semantic import SemanticFactStore
 
@@ -156,6 +157,7 @@ def test_make_tools_registers_salary_query_for_salary_and_planner() -> None:
     rt.settings = settings
     rt.embedding = None
     rt._episodic_vector_store = None
+    episodic = EpisodicMemory(memory_db, user_id="u_001", thread_id="salary-test")
     for kind in ("salary", "planner"):
-        reg = rt._make_tools(kind)
+        reg = rt._make_tools(kind, episodic=episodic)
         assert reg.has("salary_query")

@@ -61,7 +61,9 @@ class BaseVectorStore(ABC):
     def delete_by_metadata(self, filters: dict) -> int: ...
 
     @abstractmethod
-    def get_by_ids(self, ids: list[str]) -> list[VectorRecord]: ...
+    def get_by_ids(
+        self, ids: list[str], filters: dict | None = None,
+    ) -> list[VectorRecord]: ...
 
 
 def _matches(metadata: dict, filters: dict) -> bool:
@@ -72,11 +74,12 @@ class FakeVectorStore(BaseVectorStore):
     """内存版向量库（cosine 相似度），单测复用，避免真实 Qdrant。"""
 
     def __init__(self, settings: Settings) -> None:
-        self._records: dict[str, VectorRecord] = {}
+        self._records: dict[tuple[str, str], VectorRecord] = {}
 
     def upsert(self, records: list[VectorRecord]) -> None:
         for r in records:
-            self._records[r.id] = r
+            owner = str((r.metadata or {}).get("user_id", ""))
+            self._records[(owner, r.id)] = r
 
     def query(self, dense, top_k=10, filters=None, sparse=None):
         q = np.asarray(dense, dtype=np.float32)
@@ -98,11 +101,38 @@ class FakeVectorStore(BaseVectorStore):
             del self._records[rid]
         return len(to_del)
 
-    def get_by_ids(self, ids: list[str]) -> list[VectorRecord]:
-        return [self._records[i] for i in ids if i in self._records]
+    def get_by_ids(self, ids: list[str], filters: dict | None = None) -> list[VectorRecord]:
+        wanted = set(ids)
+        return [
+            r for r in self._records.values()
+            if r.id in wanted and (not filters or _matches(r.metadata, filters))
+        ]
 
-    def count(self) -> int:
-        return len(self._records)
+    def count(self, filters: dict | None = None) -> int:
+        return sum(
+            1 for r in self._records.values()
+            if not filters or _matches(r.metadata, filters)
+        )
+
+    def list_docs(self, limit: int = 1000, filters: dict | None = None) -> list[dict]:
+        docs: dict[str, dict] = {}
+        for record in self._records.values():
+            if filters and not _matches(record.metadata, filters):
+                continue
+            doc = str(record.metadata.get("doc") or record.id)
+            entry = docs.setdefault(doc, {
+                "doc": doc,
+                "source": record.metadata.get("source", ""),
+                "points": 0,
+                "category": record.metadata.get("category", ""),
+            })
+            entry["points"] += 1
+            if len(docs) >= limit:
+                break
+        return list(docs.values())
+
+    def metadata_exists(self, filters: dict) -> bool:
+        return any(_matches(r.metadata, filters) for r in self._records.values())
 
     def query_routes(
         self,
