@@ -424,7 +424,7 @@ class CareerCrewRuntime:
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
-                         cancel_check: Callable[[], None] | None = None) -> str:
+                         cancel_check: Callable[[], None] | None = None) -> "StreamResult":
         """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。
 
         返回 StreamResult（content + turn 上下文）；转交 traced_call 透传。
@@ -495,7 +495,7 @@ class CareerCrewRuntime:
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
-                          cancel_check: Callable[[], None] | None = None) -> str:
+                          cancel_check: Callable[[], None] | None = None) -> "StreamResult":
         """流式 resume：用带 callback 的 agent 替换 cycle 中的 advisor，保留对话历史。"""
         return traced_call(
             self._run_resume_stream_impl,
@@ -558,7 +558,7 @@ class CareerCrewRuntime:
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
-                                cancel_check: Callable[[], None] | None = None) -> str:
+                                cancel_check: Callable[[], None] | None = None) -> "StreamResult":
         """求职对话：职业规划师主理（聚焦求职规划：画像/目标公司池/阶段规划与复盘）。"""
         return traced_call(
             self._run_planner_chat_stream_impl,
@@ -631,7 +631,7 @@ class CareerCrewRuntime:
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "",
                                  scope: str = "all",
-                                 cancel_check: Callable[[], None] | None = None) -> str:
+                                 cancel_check: Callable[[], None] | None = None) -> "StreamResult":
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
         返回 ``{"content": str, "sources": list[dict]}``：

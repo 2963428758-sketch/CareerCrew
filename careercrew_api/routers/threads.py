@@ -9,14 +9,12 @@
 """
 from __future__ import annotations
 
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
-from careercrew_api.runtime import CareerCrewRuntime, ResourceNotFoundError
+from careercrew_api.runtime import CareerCrewRuntime
 from careercrew_core.conversation.store import OwnershipError
 
 router = APIRouter()
@@ -37,14 +35,6 @@ class ThreadCreateRequest(BaseModel):
         if v not in _KNOWN_MODULES:
             raise ValueError(f"module 必须为 {'/'.join(_KNOWN_MODULES)} 之一")
         return v
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        UUID(value)
-        return True
-    except (ValueError, AttributeError, TypeError):
-        return False
 
 
 @router.post("/threads")
