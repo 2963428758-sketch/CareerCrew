@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { useChatStore } from "@/store/chatStore"
-import { apiFetch } from "@/lib/auth"
+import { apiFetch, getAuthSnapshot } from "@/lib/auth"
 
 export default function DataPage() {
   return (
@@ -130,7 +130,7 @@ export function ProfilePanel() {
     }
 
     try {
-      const resp = await apiFetch("/api/profile?user_id=u_001", {
+      const resp = await apiFetch(`/api/profile?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fields }),
@@ -411,7 +411,7 @@ export function MemorySettingsPanel() {
     setError("")
     Promise.all([
       apiFetch("/api/settings/memory").then((r) => r.json()),
-      apiFetch("/api/memory/policy?user_id=u_001").then((r) => r.json()),
+      apiFetch(`/api/memory/policy?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`).then((r) => r.json()),
     ])
       .then(([s, p]) => {
         setSettings(s as MemorySettingsData)
@@ -456,7 +456,7 @@ export function MemorySettingsPanel() {
     const next = { ...policy, user: { ...policy.user, ...patch } }
     setPolicy(next)
     try {
-      const p = await put("/api/memory/policy?user_id=u_001", {
+      const p = await put(`/api/memory/policy?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`, {
         enabled: next.user.enabled,
         generate: next.user.generate,
         use: next.user.use,

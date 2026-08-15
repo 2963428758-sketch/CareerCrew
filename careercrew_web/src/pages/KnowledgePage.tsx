@@ -11,7 +11,7 @@ import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, type KnowledgeSource } from "@/types"
+import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, type KnowledgeSource } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/auth"
 
@@ -109,6 +109,10 @@ export default function KnowledgePage() {
       id ? { type: "category", category_id: id } : { type: "all" }
     )
   }
+  const scope = savedScope?.type === "public" || savedScope?.type === "private" ? savedScope.type : "all"
+  const changeScope = (next: "all" | "public" | "private") => {
+    void setThreadScope("knowledge", currentThreadId, { type: next })
+  }
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
@@ -183,7 +187,7 @@ export default function KnowledgePage() {
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("knowledge", currentThreadId, question)
-    await startStream(currentThreadId, "/knowledge/ask", { question, thread_id: currentThreadId, category })
+    await startStream(currentThreadId, "/knowledge/ask", { question, thread_id: currentThreadId, category, scope })
   }
 
   const handleNew = () => {
@@ -254,6 +258,18 @@ export default function KnowledgePage() {
 
           <div className="shrink-0 border-t bg-card/50 px-6 py-4">
             <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
+              {KB_SCOPE.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => changeScope(s.id)}
+                  className={cn(
+                    "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-all",
+                    scope === s.id ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted"
+                  )}
+                >
+                  {s.label}
+                </button>
+              ))}
               {KB_CATEGORIES.map((c) => (
                 <button
                   key={c.id || "all"}

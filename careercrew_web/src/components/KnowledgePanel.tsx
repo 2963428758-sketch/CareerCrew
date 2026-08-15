@@ -1,18 +1,20 @@
-import { useEffect, useState } from "react"
-import { Upload, BookOpen, Trash2, X } from "lucide-react"
+import { useEffect, useState, useSyncExternalStore } from "react"
+import { Upload, BookOpen, Globe, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { KB_CATEGORIES, KB_CATEGORY_LABELS } from "@/types"
 import { cn } from "@/lib/utils"
-import { apiFetch } from "@/lib/auth"
+import { apiFetch, getAuthSnapshot, subscribeAuth } from "@/lib/auth"
 
 interface KnowledgeDoc {
   doc: string
   source: string
   points: number
   category?: string
+  visibility: "private" | "public"
+  owner_user_id: string
 }
 
 interface KnowledgeStatus {
@@ -48,6 +50,10 @@ const STAGE_CEILING: Record<string, number> = {
 
 /** 知识库管理面板（上传 / 列表 / 删除），可嵌入知识库问答页右上角。 */
 export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
+  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
+  const me = auth.user?.id ?? ""
+  const isAdmin = auth.user?.role === "admin"
+  const [uploadVisibility, setUploadVisibility] = useState<"private" | "public">("private")
   const [status, setStatus] = useState<KnowledgeStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
@@ -124,6 +130,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     const fd = new FormData()
     fd.append("file", files[0])
     fd.append("category", uploadCategory)
+    fd.append("visibility", uploadVisibility)
     try {
       const resp = await apiFetch("/api/knowledge/upload", { method: "POST", body: fd })
       const data = await resp.json()
@@ -134,9 +141,21 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     }
   }
 
-  const handleDelete = async (doc: string) => {
-    if (!window.confirm(`确定从知识库删除「${doc}」吗？删除后需重新上传才能恢复。`)) return
-    await apiFetch(`/api/knowledge/${encodeURIComponent(doc)}`, { method: "DELETE" })
+  const handleDelete = async (doc: KnowledgeDoc) => {
+    if (!window.confirm(`确定从知识库删除「${doc.doc}」吗？删除后需重新上传才能恢复。`)) return
+    const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}`, { method: "DELETE" })
+    if (resp.status === 403) {
+      setError("只有管理员可以删除公共知识库文档")
+      return
+    }
+    if (!resp.ok) setError(`删除失败：HTTP ${resp.status}`)
+    refresh()
+  }
+
+  const togglePublish = async (doc: KnowledgeDoc) => {
+    const action = doc.visibility === "public" ? "unpublish" : "publish"
+    const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}/${action}`, { method: "POST" })
+    if (!resp.ok) { const data = await resp.json().catch(() => ({})); setError(data.detail || `操作失败：HTTP ${resp.status}`); return }
     refresh()
   }
 
@@ -171,6 +190,20 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
               </button>
             ))}
           </div>
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">可见性</span>
+              <button
+                onClick={() => setUploadVisibility((v) => (v === "private" ? "public" : "private"))}
+                className={cn(
+                  "rounded-full border px-2 py-0.5 text-[11px] font-medium transition-all",
+                  uploadVisibility === "public" ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted"
+                )}
+              >
+                {uploadVisibility === "public" ? "发布到公共库" : "我的私有库"}
+              </button>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <Input
               type="file"
@@ -238,11 +271,17 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
           ) : (
             <div className="space-y-1.5">
               {status.docs.map((doc) => (
-                <div key={doc.doc} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
+                <div key={doc.doc + doc.visibility} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
                   <BookOpen className="h-4 w-4 shrink-0 text-primary" />
                   <div className="min-w-0 flex-1">
                     <p className="flex items-center gap-1.5 truncate text-sm font-medium">
                       <span className="truncate">{doc.doc}</span>
+                      <span className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                        doc.visibility === "public" ? "bg-amber-500/15 text-amber-600" : "bg-primary/10 text-primary"
+                      )}>
+                        {doc.visibility === "public" ? "公共" : "我的"}
+                      </span>
                       {doc.category && (
                         <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                           {KB_CATEGORY_LABELS[doc.category] ?? doc.category}
@@ -253,13 +292,26 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                       {doc.source.split(/[\\/]/).pop() || doc.source}
                     </p>
                   </div>
-                  <button
-                    className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                    onClick={() => handleDelete(doc.doc)}
-                    title={`删除 ${doc.doc}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {isAdmin && (
+                      <button
+                        className="flex items-center gap-0.5 rounded p-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
+                        onClick={() => togglePublish(doc)}
+                        title={doc.visibility === "public" ? "下架公共文档" : "发布到公共库"}
+                      >
+                        <Globe className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    {(doc.visibility === "private" ? doc.owner_user_id === me : isAdmin) && (
+                      <button
+                        className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+                        onClick={() => handleDelete(doc)}
+                        title={`删除 ${doc.doc}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

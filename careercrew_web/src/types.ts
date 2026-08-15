@@ -92,6 +92,12 @@ export const KB_CATEGORY_LABELS: Record<string, string> = {
   job: "岗位/JD",
 }
 
+export const KB_SCOPE = [
+  { id: "all", label: "全部" },
+  { id: "public", label: "公共库" },
+  { id: "private", label: "个人库" },
+] as const
+
 
 /** 会诊 agent 选项。 */
 export const CONSULT_AGENTS = [

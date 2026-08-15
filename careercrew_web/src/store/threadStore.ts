@@ -4,7 +4,11 @@ import { apiFetch } from "@/lib/auth"
 export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
 /** 会话检索范围（与后端 RetrievalScopeRequest 对齐；历史会话无该字段时为 null → "全部"）。 */
-export type RetrievalScope = { type: "all" } | { type: "category"; category_id: string }
+export type RetrievalScope =
+  | { type: "all" }
+  | { type: "public" }
+  | { type: "private" }
+  | { type: "category"; category_id: string }
 
 export interface ThreadItem {
   thread_id: string
