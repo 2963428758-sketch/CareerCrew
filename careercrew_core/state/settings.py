@@ -226,11 +226,18 @@ class AuthSettings(BaseModel):
     """
 
     environment: str = "development"
+    backend: str = "sqlite"  # postgres | sqlite（sqlite 仅测试/显式开发配置）
+    database_url: str = ""   # postgres 后端 DSN；空则回退 DATABASE_URL 环境变量
+    trusted_origins: list[str] = ["http://localhost:5175", "http://127.0.0.1:5175"]
+    login_max_failures: int = 5
+    login_failure_window_minutes: int = 15
+    login_lock_minutes: int = 15
+    cleanup_interval_hours: int = 6
     jwt_secret: str = ""
     access_token_minutes: int = 15
     refresh_token_days: int = 7
     cookie_secure: bool = False
-    account_db_path: str = "./data/db/accounts.db"
+    account_db_path: str = "./data/db/accounts.db"  # 仅 backend=sqlite 时生效
 
     @property
     def is_development(self) -> bool:
@@ -439,5 +446,20 @@ def load_auth_settings(path: str | Path | None = None) -> AuthSettings:
             raise SettingsError("auth.jwt_secret 过短（生产环境至少 32 个字符）")
         if not auth.cookie_secure:
             raise SettingsError("auth.cookie_secure 必须为 true（生产环境）")
+    if auth.backend not in ("postgres", "sqlite"):
+        raise SettingsError("auth.backend 必须为 postgres 或 sqlite")
+    if auth.backend == "postgres":
+        dsn = (auth.database_url or "").strip()
+        if not dsn:
+            dsn = os.environ.get("DATABASE_URL", "").strip()
+        if not dsn:
+            raise SettingsError(
+                "auth.backend=postgres 需要 AUTH_DATABASE_URL 或 DATABASE_URL"
+            )
+        auth.database_url = dsn
+    elif not auth.is_development:
+        raise SettingsError("auth.backend=sqlite 仅允许在开发/测试环境使用")
+    if not auth.trusted_origins:
+        raise SettingsError("auth.trusted_origins 不能为空")
     auth.account_db_path = _resolve_path(auth.account_db_path) or auth.account_db_path
     return auth

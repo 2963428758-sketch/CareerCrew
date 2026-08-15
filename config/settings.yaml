@@ -121,9 +121,17 @@ langsmith:
   max_chars: 2000            # 单条字符串上传上限（超出截断）
 
 # ── 本地账号认证 ──
-# 开发环境可使用进程内随机回退密钥；生产环境必须设置 AUTH_JWT_SECRET。
+# 账号/刷新会话存 Postgres（backend=postgres；AUTH_DATABASE_URL 未设置时回退 DATABASE_URL）。
+# SQLite 仅保留给单元测试/显式开发配置；生产环境必须 postgres。
 auth:
   environment: development   # 可用 CAREERCREW_ENV 覆盖为 production
+  backend: postgres
+  database_url: "${AUTH_DATABASE_URL}"
+  trusted_origins: ["http://localhost:5175", "http://127.0.0.1:5175"]
+  login_max_failures: 5
+  login_failure_window_minutes: 15
+  login_lock_minutes: 15
+  cleanup_interval_hours: 6
   jwt_secret: "${AUTH_JWT_SECRET}"
   access_token_minutes: 15
   refresh_token_days: 7
