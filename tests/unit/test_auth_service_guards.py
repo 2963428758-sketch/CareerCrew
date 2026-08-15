@@ -36,19 +36,19 @@ def _login(svc: AuthService, username: str, password: str = PASSWORD):
 
 
 def test_disable_user_kills_access_and_refresh_immediately(service):
-    member = service.create_user("member", PASSWORD, "user")
+    admin_actor = service.current_user(_login(service, "admin")[0])
+    member = service.create_user(admin_actor, "member", PASSWORD, "user")
     access, _ = _login(service, "member")
     assert service.current_user(access)["username"] == "member"
-    actor = service.current_user(_login(service, "admin")[0])
-    service.update_user(actor, member["id"], status="disabled")
+    service.update_user(admin_actor, member["id"], status="disabled")
     with pytest.raises(AuthenticationError):
         service.current_user(access)
 
 
 def test_admin_cannot_disable_or_demote_self(service):
     # 存在第二个 admin 时，自我修改被 SelfAdmin 拒绝（不会触犯最后管理员不变量）
-    service.create_user("second", PASSWORD, "admin")
     admin = service.current_user(_login(service, "admin")[0])
+    service.create_user(admin, "second", PASSWORD, "admin")
     with pytest.raises(SelfAdminError):
         service.update_user(admin, "u_001", status="disabled")
     with pytest.raises(SelfAdminError):
@@ -63,7 +63,7 @@ def test_cannot_lose_last_active_admin(service):
     with pytest.raises(LastAdminError):
         service.update_user(admin, "u_001", role="user")
     # 有第二个 admin 后，第一个 admin 可被对方禁用
-    second = service.create_user("second", PASSWORD, "admin")
+    second = service.create_user(admin, "second", PASSWORD, "admin")
     actor2 = service.current_user(_login(service, "second")[0])
     updated = service.update_user(actor2, "u_001", status="disabled")
     assert updated["status"] == "disabled"
