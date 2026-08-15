@@ -2,17 +2,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-import hashlib
-import secrets
-import sqlite3
-from typing import Any
-from uuid import uuid4
-
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
+from careercrew_api.auth.store import (
+    AccountExistsError,
+    AccountStore,
+    SqliteAccountStore,
+    create_account_store,
+    hash_token,
+    new_refresh_token,
+)
 from careercrew_core.state.settings import AuthSettings
 
 
@@ -20,117 +21,9 @@ class AuthenticationError(Exception):
     """凭据、访问令牌或刷新 Cookie 无效。"""
 
 
-class AccountExistsError(Exception):
-    """用户名或首个管理员已存在。"""
-
-
-class AccountStore:
-    """SQLite 账号与可撤销的刷新令牌会话存储。"""
-
-    def __init__(self, database_path: str | Path) -> None:
-        self.database_path = str(database_path)
-        Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS accounts ("
-                "id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
-                "role TEXT NOT NULL CHECK(role IN ('admin', 'user')), created_at TEXT NOT NULL)"
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS refresh_sessions ("
-                "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, "
-                "created_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES accounts(id) ON DELETE CASCADE)"
-            )
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.database_path, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
-
-    @staticmethod
-    def _public(row: sqlite3.Row | dict[str, Any]) -> dict[str, str]:
-        return {"id": row["id"], "username": row["username"], "role": row["role"]}
-
-    def has_accounts(self) -> bool:
-        with self._connect() as conn:
-            return conn.execute("SELECT 1 FROM accounts LIMIT 1").fetchone() is not None
-
-    def create_first_admin(self, username: str, password_hash: str) -> dict[str, str]:
-        now = _utcnow().isoformat()
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("SELECT 1 FROM accounts LIMIT 1").fetchone() is not None:
-                conn.execute("ROLLBACK")
-                raise AccountExistsError("an account already exists")
-            conn.execute(
-                "INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("u_001", username, password_hash, "admin", now),
-            )
-            row = conn.execute("SELECT id, username, role FROM accounts WHERE id = 'u_001'").fetchone()
-            conn.execute("COMMIT")
-        return self._public(row)
-
-    def create_account(self, username: str, password_hash: str, role: str) -> dict[str, str]:
-        user_id = f"u_{uuid4().hex}"
-        try:
-            with self._connect() as conn:
-                conn.execute(
-                    "INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, username, password_hash, role, _utcnow().isoformat()),
-                )
-                row = conn.execute("SELECT id, username, role FROM accounts WHERE id = ?", (user_id,)).fetchone()
-        except sqlite3.IntegrityError as err:
-            raise AccountExistsError("username already exists") from err
-        return self._public(row)
-
-    def account_by_username(self, username: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT id, username, password_hash, role FROM accounts WHERE username = ?", (username,)
-            ).fetchone()
-        return dict(row) if row else None
-
-    def account_by_id(self, user_id: str) -> dict[str, str] | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT id, username, role FROM accounts WHERE id = ?", (user_id,)).fetchone()
-        return self._public(row) if row else None
-
-    def update_password_hash(self, user_id: str, password_hash: str) -> None:
-        with self._connect() as conn:
-            conn.execute("UPDATE accounts SET password_hash = ? WHERE id = ?", (password_hash, user_id))
-
-    def create_refresh_session(self, token: str, user_id: str, expires_at: datetime) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO refresh_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-                (_token_hash(token), user_id, expires_at.isoformat(), _utcnow().isoformat()),
-            )
-
-    def rotate_refresh_session(self, old_token: str, new_token: str, expires_at: datetime) -> dict[str, str] | None:
-        old_hash = _token_hash(old_token)
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT s.user_id, s.expires_at, a.id, a.username, a.role "
-                "FROM refresh_sessions s JOIN accounts a ON a.id = s.user_id WHERE s.token_hash = ?",
-                (old_hash,),
-            ).fetchone()
-            if row is None or datetime.fromisoformat(row["expires_at"]) <= _utcnow():
-                conn.execute("DELETE FROM refresh_sessions WHERE token_hash = ?", (old_hash,))
-                conn.execute("COMMIT")
-                return None
-            conn.execute("DELETE FROM refresh_sessions WHERE token_hash = ?", (old_hash,))
-            conn.execute(
-                "INSERT INTO refresh_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-                (_token_hash(new_token), row["user_id"], expires_at.isoformat(), _utcnow().isoformat()),
-            )
-            conn.execute("COMMIT")
-        return self._public(row)
-
-    def revoke_refresh_session(self, token: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM refresh_sessions WHERE token_hash = ?", (_token_hash(token),))
+# 兼容别名：旧代码路径以 service 模块名引用这两个工具
+_new_refresh_token = new_refresh_token
+_token_hash = hash_token
 
 
 class AuthService:
@@ -220,11 +113,3 @@ class AuthService:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-def _new_refresh_token() -> str:
-    return secrets.token_urlsafe(48)
-
-
-def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()

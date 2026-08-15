@@ -7,7 +7,8 @@ from typing import Annotated, TypeAlias
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from careercrew_api.auth.service import AccountStore, AuthService, AuthenticationError
+from careercrew_api.auth.service import AuthService, AuthenticationError
+from careercrew_api.auth.store import create_account_store
 from careercrew_core.state.settings import load_auth_settings
 
 _bearer = HTTPBearer(auto_error=False)
@@ -16,7 +17,7 @@ _bearer = HTTPBearer(auto_error=False)
 @lru_cache(maxsize=1)
 def get_auth_service() -> AuthService:
     settings = load_auth_settings()
-    return AuthService(settings, AccountStore(settings.account_db_path))
+    return AuthService(settings, create_account_store(settings))
 
 
 def get_current_user(
