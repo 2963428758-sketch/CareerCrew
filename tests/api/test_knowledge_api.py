@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import pytest
@@ -10,9 +11,10 @@ import pytest
 @pytest.fixture(autouse=True)
 def _uploads_to_tmp(monkeypatch, tmp_path):
     """上传落盘改到临时目录，避免污染 data/uploads。"""
-    import careercrew_api.routers.knowledge as knowledge
+    from careercrew_api import storage
+    from careercrew_api.storage import layout
 
-    monkeypatch.setattr(knowledge, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(storage, "L", layout(tmp_path / "data"))
 
 
 @pytest.mark.web
@@ -52,7 +54,7 @@ def test_knowledge_upload(client):
     assert job["status"] == "done"
     assert job["stage"] == "done"
     assert job["progress"] == 1.0
-    assert job["result"]["doc_id"] == "note"
+    assert re.fullmatch(r"[0-9a-f]{12}", job["result"]["doc_id"])  # UUID 键名
     assert job["result"]["points"] == 2
 
 

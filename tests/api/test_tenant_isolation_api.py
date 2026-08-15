@@ -24,11 +24,12 @@ def tenant_api(tmp_path, monkeypatch):
     from careercrew_api.routers import knowledge, resume
     from careercrew_core.state.settings import AuthSettings
 
-    monkeypatch.setattr(resume, "UPLOAD_DIR", tmp_path / "resume-uploads")
-    monkeypatch.setattr(resume, "RESUME_STORE_DIR", tmp_path / "resume-threads")
-    monkeypatch.setattr(resume, "RESUME_LIB_DIR", tmp_path / "resume-library")
-    monkeypatch.setattr(knowledge, "UPLOAD_DIR", tmp_path / "knowledge-uploads")
     monkeypatch.setattr(knowledge, "_DATA_ROOT", tmp_path)
+
+    from careercrew_api import storage
+    from careercrew_api.storage import layout
+
+    monkeypatch.setattr(storage, "L", layout(tmp_path / "data"))
 
     settings = AuthSettings(
         environment="test",
@@ -190,8 +191,10 @@ def test_knowledge_records_retrieval_jobs_and_images_enforce_owner(tenant_api, t
     assert _poll(
         client, f"/api/knowledge/upload/{upload_jobs['bob']}", headers["bob"]
     )["status"] == "done"
-    assert (tmp_path / "knowledge-uploads" / ids["alice"] / "same.md").read_text() == "Alice knowledge"
-    assert (tmp_path / "knowledge-uploads" / ids["bob"] / "same.md").read_text() == "Bob knowledge"
+    alice_raw = next((tmp_path / "data" / "uploads" / "knowledge_raw" / ids["alice"]).glob("*.md"))
+    bob_raw = next((tmp_path / "data" / "uploads" / "knowledge_raw" / ids["bob"]).glob("*.md"))
+    assert alice_raw.read_text() == "Alice knowledge"
+    assert bob_raw.read_text() == "Bob knowledge"
 
     runtime.knowledge_docs_by_user[ids["alice"]] = [
         {"doc": "alice-doc", "source": "alice.md", "points": 2}

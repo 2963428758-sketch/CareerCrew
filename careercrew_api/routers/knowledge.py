@@ -15,11 +15,11 @@ from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
 from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
+from careercrew_api import storage
 
 router = APIRouter()
 
 _MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
-UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data" / "uploads"
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 _MAX_JOBS = 50
 
@@ -54,7 +54,8 @@ def _new_job(filename: str, user_id: str) -> str:
 
 
 def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
-                    user_id: str, category: str = "") -> None:
+                    user_id: str, category: str = "", doc_name: str = "",
+                    output_dir: str = "") -> None:
     """后台线程执行入库，通过进度回调更新任务状态。"""
 
     def cb(stage: str, progress: float) -> None:
@@ -74,6 +75,7 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
     try:
         result = rt.ingest_document(
             save_path, user_id=user_id, progress_cb=cb, category=category,
+            output_dir=output_dir or None, doc_name=doc_name,
         )
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -106,18 +108,20 @@ async def upload_knowledge(
     if len(content) > _MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
 
-    # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）
+    # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）；
+    # 原名仅存入任务元数据，磁盘键名为 UUID。
     filename = Path(file.filename or "upload").name or "upload"
+    ext = Path(filename).suffix.lower()
     user_id = current_user["id"]
-    owner_dir = UPLOAD_DIR / user_id
-    owner_dir.mkdir(parents=True, exist_ok=True)
-    save_path = owner_dir / filename
+    job_id = _new_job(filename, user_id)
+    save_path = storage.resolve_under(storage.L.knowledge_raw, user_id, f"{job_id}{ext}")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     save_path.write_bytes(content)
 
-    job_id = _new_job(filename, user_id)
+    output_dir = storage.resolve_under(storage.L.parsed_knowledge, user_id, job_id)
     threading.Thread(
         target=_run_ingest_job,
-        args=(rt, job_id, str(save_path), user_id, category),
+        args=(rt, job_id, str(save_path), user_id, category, filename, str(output_dir)),
         daemon=True,
     ).start()
     return {
@@ -192,8 +196,8 @@ def ask_knowledge(
         try:
             yield stage_event("knowledge")
             content_parts: list[str] = []
-            # agentic 检索 + VLM 读图可能长时间无文本 chunk，放宽到 300s（与会诊一致）
-            for line in stream_agent(_run, timeout=300.0):
+            # agentic 检索 + VLM 读图可能长时间无文本 chunk，统一空闲超时（与会诊一致）
+            for line in stream_agent(_run):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])

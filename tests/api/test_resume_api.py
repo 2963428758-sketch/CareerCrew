@@ -11,11 +11,10 @@ import pytest
 @pytest.fixture(autouse=True)
 def _uploads_to_tmp(monkeypatch, tmp_path):
     """上传落盘改到临时目录，避免污染 data/uploads。"""
-    import careercrew_api.routers.resume as resume
+    from careercrew_api import storage
+    from careercrew_api.storage import layout
 
-    monkeypatch.setattr(resume, "UPLOAD_DIR", tmp_path)
-    monkeypatch.setattr(resume, "RESUME_STORE_DIR", tmp_path / "resume_threads")
-    monkeypatch.setattr(resume, "RESUME_LIB_DIR", tmp_path / "resumes")
+    monkeypatch.setattr(storage, "L", layout(tmp_path / "data"))
 
 
 def _poll_job(client, job_id: str, timeout: float = 5.0) -> dict:
