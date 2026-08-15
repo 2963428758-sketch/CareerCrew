@@ -20,6 +20,7 @@ import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META } from "@/types"
 import { cn } from "@/lib/utils"
 import { pollResumeUpload, type ActiveResume } from "@/lib/resumeUpload"
+import { restoreHistory } from "@/lib/historyRestore"
 import { apiFetch } from "@/lib/auth"
 
 let msgId = 0
@@ -32,6 +33,9 @@ interface ChatMsg {
   role: "user" | "assistant"
   content: string
   streaming?: boolean
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 export default function ResumePage() {
@@ -63,9 +67,18 @@ export default function ResumePage() {
   useEffect(() => {
     if (stream.status !== "done" || !stream.doneContent) return
     setMessages((prev) => prev.map((m, i) =>
-      i === prev.length - 1 && (m.streaming ?? false) ? { ...m, content: stream.doneContent, streaming: false } : m,
+      i === prev.length - 1 && (m.streaming ?? false)
+        ? {
+            ...m,
+            content: stream.doneContent,
+            streaming: false,
+            messageId: stream.doneIds?.messageId,
+            turnId: stream.doneIds?.turnId,
+            runId: stream.doneIds?.runId,
+          }
+        : m,
     ))
-  }, [stream.status, stream.doneContent])
+  }, [stream.status, stream.doneContent, stream.doneIds])
 
   // 流失败：用错误信息填充空气泡
   useEffect(() => {
@@ -81,24 +94,22 @@ export default function ResumePage() {
     pendingResumeRef.current = null
     setActiveResume(null)
     setMessages([])
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: ChatMsg[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
-        }
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡
-        const live = useStreamStore.getState().sessions[tid]
-        setMessages(live && live.status === "streaming"
-          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
-          : msgs)
-        jumpToLatest()
-      })
-      .catch(() => {})
+    void restoreHistory(tid).then((restored) => {
+      const msgs: ChatMsg[] = restored.map((r) => ({
+        id: nextId(),
+        role: r.role,
+        content: r.content,
+        messageId: r.messageId,
+        turnId: r.turnId,
+        runId: r.runId,
+      }))
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡
+      const live = useStreamStore.getState().sessions[tid]
+      setMessages(live && live.status === "streaming"
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        : msgs)
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   /** 把一份简历设为当前会话使用的简历（展示在输入框上方，首轮发送时随请求携带）。 */

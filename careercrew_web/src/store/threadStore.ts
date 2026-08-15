@@ -99,6 +99,8 @@ interface ThreadState {
   clearCompletedUnread: (tid: string) => void
   bumpNonce: () => void
   resetAll: () => void
+  /** legacy remap：把旧 thread_id（legacy）替换为新 UUID，同步线程条目与 currentThreadByModule。 */
+  remapLegacyThread: (legacyId: string, newId: string) => void
 }
 
 const sortThreads = (list: ThreadItem[]): ThreadItem[] =>
@@ -345,6 +347,30 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     }),
 
   bumpNonce: () => set((s) => ({ nonce: s.nonce + 1 })),
+
+  remapLegacyThread: (legacyId, newId) =>
+    set((s) => {
+      if (!legacyId || legacyId === newId) return s
+      const threadsByModule = { ...s.threadsByModule }
+      for (const m of Object.keys(threadsByModule)) {
+        const list = threadsByModule[m] || []
+        if (list.some((t) => t.thread_id === legacyId)) {
+          threadsByModule[m] = list.map((t) =>
+            t.thread_id === legacyId ? { ...t, thread_id: newId } : t
+          )
+        }
+      }
+      const currentThreadByModule = { ...s.currentThreadByModule }
+      for (const m of Object.keys(currentThreadByModule)) {
+        if (currentThreadByModule[m] === legacyId) currentThreadByModule[m] = newId
+      }
+      const completedUnread = { ...s.completedUnread }
+      if (completedUnread[legacyId]) {
+        delete completedUnread[legacyId]
+        completedUnread[newId] = true
+      }
+      return { threadsByModule, currentThreadByModule, completedUnread }
+    }),
 
   resetAll: () =>
     set({

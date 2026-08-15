@@ -7,7 +7,14 @@ export type StreamEvent =
   | { type: "dispatch"; round: number; agents: string[]; tasks?: Record<string, string> }
   | { type: "agent_start"; agent: string; round?: number }
   | { type: "agent_end"; agent: string; round?: number }
-  | { type: "done"; content: string; opinions?: Record<string, string>; calls?: ConsultCall[]; sources?: KnowledgeSource[]; score?: number; feedback?: string }
+  | {
+      type: "done"; content: string; opinions?: Record<string, string>; calls?: ConsultCall[];
+      sources?: KnowledgeSource[]; score?: number; feedback?: string;
+      /** §9 稳定 ID：thread_id/turn_id/message_id/run_id/model/prompt_version/agent_version/status */
+      thread_id?: string; turn_id?: string; message_id?: string; run_id?: string;
+      model?: string; prompt_version?: string; agent_version?: string; status?: string;
+      legacy_thread_id?: string;
+    }
   | { type: "error"; message: string }
   | { type: "input_request"; message: string; fields: ConsultInputField[] }
 
@@ -15,11 +22,16 @@ export type StreamStatus = "idle" | "streaming" | "done" | "error"
 
 /** 聊天消息。 */
 export interface ChatMessage {
+  /** UI key（turn 分组/React key/anchor 用；非后端稳定 message_id）。 */
   id: string
   role: "user" | "assistant"
   content: string
   agent?: string
   streaming?: boolean
+  /** 后端稳定 ID（§2.2 / §9）：message_id / turn_id / run_id。 */
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 /** 单条回答反馈（绑定 assistant message id）。 */

@@ -22,7 +22,7 @@ import { IDLE_SESSION, useStreamStore, type StreamSession } from "@/store/stream
 import { AGENT_META, CONSULT_AGENTS, CONSULT_INPUT_FIELDS, ORCHESTRATOR_META, type ConsultCall, type MessageFeedback } from "@/types"
 import { ConsultFormDialog } from "@/components/ConsultFormDialog"
 import { cn } from "@/lib/utils"
-import { apiFetch } from "@/lib/auth"
+import { restoreHistory } from "@/lib/historyRestore"
 
 let msgId = 0
 const nextId = () => `consult-${++msgId}`
@@ -33,6 +33,9 @@ interface ConsultMessage {
   content?: string
   opinions?: Record<string, string>
   calls?: ConsultCall[]
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 export default function ConsultPage() {
@@ -79,46 +82,52 @@ export default function ConsultPage() {
               content: stream.doneContent || stream.streamingText || "",
               opinions: stream.opinions,
               calls: stream.calls,
+              messageId: stream.doneIds?.messageId,
+              turnId: stream.doneIds?.turnId,
+              runId: stream.doneIds?.runId,
             }
           : m
       )
     )
-  }, [stream.status, stream.doneContent, stream.streamingText, stream.opinions, stream.calls])
+  }, [stream.status, stream.doneContent, stream.streamingText, stream.opinions, stream.calls, stream.doneIds])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
     lastAssistantIdRef.current = null
     setMessages([])
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: ConsultMessage[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) {
-            msgs.push({
-              id: nextId(),
-              role: "assistant",
-              content,
-              calls: Array.isArray(entry.consult_calls) ? (entry.consult_calls as ConsultCall[]) : undefined,
-            })
-          }
+    void restoreHistory(tid).then((restored) => {
+      const msgs: ConsultMessage[] = restored.map((r) => {
+        const calls = Array.isArray(r.metadata?.calls)
+          ? (r.metadata.calls as ConsultCall[])
+          : Array.isArray(r.raw?.consult_calls)
+            ? (r.raw.consult_calls as ConsultCall[])
+            : undefined
+        const opinions = (r.metadata?.opinions && typeof r.metadata.opinions === "object")
+          ? (r.metadata.opinions as Record<string, string>)
+          : undefined
+        return {
+          id: nextId(),
+          role: r.role,
+          content: r.content,
+          messageId: r.messageId,
+          turnId: r.turnId,
+          runId: r.runId,
+          calls,
+          opinions,
         }
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡（会诊渲染用 lastAssistantIdRef 定位）
-        const live = useStreamStore.getState().sessions[tid]
-        if (live && live.status === "streaming") {
-          const id = nextId()
-          lastAssistantIdRef.current = id
-          setMessages([...msgs, { id, role: "assistant" }])
-        } else {
-          setMessages(msgs)
-        }
-        jumpToLatest()
       })
-      .catch(() => {})
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡（会诊渲染用 lastAssistantIdRef 定位）
+      const live = useStreamStore.getState().sessions[tid]
+      if (live && live.status === "streaming") {
+        const id = nextId()
+        lastAssistantIdRef.current = id
+        setMessages([...msgs, { id, role: "assistant" }])
+      } else {
+        setMessages(msgs)
+      }
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   const sendQuestion = async (q: string, profile?: Record<string, string>) => {

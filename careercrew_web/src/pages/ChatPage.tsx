@@ -15,19 +15,12 @@ import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatStore } from "@/store/chatStore"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { apiFetch } from "@/lib/auth"
+import { restoreHistory } from "@/lib/historyRestore"
 import { AGENT_META } from "@/types"
 import type { ChatMessage } from "@/types"
 
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
-
-const SUGGESTIONS = [
-  "帮我制定一份 3 个月的求职规划",
-  "分析我的简历亮点",
-  "了解目标岗位的任职要求",
-  "梳理面试准备清单",
-]
 
 export default function ChatPage() {
   const [input, setInput] = useState("")
@@ -90,32 +83,28 @@ export default function ChatPage() {
   useEffect(() => {
     const tid = currentThreadId
     useChatStore.setState({ messages: [], threadId: tid })
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: ChatMessage[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          if (type === "user_message" && content) {
-            msgs.push({ id: nextId(), role: "user", content })
-          } else if (type === "agent_response" && content) {
-            msgs.push({ id: nextId(), role: "assistant", content, agent: "career_planner" })
-          }
-        }
-        useChatStore.setState({ messages: msgs, threadId: tid })
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡
-        const live = useStreamStore.getState().sessions[tid]
-        if (live && live.status === "streaming") {
-          useChatStore.getState().addMessage({
-            id: nextId(), role: "assistant", content: "",
-            agent: "career_planner",
-            streaming: true,
-          })
-        }
-        jumpToLatest()
-      })
-      .catch(() => {})
+    void restoreHistory(tid).then((restored) => {
+      const msgs: ChatMessage[] = restored.map((r) => ({
+        id: nextId(),
+        role: r.role,
+        content: r.content,
+        agent: r.role === "assistant" ? "career_planner" : undefined,
+        messageId: r.messageId,
+        turnId: r.turnId,
+        runId: r.runId,
+      }))
+      useChatStore.setState({ messages: msgs, threadId: tid })
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡
+      const live = useStreamStore.getState().sessions[tid]
+      if (live && live.status === "streaming") {
+        useChatStore.getState().addMessage({
+          id: nextId(), role: "assistant", content: "",
+          agent: "career_planner",
+          streaming: true,
+        })
+      }
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   const handlePlan = async (text: string) => {

@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import type { ConsultCall, ConsultInputRequest, KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
 import { useThreadStore } from "@/store/threadStore"
+import { useChatStore } from "@/store/chatStore"
 import { apiFetch } from "@/lib/auth"
 
 /**
@@ -30,6 +31,14 @@ export interface StreamSession {
   thinking: boolean
   /** 会诊信息不足时后端下发的资料填写请求（前端据此弹窗）。 */
   pendingInput: ConsultInputRequest | null
+  /** done 事件携带的稳定 ID（§9）：message_id / turn_id / run_id / thread_id。 */
+  doneIds: {
+    messageId?: string
+    turnId?: string
+    runId?: string
+    threadId?: string
+    legacyThreadId?: string
+  } | null
 }
 
 /** 无会话时的共享空态（只读，禁止 mutate）。 */
@@ -50,6 +59,7 @@ export const IDLE_SESSION: StreamSession = {
   errorMsg: "",
   thinking: false,
   pendingInput: null,
+  doneIds: null,
 }
 
 const freshSession = (threadId: string): StreamSession => ({
@@ -78,13 +88,17 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
     useThreadStore.getState().clearCompletedUnread(threadId)
     set((s) => ({ sessions: { ...s.sessions, [threadId]: freshSession(threadId) } }))
 
+    // 会话 key：legacy remap 后指向新 UUID（done 事件携带 thread_id），
+    // 后续所有 patchS/thinkTimers/controllers 都用新 key，保证页面按新 id 定位到本流。
+    let sessionKey = threadId
+
     const patchS = (
       partial: Partial<StreamSession> | ((cur: StreamSession) => Partial<StreamSession>)
     ) =>
       set((s) => {
-        const cur = s.sessions[threadId] ?? { ...IDLE_SESSION, threadId }
+        const cur = s.sessions[sessionKey] ?? { ...IDLE_SESSION, threadId: sessionKey }
         const p = typeof partial === "function" ? partial(cur) : partial
-        return { sessions: { ...s.sessions, [threadId]: { ...cur, ...p } } }
+        return { sessions: { ...s.sessions, [sessionKey]: { ...cur, ...p } } }
       })
 
     const armThinking = () => {
@@ -174,12 +188,53 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
               if (evt.sources) p.doneSources = evt.sources
               if (evt.score !== undefined) p.doneScore = evt.score
               if (evt.feedback !== undefined) p.doneFeedback = evt.feedback
+              // §9 稳定 ID：message_id/turn_id/run_id（done 事件）+ thread_id（UUID）+ legacy_thread_id
+              if (evt.message_id || evt.turn_id || evt.run_id) {
+                p.doneIds = {
+                  messageId: evt.message_id,
+                  turnId: evt.turn_id,
+                  runId: evt.run_id,
+                  threadId: evt.thread_id,
+                  legacyThreadId: evt.legacy_thread_id,
+                }
+              }
               patchS(p)
+              // done → chatStore：把稳定 ID 挂到该轮 assistant 消息（最后一条 assistant）。
+              const chat = useChatStore.getState()
+              const msgs = [...chat.messages]
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].role === "assistant") {
+                  msgs[i] = {
+                    ...msgs[i],
+                    ...(evt.message_id ? { messageId: evt.message_id } : {}),
+                    ...(evt.turn_id ? { turnId: evt.turn_id } : {}),
+                    ...(evt.run_id ? { runId: evt.run_id } : {}),
+                  }
+                  break
+                }
+              }
+              useChatStore.setState({ messages: msgs })
+              // legacy remap：done 返回 UUID thread_id 与本地 id 不同 → 更新 chatStore + threadStore，
+              // 后续请求用新 UUID；同时把流式 session 重新挂到新 id（否则页面按新 id 查不到该流）。
+              if (evt.thread_id && evt.thread_id !== threadId) {
+                useChatStore.getState().setThreadId(evt.thread_id)
+                useThreadStore.getState().remapLegacyThread(threadId, evt.thread_id)
+                sessionKey = evt.thread_id
+                set((s) => {
+                  const cur = s.sessions[threadId]
+                  if (!cur) return {}
+                  const sessions = { ...s.sessions }
+                  delete sessions[threadId]
+                  sessions[evt.thread_id!] = { ...cur, threadId: evt.thread_id! }
+                  return { sessions }
+                })
+              }
               // 会话完成（可能发生在用户正看着别的会话时）：刷新侧边栏列表
+              const newThreadId = evt.thread_id ?? threadId
               const activeIds = Object.values(useThreadStore.getState().currentThreadByModule)
-              if (!activeIds.includes(threadId)) {
+              if (!activeIds.includes(newThreadId)) {
                 // 未在看的会话完成：打蓝色圆点，点击该会话后清除
-                useThreadStore.getState().markCompletedUnread(threadId)
+                useThreadStore.getState().markCompletedUnread(newThreadId)
               }
               useThreadStore.getState().bumpNonce()
             } else if (evt.type === "input_request") {

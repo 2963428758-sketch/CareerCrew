@@ -23,6 +23,7 @@ import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, KB_SCOPE_LABELS, type KnowledgeSource, type MessageFeedback } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/auth"
+import { restoreHistory } from "@/lib/historyRestore"
 
 interface KnowledgeMessage {
   id: string
@@ -30,6 +31,9 @@ interface KnowledgeMessage {
   content: string
   streaming?: boolean
   sources?: KnowledgeSource[]
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 let msgId = 0
@@ -150,45 +154,53 @@ export default function KnowledgePage() {
         const msgs = [...prev]
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i].role === "assistant" && msgs[i].streaming) {
-            msgs[i] = { ...msgs[i], content: stream.doneContent, sources: stream.doneSources, streaming: false }
+            msgs[i] = {
+              ...msgs[i],
+              content: stream.doneContent,
+              sources: stream.doneSources,
+              streaming: false,
+              messageId: stream.doneIds?.messageId,
+              turnId: stream.doneIds?.turnId,
+              runId: stream.doneIds?.runId,
+            }
             break
           }
         }
         return msgs
       })
     }
-  }, [stream.status, stream.doneContent, stream.doneSources])
+  }, [stream.status, stream.doneContent, stream.doneSources, stream.doneIds])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
     setMessages([])
     setPreviewUrl(null)
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: KnowledgeMessage[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          const sources = Array.isArray(entry.sources)
-            ? (entry.sources as KnowledgeSource[])
+    void restoreHistory(tid).then((restored) => {
+      const msgs: KnowledgeMessage[] = restored.map((r) => {
+        const sources = Array.isArray(r.metadata?.sources)
+          ? (r.metadata.sources as KnowledgeSource[])
+          : Array.isArray(r.raw?.sources)
+            ? (r.raw.sources as KnowledgeSource[])
             : undefined
-          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) {
-            const msg: KnowledgeMessage = { id: nextId(), role: "assistant", content }
-            if (sources) msg.sources = sources
-            msgs.push(msg)
-          }
+        const msg: KnowledgeMessage = {
+          id: nextId(),
+          role: r.role,
+          content: r.content,
+          messageId: r.messageId,
+          turnId: r.turnId,
+          runId: r.runId,
         }
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡（状态从 store 实时读）
-        const live = useStreamStore.getState().sessions[tid]
-        setMessages(live && live.status === "streaming"
-          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
-          : msgs)
-        jumpToLatest()
+        if (sources && r.role === "assistant") msg.sources = sources
+        return msg
       })
-      .catch(() => {})
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡（状态从 store 实时读）
+      const live = useStreamStore.getState().sessions[tid]
+      setMessages(live && live.status === "streaming"
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        : msgs)
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   const handleAsk = async () => {

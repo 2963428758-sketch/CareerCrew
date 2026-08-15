@@ -17,13 +17,16 @@ import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META } from "@/types"
-import { apiFetch } from "@/lib/auth"
+import { restoreHistory } from "@/lib/historyRestore"
 
 interface MatcherMessage {
   id: string
   role: "user" | "assistant"
   content: string
   streaming?: boolean
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 let msgId = 0
@@ -61,37 +64,42 @@ export default function MatcherPage() {
         const msgs = [...prev]
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i].role === "assistant" && msgs[i].streaming) {
-            msgs[i] = { ...msgs[i], content: stream.doneContent, streaming: false }
+            msgs[i] = {
+              ...msgs[i],
+              content: stream.doneContent,
+              streaming: false,
+              messageId: stream.doneIds?.messageId,
+              turnId: stream.doneIds?.turnId,
+              runId: stream.doneIds?.runId,
+            }
             break
           }
         }
         return msgs
       })
     }
-  }, [stream.status, stream.doneContent])
+  }, [stream.status, stream.doneContent, stream.doneIds])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
     setMessages([])
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: MatcherMessage[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
-        }
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡
-        const live = useStreamStore.getState().sessions[tid]
-        setMessages(live && live.status === "streaming"
-          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
-          : msgs)
-        jumpToLatest()
-      })
-      .catch(() => {})
+    void restoreHistory(tid).then((restored) => {
+      const msgs: MatcherMessage[] = restored.map((r) => ({
+        id: nextId(),
+        role: r.role,
+        content: r.content,
+        messageId: r.messageId,
+        turnId: r.turnId,
+        runId: r.runId,
+      }))
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡
+      const live = useStreamStore.getState().sessions[tid]
+      setMessages(live && live.status === "streaming"
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        : msgs)
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   const handleSend = async () => {

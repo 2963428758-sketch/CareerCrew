@@ -15,8 +15,7 @@ import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { apiFetch } from "@/lib/auth"
-import type { InterviewQA } from "@/types"
+import { restoreHistory } from "@/lib/historyRestore"
 
 const INTERVIEWER = { label: "面试官", color: "#BE185D" }
 
@@ -30,22 +29,26 @@ interface ChatMsg {
   streaming?: boolean
   score?: number
   feedback?: string
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 export default function InterviewPage() {
   const [topic, setTopic] = useState("")
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState("")
-  const [qaList, setQaList] = useState<InterviewQA[]>([])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.interview)
+  // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
+  const threadTitle = useThreadStore((s) =>
+    s.threadsByModule.interview?.find((t) => t.thread_id === s.currentThreadByModule.interview)?.title
+  )
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
   const stopStream = useStreamStore((s) => s.stop)
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
-  /** 当前作答对应的题目（用户回答前最近一条面试官消息），done 评分后入 qaList */
-  const pendingRef = useRef<{ q: string; a: string } | null>(null)
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -54,24 +57,18 @@ export default function InterviewPage() {
   const { toast, showToast } = useToast()
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
-  // 流结束：把最终内容写回最后一条 assistant 气泡；若带评分则计入 qaList
+  // 流结束：把最终内容写回最后一条 assistant 气泡
   useEffect(() => {
     if (stream.status !== "done" || !stream.doneContent) return
-    const pending = pendingRef.current
-    pendingRef.current = null
-    const patch: Partial<ChatMsg> = { content: stream.doneContent, streaming: false }
-    if (stream.doneScore !== undefined && pending) {
-      patch.score = stream.doneScore
-      patch.feedback = stream.doneFeedback
-      setQaList((prev) => [...prev, {
-        question: pending.q,
-        answer: pending.a,
-        score: stream.doneScore,
-        feedback: stream.doneFeedback,
-      }])
+    const patch: Partial<ChatMsg> = {
+      content: stream.doneContent,
+      streaming: false,
+      messageId: stream.doneIds?.messageId,
+      turnId: stream.doneIds?.turnId,
+      runId: stream.doneIds?.runId,
     }
     setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)))
-  }, [stream.status, stream.doneContent, stream.doneScore, stream.doneFeedback])
+  }, [stream.status, stream.doneContent, stream.doneIds])
 
   // 流失败：用错误信息填充空气泡
   useEffect(() => {
@@ -84,38 +81,30 @@ export default function InterviewPage() {
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
-    pendingRef.current = null
     setMessages([])
-    setQaList([])
     setTopic("")
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: ChatMsg[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) msgs.push({ id: nextId(), role: "assistant", content })
-        }
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡
-        const live = useStreamStore.getState().sessions[tid]
-        setMessages(live && live.status === "streaming"
-          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
-          : msgs)
-        jumpToLatest()
-      })
-      .catch(() => {})
+    void restoreHistory(tid).then((restored) => {
+      const msgs: ChatMsg[] = restored.map((r) => ({
+        id: nextId(),
+        role: r.role,
+        content: r.content,
+        messageId: r.messageId,
+        turnId: r.turnId,
+        runId: r.runId,
+      }))
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡
+      const live = useStreamStore.getState().sessions[tid]
+      setMessages(live && live.status === "streaming"
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        : msgs)
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   const send = async (text: string, topicOverride?: string) => {
     const trimmed = text.trim()
     if (!trimmed || stream.status === "streaming") return
     const isFirst = messages.length === 0
-    const prev = messages[messages.length - 1]
-    pendingRef.current = prev?.role === "assistant" && prev.content
-      ? { q: prev.content, a: trimmed }
-      : null
     setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }])
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     setInput("")
