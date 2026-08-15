@@ -106,7 +106,7 @@ class ConversationDb(ABC):
     def get_message(self, user_id: str, message_id: str) -> dict | None: ...
 
     @abstractmethod
-    def update_message_status(self, message_id: str, status: str) -> dict: ...
+    def update_message_status(self, user_id: str, message_id: str, status: str) -> dict: ...
 
     @abstractmethod
     def list_messages(self, user_id: str, thread_id: str) -> list[dict]: ...
@@ -164,7 +164,7 @@ class PostgresConversationDb(ConversationDb):
         with psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row) as conn, conn.transaction():
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS conversations ("
-                "id UUID PRIMARY KEY, user_id UUID NOT NULL, module VARCHAR(50) NOT NULL, "
+                "id UUID PRIMARY KEY, user_id VARCHAR(64) NOT NULL, module VARCHAR(50) NOT NULL, "
                 "title VARCHAR(255), retrieval_scope JSONB, "
                 "created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, "
                 "last_active_at TIMESTAMPTZ NOT NULL, deleted_at TIMESTAMPTZ)"
@@ -176,19 +176,19 @@ class PostgresConversationDb(ConversationDb):
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS conversation_turns ("
                 "id UUID PRIMARY KEY, thread_id UUID NOT NULL REFERENCES conversations(id), "
-                "user_id UUID NOT NULL, sequence_no INTEGER NOT NULL, "
+                "user_id VARCHAR(64) NOT NULL, sequence_no INTEGER NOT NULL, "
                 "created_at TIMESTAMPTZ NOT NULL, UNIQUE(thread_id, sequence_no))"
             )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS messages ("
                 "id UUID PRIMARY KEY, thread_id UUID NOT NULL, turn_id UUID NOT NULL, "
-                "user_id UUID NOT NULL, role VARCHAR(20) NOT NULL, content TEXT NOT NULL, "
+                "user_id VARCHAR(64) NOT NULL, role VARCHAR(20) NOT NULL, content TEXT NOT NULL, "
                 "run_id UUID, regenerated_from_message_id UUID, status VARCHAR(20) NOT NULL, "
                 "created_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ)"
             )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS agent_runs ("
-                "id UUID PRIMARY KEY, user_id UUID NOT NULL, thread_id UUID NOT NULL, "
+                "id UUID PRIMARY KEY, user_id VARCHAR(64) NOT NULL, thread_id UUID NOT NULL, "
                 "turn_id UUID NOT NULL, message_id UUID NOT NULL, "
                 "module VARCHAR(50) NOT NULL, agent_id VARCHAR(100) NOT NULL, "
                 "model VARCHAR(150) NOT NULL, prompt_version VARCHAR(80) NOT NULL, "
@@ -357,21 +357,21 @@ class PostgresConversationDb(ConversationDb):
         return _row_to_dict(row) if row else None
 
     @_synchronized
-    def update_message_status(self, message_id, status) -> dict:
+    def update_message_status(self, user_id, message_id, status) -> dict:
         with self._connect() as conn, conn.transaction():
             completed_at = _now() if status == "completed" else None
             conn.execute(
                 "UPDATE messages SET status=%s, completed_at=COALESCE(%s, completed_at) "
-                "WHERE id=%s",
-                (status, completed_at, message_id),
+                "WHERE id=%s AND user_id=%s",
+                (status, completed_at, message_id, user_id),
             )
         row = None
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
                 "SELECT id, thread_id, turn_id, user_id, role, content, run_id, "
                 "regenerated_from_message_id, status, created_at, completed_at, deleted_at "
-                "FROM messages WHERE id=%s",
-                (message_id,),
+                "FROM messages WHERE id=%s AND user_id=%s",
+                (message_id, user_id),
             ).fetchone()
         return _row_to_dict(row) if row else {}
 
@@ -572,13 +572,13 @@ class FakeConversationDb(ConversationDb):
             return dict(row)
         return None
 
-    def update_message_status(self, message_id, status) -> dict:
+    def update_message_status(self, user_id, message_id, status) -> dict:
         row = self._messages.get(message_id)
-        if row:
+        if row and row["user_id"] == user_id:
             row["status"] = status
             if status == "completed" and row.get("completed_at") is None:
                 row["completed_at"] = _now()
-        return dict(row) if row else {}
+        return dict(row) if row and row["user_id"] == user_id else {}
 
     def list_messages(self, user_id, thread_id) -> list[dict]:
         rows = [m for m in self._messages.values()

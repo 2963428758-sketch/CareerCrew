@@ -82,7 +82,7 @@ def test_migration_idempotent(store_and_db):
 def test_unique_sequence_enforced(store_and_db):
     """UNIQUE(thread_id, sequence_no) 在真实库上实际生效。"""
     store, _ = store_and_db
-    uid = str(uuid4())  # user_id 按 DDL 为 UUID
+    uid = "u_001"  # user_id 为 VARCHAR(64)：真实账户 id 形状（非 UUID）
     thread_id = str(uuid4())
     store.ensure_conversation(thread_id, uid, "chat", "T")
     turn1 = store.next_turn(thread_id, uid)
@@ -94,7 +94,7 @@ def test_unique_sequence_enforced(store_and_db):
 
 def test_full_flow(store_and_db):
     store, _ = store_and_db
-    uid = str(uuid4())
+    uid = "u_001"
     legacy = f"t-{uuid4().hex}"
     conv = store.ensure_conversation(legacy, uid, "chat", "T")
     assert conv["legacy_thread_id"] == legacy
@@ -114,6 +114,11 @@ def test_full_flow(store_and_db):
                         input_redacted={"a": 1}, status="completed")
     msgs = store.list_messages(conv["id"], uid)
     assert [m["content"] for m in msgs] == ["hello", "hi"]
+    # set_message_status 所有权检查（VARCHAR user_id）
+    updated = store.set_message_status(uid, asst["id"], "completed")
+    assert updated["status"] == "completed"
+    with pytest.raises(OwnershipError):
+        store.set_message_status("u_002", asst["id"], "completed")
     # 所有权：跨用户拒绝
     with pytest.raises(OwnershipError):
-        store.list_messages(conv["id"], str(uuid4()))
+        store.list_messages(conv["id"], "u_002")

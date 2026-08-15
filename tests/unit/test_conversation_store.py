@@ -180,9 +180,17 @@ def test_set_message_status_sets_completed_at(store):
     turn = store.next_turn("t-1", "u_1")
     msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "stream", _uuid(), None)
     assert msg["completed_at"] is None
-    updated = store.set_message_status(msg["id"], "completed")
+    updated = store.set_message_status("u_1", msg["id"], "completed")
     assert updated["status"] == "completed"
     assert updated["completed_at"] is not None
+
+
+def test_set_message_status_rejects_wrong_owner(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "stream", _uuid(), None)
+    with pytest.raises(OwnershipError):
+        store.set_message_status("u_2", msg["id"], "completed")
 
 
 def test_list_messages_rejects_wrong_owner(store):

@@ -148,10 +148,14 @@ class ConversationStore:
             run_id, regenerated_from_message_id, "pending",
         )
 
-    def set_message_status(self, message_id: str, status: str) -> dict:
-        """按 message_id 直接更新状态（message_id 即能力；无 user_id 入参，
-        与 brief 签名一致）。找不到时返回 {}。"""
-        return self._db.update_message_status(message_id, status)
+    def set_message_status(self, user_id: str, message_id: str, status: str) -> dict:
+        """按 user_id + message_id 更新状态；所有权不匹配抛 OwnershipError，
+        找不到时返回 {}。"""
+        if self._db.get_message(user_id, message_id) is None:
+            raise OwnershipError(
+                f"message {message_id!r} 不属于或不存在于用户 {user_id!r}"
+            )
+        return self._db.update_message_status(user_id, message_id, status)
 
     def list_messages(self, thread_id: str, user_id: str) -> list[dict]:
         conv = self._require_owned(thread_id, user_id)
