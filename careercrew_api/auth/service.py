@@ -59,8 +59,11 @@ class AuthService:
             raise PermissionError("bootstrap is only available in development")
         return self.store.create_first_admin(username, self.password_hasher.hash(password))
 
-    def create_user(self, username: str, password: str, role: str = "user") -> dict[str, str]:
-        return self.store.create_account(username, self.password_hasher.hash(password), role)
+    def create_user(self, actor: dict[str, str], username: str, password: str,
+                    role: str = "user") -> dict[str, str]:
+        created = self.store.create_account(username, self.password_hasher.hash(password), role)
+        self._audit(actor["id"], "user.create", created["id"], {"role": role})
+        return created
 
     def login(self, username: str, password: str, client_ip: str = "") -> tuple[dict[str, Any], str]:
         locked_keys = [f"login:u:{username.lower()}"]

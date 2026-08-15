@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── 通用 ──
@@ -34,6 +34,43 @@ class PublicUser(BaseModel):
     id: str
     username: str
     role: Literal["user", "admin"]
+
+
+class AccountListItem(BaseModel):
+    id: str
+    username: str
+    role: Literal["user", "admin"]
+    status: Literal["active", "disabled"]
+    token_version: int
+    created_at: str
+    updated_at: str
+
+
+class UserListResponse(BaseModel):
+    items: list[AccountListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class UserPatchRequest(BaseModel):
+    role: Literal["user", "admin"] | None = None
+    status: Literal["active", "disabled"] | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one(self):
+        if self.role is None and self.status is None:
+            raise ValueError("至少提供 role 或 status 之一")
+        return self
+
+
+class PasswordResetRequest(BaseModel):
+    password: str = Field(min_length=12, max_length=256)
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
 
 
 class TokenResponse(BaseModel):
