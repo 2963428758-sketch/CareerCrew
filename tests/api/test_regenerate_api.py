@@ -151,3 +151,66 @@ def test_regenerate_consult_409(client, fake_runtime):
     store.set_message_content("u_001", asst["id"], "ans", status="completed")
     r = _run_client_stream(client, f"/api/messages/{asst['id']}/regenerate", {})
     assert r.status_code == 409
+
+
+def test_regenerate_idempotency_replay_done_fields(client, fake_runtime):
+    """幂等 replay 的 done 事件与正常路径同 §9 字段集（含 model/prompt/agent 版本）。"""
+    fake_runtime.match_output = "v1"
+    r1 = _run_client_stream(client, "/api/chat/match", {"intent": "找工作"})
+    d1 = _last_done(_events(r1))
+    key = "idem-replay-fields"
+
+    ra = _run_client_stream(
+        client, f"/api/messages/{d1['message_id']}/regenerate", {},
+        idempotency_key=key,
+    )
+    da = _last_done(_events(ra))
+    # 正常路径已含 §9 版本字段
+    assert "model" in da
+    assert "prompt_version" in da
+    assert "agent_version" in da
+
+    rb = _run_client_stream(
+        client, f"/api/messages/{d1['message_id']}/regenerate", {},
+        idempotency_key=key,
+    )
+    db = _last_done(_events(rb))
+    # replay 字段集与首次一致（含 §9 版本字段）
+    for field in ("thread_id", "turn_id", "message_id", "run_id", "status",
+                  "regenerated_from_message_id", "model", "prompt_version",
+                  "agent_version"):
+        assert field in db, f"replay done 缺少字段 {field}"
+    assert db["message_id"] == da["message_id"]
+    assert db["run_id"] == da["run_id"]
+    assert db["model"] == da["model"]
+    assert db["prompt_version"] == da["prompt_version"]
+    assert db["agent_version"] == da["agent_version"]
+
+
+def test_regenerate_latest_of_earlier_turn_409(client, fake_runtime):
+    """线程级最后一条：更晚 turn 存在时，早期 turn 最新 assistant → 409。"""
+    fake_runtime.match_output = "t1"
+    r1 = _run_client_stream(client, "/api/chat/match", {"intent": "第一问"})
+    d1 = _last_done(_events(r1))
+
+    # 在同一线程内追加第二 turn（带完成的 assistant），使 turn1 不再是线程最后一条
+    store = fake_runtime.conversation_store
+    conv = store.get_conversation(d1["thread_id"], "u_001")
+    turn2 = store.next_turn(d1["thread_id"], "u_001")
+    store.add_user_message(turn2["id"], conv["id"], "u_001", "第二个问题", "completed")
+    asst2 = store.add_assistant_message(turn2["id"], conv["id"], "u_001", "", None, None)
+    store.set_message_status("u_001", asst2["id"], "streaming")
+    run2 = store.start_run(
+        thread_id=conv["id"], turn_id=turn2["id"], message_id=asst2["id"],
+        user_id="u_001", module="matcher", agent_id="job_matcher", model="m",
+        status="streaming",
+    )
+    store.set_message_run_id("u_001", asst2["id"], run2["id"])
+    store.set_message_content("u_001", asst2["id"], "第二答", status="completed")
+
+    r3 = _run_client_stream(client, f"/api/messages/{d1['message_id']}/regenerate", {})
+    assert r3.status_code == 409
+
+    # 线程最后一条（turn2）→ 允许
+    r4 = _run_client_stream(client, f"/api/messages/{asst2['id']}/regenerate", {})
+    assert r4.status_code == 200

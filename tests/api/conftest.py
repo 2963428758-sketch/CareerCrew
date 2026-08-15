@@ -279,6 +279,8 @@ class FakeRuntime:
             )
         if not self._is_latest_assistant_version(store, user_id, thread_id, turn_id, message_id):
             raise RegenerateConflictError("只能重新生成当前 turn 的最新 assistant 消息（旧版本不可重新生成）")
+        if not self._is_last_assistant_in_thread(store, user_id, thread_id, turn_id, message_id):
+            raise RegenerateConflictError("只能重新生成线程最后一条 assistant 消息（后续轮次已存在）")
         msgs = store.list_messages(thread_id, user_id)
         user_msg = next((m for m in msgs if m["turn_id"] == turn_id and m["role"] == "user"), None)
         if user_msg is None:
@@ -289,6 +291,20 @@ class FakeRuntime:
         for m in store.list_messages(thread_id, user_id):
             if m["turn_id"] == turn_id and m["role"] == "assistant" \
                     and m.get("regenerated_from_message_id") == message_id:
+                return False
+        return True
+
+    def _is_last_assistant_in_thread(self, store, user_id, thread_id, turn_id, message_id):
+        my_turn = store.get_turn(user_id, turn_id)
+        my_seq = (my_turn or {}).get("sequence_no", 0)
+        my_created = (store.get_message(user_id, message_id) or {}).get("created_at") or ""
+        for m in store.list_messages(thread_id, user_id):
+            if m["id"] == message_id or m["role"] != "assistant":
+                continue
+            t = store.get_turn(user_id, m["turn_id"])
+            seq = (t or {}).get("sequence_no", 0)
+            created = (store.get_message(user_id, m["id"]) or {}).get("created_at") or ""
+            if seq > my_seq or (seq == my_seq and created > my_created):
                 return False
         return True
 

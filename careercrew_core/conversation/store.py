@@ -124,6 +124,10 @@ class ConversationStore:
             turn_id = str(uuid7())
             return self._db.insert_turn(turn_id, conv["id"], user_id, seq)
 
+    def get_turn(self, user_id: str, turn_id: str) -> dict | None:
+        """按 user_id 取 turn 行（含 sequence_no）；不存在 / 所有权不匹配返回 None。"""
+        return self._db.get_turn(user_id, turn_id)
+
     # ── messages ──
 
     def add_user_message(
@@ -291,6 +295,22 @@ class ConversationStore:
     def create_regeneration(self, user_id: str, key: str, message_id: str) -> str | None:
         """登记一次 regenerate 的幂等键；已存在返回 None（调用方复用首次结果）。"""
         return self._db.create_regeneration(user_id, key, message_id)
+
+    def reserve_regeneration(self, user_id: str, key: str) -> str | None:
+        """原子预留幂等键（上游预留，杜绝并发同 key 双跑）。
+
+        返回 None = 本次成功预留；返回既有 message_id = 已存在（复用首次结果；
+        值为 None 表示首个请求仍在进行中）。
+        """
+        return self._db.reserve_regeneration(user_id, key)
+
+    def complete_regeneration(self, user_id: str, key: str, message_id: str) -> str | None:
+        """预留成功后回填最终 message_id。"""
+        return self._db.complete_regeneration(user_id, key, message_id)
+
+    def release_regeneration(self, user_id: str, key: str) -> bool:
+        """释放未完成的预留（流中途失败不污名化该 key）。"""
+        return self._db.release_regeneration(user_id, key)
 
     # ── retrievals / tool calls ──
 

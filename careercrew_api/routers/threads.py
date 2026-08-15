@@ -39,6 +39,39 @@ router = APIRouter()
 _KNOWN_MODULES = ("matcher", "resume", "chat", "knowledge", "consult", "interview")
 
 
+def _replay_done_event(rt: CareerCrewRuntime, msg: dict) -> str:
+    """幂等 replay 的 done 事件：与正常路径同字段集（§9）。
+
+    除 message 行自带字段外，补 model / prompt_version / agent_version（§9 版本字段），
+    从该 message 关联的 run 行读取；无 run 行时回退 "unversioned"/空。
+    """
+    run = None
+    if msg.get("run_id"):
+        run = rt.conversation_store.get_run(msg["user_id"], msg["run_id"])
+    run = run or {}
+    return done_event(
+        msg.get("content", "") or "",
+        thread_id=msg.get("thread_id", ""),
+        turn_id=msg.get("turn_id", ""),
+        message_id=msg.get("id", ""),
+        run_id=msg.get("run_id"),
+        status=msg.get("status", "completed"),
+        regenerated_from_message_id=msg.get("regenerated_from_message_id"),
+        model=run.get("model") or "",
+        prompt_version=run.get("prompt_version") or "unversioned",
+        agent_version=run.get("agent_version") or "unversioned",
+    )
+
+
+def _release_idem(rt: CareerCrewRuntime, user_id: str, key: str | None, reserved: bool) -> None:
+    """前置校验失败时释放已预留的幂等键（不保留无效 key）。"""
+    if reserved and key:
+        try:
+            rt.conversation_store.release_regeneration(user_id, key)
+        except Exception:
+            pass
+
+
 class ThreadCreateRequest(BaseModel):
     module: str = "chat"
     title: str | None = None
@@ -131,23 +164,19 @@ def regenerate_message(
     user_id = current_user["id"]
     rt._ensure_heavy()
 
-    # ── 幂等头：命中返回首次结果（不重跑）──
+    # ── 幂等头：上游原子预留，命中返回首次结果（不重跑）──
+    # 预留必须先于 dispatch：同 (user, key) 并发请求只有一个能成功预留，
+    # 其余拿到既有 message_id 走 replay，杜绝双跑。
+    idem_reserved = False
     if idempotency_key:
-        existing_id = rt.conversation_store.get_regeneration(user_id, idempotency_key)
-        if existing_id:
+        existing_id = rt.conversation_store.reserve_regeneration(user_id, idempotency_key)
+        if existing_id is not None:
+            # 已存在：replay（stream 首次生成的 message 行，§9 字段完整）。
             existing = rt.conversation_store.get_message(user_id, existing_id)
 
             def replay() -> Generator[str, None, None]:
                 if existing is not None:
-                    yield done_event(
-                        existing.get("content", "") or "",
-                        thread_id=existing.get("thread_id", ""),
-                        turn_id=existing.get("turn_id", ""),
-                        message_id=existing.get("id", ""),
-                        run_id=existing.get("run_id"),
-                        status=existing.get("status"),
-                        regenerated_from_message_id=existing.get("regenerated_from_message_id"),
-                    )
+                    yield _replay_done_event(rt, existing)
                 else:
                     yield error_event("幂等命中但消息已不存在，请重试")
 
@@ -156,13 +185,17 @@ def regenerate_message(
                 media_type="application/x-ndjson",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
+        # reserve 返回 None：本次成功预留，后续完成后回填。
+        idem_reserved = True
 
     # ── 前置校验：同步映射 404/409（JSON 响应）──
     try:
         rt.validate_regenerate(message_id, user_id)
     except ResourceNotFoundError as e:
+        _release_idem(rt, user_id, idempotency_key, idem_reserved)
         raise HTTPException(status_code=404, detail="消息不存在或不属于当前用户") from e
     except RegenerateConflictError as e:
+        _release_idem(rt, user_id, idempotency_key, idem_reserved)
         raise HTTPException(status_code=409, detail=str(e)) from e
 
     def gen() -> Generator[str, None, None]:
@@ -178,6 +211,7 @@ def regenerate_message(
             result["turn"] = getattr(res, "turn", None)
 
         failed = False
+        done_message_id: str | None = None
         try:
             yield stage_event("regenerate")
             content_parts: list[str] = []
@@ -192,35 +226,26 @@ def regenerate_message(
                 done_fields = turn_done_fields(result["turn"])
                 if result["turn"] is not None:
                     done_fields["regenerated_from_message_id"] = message_id
+                done_message_id = done_fields.get("message_id")
                 yield done_event(
                     result["content"] or "".join(content_parts),
                     **done_fields,
                 )
         except Exception as e:
+            failed = True
             yield error_event(f"生成失败：{e}")
-
-    # 带幂等键：done 事件后登记（保证流中途失败不污名化该 key）
-    if idempotency_key:
-        def gen_with_idem() -> Generator[str, None, None]:
-            done_message_id: str | None = None
-            for line in gen():
-                yield line
-                try:
-                    evt = json.loads(line)
-                    if evt.get("type") == "done":
-                        done_message_id = evt.get("message_id")
-                except Exception:
-                    pass
-            if done_message_id:
-                rt.conversation_store.create_regeneration(
-                    user_id, idempotency_key, done_message_id
-                )
-        stream_gen = gen_with_idem()
-    else:
-        stream_gen = gen()
+        finally:
+            # 预留（上游）完成后回填真实 message_id；流中途失败释放预留，不污名化 key。
+            if idem_reserved:
+                if done_message_id:
+                    rt.conversation_store.complete_regeneration(
+                        user_id, idempotency_key, done_message_id
+                    )
+                else:
+                    rt.conversation_store.release_regeneration(user_id, idempotency_key)
 
     return StreamingResponse(
-        stream_gen,
+        gen(),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

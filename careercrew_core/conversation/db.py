@@ -157,6 +157,22 @@ class ConversationDb(ABC):
     def create_regeneration(self, user_id: str, key: str, message_id: str) -> str | None: ...
 
     @abstractmethod
+    def reserve_regeneration(self, user_id: str, key: str) -> str | None:
+        """原子预留幂等键：返回 None 表示本次成功预留；返回既有 message_id 表示已存在。
+
+        message_id 预留时为 None（未知），完成后由 complete_regeneration 回填；
+        冲突时返回既有 message_id（可能为 None=进行中，或最终 message_id=已完成）。
+        """
+
+    @abstractmethod
+    def complete_regeneration(self, user_id: str, key: str, message_id: str) -> str | None:
+        """预留成功后回填最终 message_id；无对应预留返回 None。"""
+
+    @abstractmethod
+    def release_regeneration(self, user_id: str, key: str) -> bool:
+        """释放未完成的预留（流中途失败不污名化该 key）；释放过返回 True。"""
+
+    @abstractmethod
     def update_run(self, user_id: str, run_id: str, fields: dict) -> dict: ...
 
     # ── retrievals / tool calls ──
@@ -269,9 +285,23 @@ class PostgresConversationDb(ConversationDb):
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS regeneration_keys ("
                 "user_id VARCHAR(64) NOT NULL, key VARCHAR(200) NOT NULL, "
-                "message_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL, "
+                "message_id UUID, created_at TIMESTAMPTZ NOT NULL, "
                 "UNIQUE(user_id, key))"
             )
+            # T1.6 上游预留：message_id 允许 NULL（预留时尚未生成最终 message），
+            # 完成后回填。存量表迁移 DROP NOT NULL。
+            conn.execute("SET lock_timeout = '5s'")
+            try:
+                conn.execute(
+                    "DO $$ BEGIN "
+                    "IF EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'regeneration_keys' AND column_name = 'message_id' "
+                    "AND is_nullable = 'NO') THEN "
+                    "ALTER TABLE regeneration_keys ALTER COLUMN message_id DROP NOT NULL; "
+                    "END IF; END $$"
+                )
+            finally:
+                conn.execute("SET lock_timeout = '0'")
             # legacy thread_id 映射（现状：前端用 `t-${Date.now()}` 非 UUID 线程 ID）。
             # 追加在方案 DDL 之后、幂等迁移添加；历史行回退 NULL。
             conn.execute("SET lock_timeout = '5s'")
@@ -561,6 +591,51 @@ class PostgresConversationDb(ConversationDb):
                 raise
         return message_id
 
+    @_synchronized
+    def reserve_regeneration(self, user_id, key) -> str | None:
+        """原子预留：INSERT ... ON CONFLICT DO NOTHING。
+
+        - 本次插入成功（预留到）：返回 None。
+        - 已存在（冲突）：返回既有 message_id（None 表示首个请求仍在进行中）。
+        """
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "INSERT INTO regeneration_keys (user_id, key, message_id, created_at) "
+                "VALUES (%s, %s, NULL, %s) "
+                "ON CONFLICT (user_id, key) DO NOTHING",
+                (user_id, key, _now()),
+            )
+            if cur.rowcount:
+                return None  # 本次插入成功，成功预留
+            row = conn.execute(
+                "SELECT message_id FROM regeneration_keys WHERE user_id=%s AND key=%s",
+                (user_id, key),
+            ).fetchone()
+            if row is None:
+                return None
+            mid = row["message_id"]
+        return str(mid) if mid is not None else None
+
+    @_synchronized
+    def complete_regeneration(self, user_id, key, message_id) -> str | None:
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "UPDATE regeneration_keys SET message_id=%s WHERE user_id=%s AND key=%s "
+                "RETURNING message_id",
+                (message_id, user_id, key),
+            )
+            row = cur.fetchone()
+        return str(row["message_id"]) if row else None
+
+    @_synchronized
+    def release_regeneration(self, user_id, key) -> bool:
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "DELETE FROM regeneration_keys WHERE user_id=%s AND key=%s",
+                (user_id, key),
+            )
+        return bool(cur.rowcount)
+
     # ── retrievals / tool calls ──
 
     @_synchronized
@@ -615,7 +690,7 @@ class FakeConversationDb(ConversationDb):
         self._runs: dict[str, dict] = {}
         self._retrievals: dict[str, dict] = {}
         self._tool_calls: dict[str, dict] = {}
-        self._regenerations: dict[tuple[str, str], str] = {}
+        self._regenerations: dict[tuple[str, str], str | None] = {}
 
     # ── conversations ──
 
@@ -784,6 +859,26 @@ class FakeConversationDb(ConversationDb):
             return None  # 冲突：已存在（路由据此复用首次结果）
         self._regenerations[k] = message_id
         return message_id
+
+    def reserve_regeneration(self, user_id, key) -> str | None:
+        k = (user_id, key)
+        if k in self._regenerations:
+            return self._regenerations[k]  # 已存在 → 其 message_id 或 None（进行中）
+        self._regenerations[k] = None  # 预留成功，message_id 待回填
+        return None
+
+    def complete_regeneration(self, user_id, key, message_id) -> str | None:
+        k = (user_id, key)
+        if k not in self._regenerations:
+            return None
+        self._regenerations[k] = message_id
+        return message_id
+
+    def release_regeneration(self, user_id, key) -> bool:
+        k = (user_id, key)
+        existed = k in self._regenerations
+        self._regenerations.pop(k, None)
+        return existed
 
     # ── retrievals / tool calls ──
 

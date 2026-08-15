@@ -218,6 +218,61 @@ def test_regenerate_not_last_message_409():
     assert res.turn.assistant_message_id != a2["id"]
 
 
+def test_regenerate_latest_of_turn1_blocked_by_turn2():
+    """线程级最后一条判定：turn1 的最新 assistant 在 turn2 存在时不可 regenerate。"""
+    store = ConversationStore(FakeConversationDb())
+    rt = _make_runtime(store)
+    _dispatch(rt, {}, [])
+    _, _, _, a_turn1, _ = _begin_round(store, question="q1")
+    # 第二 turn 完整一轮（存在其 assistant）
+    _, _, _, a_turn2, _ = _begin_round(store, question="q2")
+    # turn1 最新（版本链之叶）在 turn2 之后 → 线程级 409
+    with pytest.raises(RegenerateConflictError, match="线程最后一条"):
+        rt.run_regenerate_stream(a_turn1["id"], "u_1")
+    # turn2 是线程最后一条 → 允许
+    res = rt.run_regenerate_stream(a_turn2["id"], "u_1")
+    assert res.turn.assistant_message_id != a_turn2["id"]
+
+
+def test_regenerate_final_turn_allowed():
+    """线程最后一条（最终 turn）允许 regenerate。"""
+    store = ConversationStore(FakeConversationDb())
+    rt = _make_runtime(store)
+    _dispatch(rt, {"content": "r2"}, [])
+    _, _, _, a, _ = _begin_round(store, question="final")
+    res = rt.run_regenerate_stream(a["id"], "u_1")
+    assert res.turn.assistant_message_id != a["id"]
+
+
+def test_regenerate_resume_without_jd_text_409():
+    """resume 重跑缺 jd_text metadata（conversational 路径/legacy 行）→ 409。"""
+    store = ConversationStore(FakeConversationDb())
+    rt = _make_runtime(store)
+    _dispatch(rt, {}, [])
+    _, _, _, asst, _ = _begin_round(
+        store, module="resume", agent_id="resume_advisor",
+        metadata=None,  # 无 jd_text
+    )
+    with pytest.raises(RegenerateConflictError, match="jd_text"):
+        rt.run_regenerate_stream(asst["id"], "u_1")
+
+
+def test_regenerate_knowledge_missing_scope_falls_back():
+    """knowledge 重跑缺 category/scope metadata → 回退默认值（""/"all"）并成功（不 409）。"""
+    store = ConversationStore(FakeConversationDb())
+    rt = _make_runtime(store)
+    calls = []
+    _dispatch(rt, {}, calls)
+    _, _, _, asst, _ = _begin_round(
+        store, module="knowledge", agent_id="knowledge_advisor",
+        metadata=None,  # 无 category/scope
+    )
+    rt.run_regenerate_stream(asst["id"], "u_1")
+    ka = [c for c in calls if c[0] == "new_knowledge_advisor"][0]
+    assert ka[1] == ""       # category 回退默认 ""
+    assert ka[2] is True     # scope 回退 "all" 后 filters 仍构造
+
+
 def test_regenerate_consult_409():
     store = ConversationStore(FakeConversationDb())
     rt = _make_runtime(store)

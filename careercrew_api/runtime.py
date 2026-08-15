@@ -1024,6 +1024,14 @@ class CareerCrewRuntime:
                 "只能重新生成当前 turn 的最新 assistant 消息（旧版本不可重新生成）"
             )
 
+        # §19：regenerate 仅限线程最后一条完整 assistant 消息。除版本链最新判定外，
+        # 追加线程级判定：不允许存在更晚 turn（更大 sequence_no）或同一 turn 更晚
+        # created_at 的其他 assistant 消息。
+        if not self._is_last_assistant_in_thread(store, user_id, thread_id, turn_id, message_id):
+            raise RegenerateConflictError(
+                "只能重新生成线程最后一条 assistant 消息（后续轮次已存在）"
+            )
+
         msgs = store.list_messages(thread_id, user_id)
         user_msg = next(
             (m for m in msgs if m["turn_id"] == turn_id and m["role"] == "user"), None
@@ -1041,6 +1049,31 @@ class CareerCrewRuntime:
                     and m.get("regenerated_from_message_id") == message_id:
                 return False
         return True
+
+    def _is_last_assistant_in_thread(self, store, user_id, thread_id, turn_id, message_id) -> bool:
+        """判定 message_id 是否为线程级最后一条 assistant 消息。
+
+        以 turn 的 sequence_no 为主序、消息 created_at 为次序：任何其他 assistant
+        消息若处于更晚 turn（sequence_no 更大）或同一 turn 但 created_at 更晚，
+        都视为“存在后续消息”，message_id 即非最后一条。
+        """
+        my_turn = store.get_turn(user_id, turn_id)
+        my_seq = (my_turn or {}).get("sequence_no", 0)
+        my_created = self._msg_created_at_ts(store, user_id, message_id)
+        for m in store.list_messages(thread_id, user_id):
+            if m["id"] == message_id or m["role"] != "assistant":
+                continue
+            t = store.get_turn(user_id, m["turn_id"])
+            seq = (t or {}).get("sequence_no", 0)
+            created = self._msg_created_at_ts(store, user_id, m["id"])
+            if seq > my_seq or (seq == my_seq and created > my_created):
+                return False
+        return True
+
+    @staticmethod
+    def _msg_created_at_ts(store, user_id, message_id) -> str:
+        msg = store.get_message(user_id, message_id)
+        return (msg or {}).get("created_at") or ""
 
     def _dispatch_regenerate(self, module: str, thread_id: str, user_id: str,
                              user_msg: dict, cb, cancel_check):
@@ -1060,8 +1093,14 @@ class CareerCrewRuntime:
             return content, [], obs
 
         if module == "resume":
-            # jd_text 保真存储于 user metadata（截断摘要只在 user content），如实重跑。
-            jd_text = meta.get("jd_text") or question
+            # 绑定决策：resume 重跑依赖 metadata 里的完整 jd_text 保真重建输入。
+            # conversational /chat 路径（legacy 行）没有 jd_text → 无法忠实重跑，
+            # 409 拒绝（而非静默退化为截断摘要/提问原文）。
+            jd_text = meta.get("jd_text")
+            if not jd_text:
+                raise RegenerateConflictError(
+                    "该消息缺少原始 JD 元数据（jd_text），无法忠实重建输入，请重新发起简历定制"
+                )
             cycle = self.get_cycle(thread_id, user_id)
             cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
             cycle.run_resume(jd_text)
@@ -1093,6 +1132,15 @@ class CareerCrewRuntime:
 
             category = meta.get("category") or ""
             scope = meta.get("scope") or "all"
+            # 绑定决策：category/scope 缺失时回退到端点自身默认值（""/"all"），
+            # 这仍是忠实重跑（等价于首次无参调用），但记录警告便于排查 legacy 行。
+            if not meta.get("category") or not meta.get("scope"):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "regenerate: knowledge turn %s missing category/scope metadata, "
+                    "falling back to endpoint defaults (category=%r scope=%r)",
+                    user_msg.get("turn_id"), category, scope,
+                )
             sources: list[dict] = []
             seen: set[str] = set()
 

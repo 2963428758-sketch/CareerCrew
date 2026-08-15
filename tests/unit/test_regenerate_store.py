@@ -92,6 +92,38 @@ def test_regeneration_missing_returns_none(store):
     assert store.get_regeneration("u_1", "nope") is None
 
 
+def test_regeneration_reserve_complete_release(store):
+    """上游预留生命周期：reserve 抢占 → complete 回填 → 二次 reserve 返回既有 id。"""
+    # 首次 reserve 成功（返回 None）
+    assert store.reserve_regeneration("u_1", "k1") is None
+    # 回填前二次 reserve 返回 None（进行中），尚未有 message_id
+    assert store.reserve_regeneration("u_1", "k1") is None
+    # 完成回填
+    assert store.complete_regeneration("u_1", "k1", "m1") == "m1"
+    # 回填后二次 reserve 返回既有 message_id
+    assert store.reserve_regeneration("u_1", "k1") == "m1"
+    # 完成后 get_regeneration 可见
+    assert store.get_regeneration("u_1", "k1") == "m1"
+
+
+def test_regeneration_release(store):
+    """预留失败释放：release 后同 key 可重新 reserve。"""
+    assert store.reserve_regeneration("u_1", "k2") is None
+    assert store.release_regeneration("u_1", "k2") is True
+    assert store.release_regeneration("u_1", "k2") is False  # 已释放
+    assert store.reserve_regeneration("u_1", "k2") is None   # 可重新预留
+
+
+def test_regeneration_reserve_scoped_by_user(store):
+    """reserve 按 (user, key) 作用域隔离。"""
+    assert store.reserve_regeneration("u_1", "kx") is None
+    assert store.reserve_regeneration("u_2", "kx") is None  # 不同 user 各自预留
+    store.complete_regeneration("u_1", "kx", "m1")
+    store.complete_regeneration("u_2", "kx", "m2")
+    assert store.reserve_regeneration("u_1", "kx") == "m1"
+    assert store.reserve_regeneration("u_2", "kx") == "m2"
+
+
 def test_begin_turn_writes_user_metadata():
     """begin_turn 把 user_metadata 写入 user 消息 metadata 列（T1.6 重跑输入保真）。"""
     from careercrew_api.chat_lifecycle import begin_turn
