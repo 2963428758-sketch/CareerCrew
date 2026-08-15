@@ -138,9 +138,8 @@ class VLMSettings(BaseModel):
 
 
 class CheckpointerSettings(BaseModel):
-    backend: str
-    path: str
-    url: str = ""  # postgres 后端用（DATABASE_URL）；sqlite/memory 忽略
+    backend: str = "postgres"  # 唯一后端：postgres
+    url: str = ""  # postgres DSN（DATABASE_URL）
 
 
 class SupervisorSettings(BaseModel):
@@ -303,7 +302,6 @@ def _resolve_paths(settings: Settings) -> Settings:
     """把所有相对路径字段解析为基于项目根的绝对路径。"""
     settings.embedding.model_path = _resolve_path(settings.embedding.model_path)
     settings.rag.loaders.output_dir = _resolve_path(settings.rag.loaders.output_dir)
-    settings.supervisor.checkpointer.path = _resolve_path(settings.supervisor.checkpointer.path)
     return settings
 
 
@@ -383,6 +381,13 @@ def validate_settings(settings: Settings) -> None:
                 problems.append("auth.cookie_secure 必须为 true（生产环境）")
     except SettingsError as err:
         problems.append(str(err))
+
+    # checkpointer 唯一后端：postgres
+    if settings.supervisor.checkpointer.backend != "postgres":
+        problems.append(
+            f"supervisor.checkpointer.backend 取值非法: "
+            f"{settings.supervisor.checkpointer.backend}，应为 postgres"
+        )
 
     if problems:
         raise SettingsError("配置语义校验失败:\n" + "\n".join(f"  - {p}" for p in problems))

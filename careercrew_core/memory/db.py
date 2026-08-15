@@ -661,11 +661,13 @@ class FakeMemoryDb(MemoryDb):
 
 
 def create_memory_db(settings) -> MemoryDb:
-    """按配置创建记忆库：Postgres（生产）或 Fake（测试后端 fake/postgres 缺 dsn 时）。"""
+    """按配置创建记忆库：Postgres（唯一生产后端）或 Fake（仅测试 backend=fake）。"""
     backend = getattr(settings.vector_store, "backend", "")  # 测试常用 fake
     dsn = (settings.memory.postgres.dsn or "").strip()
-    if backend == "fake" or not dsn:
+    if backend == "fake":
         return FakeMemoryDb()
+    if not dsn:
+        raise ValueError("memory.postgres.dsn 未设置（生产环境记忆库必须使用 Postgres）")
     return PostgresMemoryDb(dsn)
 
 

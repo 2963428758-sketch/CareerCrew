@@ -72,8 +72,7 @@ vlm:
 # ── LangGraph supervisor ──
 supervisor:
   checkpointer:
-    backend: postgres            # postgres（生产）| sqlite | memory
-    path: ./data/db/checkpointer.db
+    backend: postgres            # 唯一后端：postgres
     url: "${DATABASE_URL}"
   max_consecutive_agent_turns: 10
 

@@ -131,14 +131,10 @@ def test_relative_paths_resolved_to_project_root(tmp_path: Path, valid_config_da
 
     valid_config_data["embedding"]["model_path"] = "./models/bge"
     valid_config_data["rag"]["loaders"]["output_dir"] = "./data/parsed"
-    valid_config_data["supervisor"]["checkpointer"]["path"] = "./data/db/checkpointer.db"
     settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert os.path.isabs(settings.embedding.model_path)
     assert settings.embedding.model_path == str(PROJECT_ROOT / "models" / "bge")
     assert settings.rag.loaders.output_dir == str(PROJECT_ROOT / "data" / "parsed")
-    assert settings.supervisor.checkpointer.path == str(
-        PROJECT_ROOT / "data" / "db" / "checkpointer.db"
-    )
 
 def test_invalid_loader_backend(tmp_path: Path, valid_config_data: dict) -> None:
     valid_config_data["rag"]["loaders"] = {"backend": "weird"}

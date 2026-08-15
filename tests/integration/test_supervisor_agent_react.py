@@ -31,8 +31,16 @@ def _tc(name, args, id_="1"):
 
 @pytest.mark.integration
 def test_supervisor_agent_react_integration(tmp_path: Path, valid_config_data: dict) -> None:
-    """supervisor 路由 -> BaseAgent 跑 ReAct（调工具）-> 产出写回 state -> 终止。"""
-    valid_config_data["supervisor"]["checkpointer"]["path"] = str(tmp_path / "cp.db")
+    """supervisor 路由 -> BaseAgent 跑 ReAct（调工具）-> 产出写回 state -> 终止。
+
+    checkpointer 唯一后端为 Postgres：需要 POSTGRES_TEST_DSN，否则跳过。
+    """
+    import os
+
+    dsn = os.environ.get("POSTGRES_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+    valid_config_data["supervisor"]["checkpointer"]["url"] = dsn
     settings = Settings.model_validate(valid_config_data)
     cp = get_checkpointer(settings)
 

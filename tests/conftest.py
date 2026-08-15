@@ -78,8 +78,7 @@ def valid_config() -> dict:
         },
         "supervisor": {
             "checkpointer": {
-                "backend": "memory",
-                "path": "./data/db/checkpointer.db",
+                "backend": "postgres",
                 "url": "",
             },
             "max_consecutive_agent_turns": 10,

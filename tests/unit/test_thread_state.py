@@ -1,11 +1,8 @@
 """B1 Thread State + checkpointer 测试。"""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from careercrew_core.state.checkpointer import get_checkpointer, tenant_checkpoint_config
@@ -34,21 +31,6 @@ def test_state_constructable() -> None:
     assert s["stage"] in STAGES
 
 
-def test_get_checkpointer_sqlite(tmp_path: Path, valid_config_data: dict) -> None:
-    valid_config_data["supervisor"]["checkpointer"]["backend"] = "sqlite"
-    valid_config_data["supervisor"]["checkpointer"]["path"] = str(tmp_path / "cp.db")
-    settings = Settings.model_validate(valid_config_data)
-    cp = get_checkpointer(settings)
-    assert isinstance(cp, SqliteSaver)
-
-
-def test_get_checkpointer_memory(valid_config_data: dict) -> None:
-    valid_config_data["supervisor"]["checkpointer"]["backend"] = "memory"
-    settings = Settings.model_validate(valid_config_data)
-    cp = get_checkpointer(settings)
-    assert isinstance(cp, MemorySaver)
-
-
 def test_get_checkpointer_unknown_backend(valid_config_data: dict) -> None:
     valid_config_data["supervisor"]["checkpointer"]["backend"] = "redis"
     settings = Settings.model_validate(valid_config_data)
@@ -56,11 +38,13 @@ def test_get_checkpointer_unknown_backend(valid_config_data: dict) -> None:
         get_checkpointer(settings)
 
 
-def test_checkpointer_persists_state_across_invokes(tmp_path: Path, valid_config_data: dict) -> None:
-    """同一 thread_id 两次 invoke：checkpointer 应恢复上次状态 -> messages 累积 4 条。"""
-    valid_config_data["supervisor"]["checkpointer"]["path"] = str(tmp_path / "cp.db")
-    settings = Settings.model_validate(valid_config_data)
-    cp = get_checkpointer(settings)
+def test_tenant_checkpointer_persists_state_across_invokes() -> None:
+    """同一 thread_id 两次 invoke：checkpointer 应恢复上次状态 -> messages 累积 4 条。
+
+    checkpointer 唯一后端为 Postgres（工厂行为由集成测试覆盖）；
+    本用例用 langgraph 内存 saver 验证租户配置与持久化语义。
+    """
+    cp = MemorySaver()
 
     def echo_node(state: CareerCrewState) -> dict:
         return {"messages": [{"role": "assistant", "content": "step"}]}
