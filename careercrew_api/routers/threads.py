@@ -169,9 +169,16 @@ def regenerate_message(
     # 其余拿到既有 message_id 走 replay，杜绝双跑。
     idem_reserved = False
     if idempotency_key:
-        existing_id = rt.conversation_store.reserve_regeneration(user_id, idempotency_key)
-        if existing_id is not None:
-            # 已存在：replay（stream 首次生成的 message 行，§9 字段完整）。
+        state, existing_id = rt.conversation_store.reserve_regeneration(
+            user_id, idempotency_key
+        )
+        if state == "exists":
+            if existing_id is None:
+                # 首个同 key 请求仍在进行中（message_id 尚未回填）→ 拒绝，杜绝双跑。
+                raise HTTPException(
+                    status_code=409, detail="该幂等键的重新生成正在处理中"
+                )
+            # 已存在且完成：replay（stream 首次生成的 message 行，§9 字段完整）。
             existing = rt.conversation_store.get_message(user_id, existing_id)
 
             def replay() -> Generator[str, None, None]:
@@ -185,7 +192,7 @@ def regenerate_message(
                 media_type="application/x-ndjson",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        # reserve 返回 None：本次成功预留，后续完成后回填。
+        # 本次成功预留，后续完成后回填。
         idem_reserved = True
 
     # ── 前置校验：同步映射 404/409（JSON 响应）──

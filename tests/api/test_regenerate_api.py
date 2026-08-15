@@ -153,6 +153,45 @@ def test_regenerate_consult_409(client, fake_runtime):
     assert r.status_code == 409
 
 
+def test_regenerate_idempotency_in_progress_409(client, fake_runtime):
+    """同 key 首个请求进行中（message_id 尚未回填）→ 并发同 key 请求 409，不二次 run/message。"""
+    fake_runtime.match_output = "v1"
+    r1 = _run_client_stream(client, "/api/chat/match", {"intent": "找工作"})
+    d1 = _last_done(_events(r1))
+
+    key = "idem-inprogress"
+    store = fake_runtime.conversation_store
+
+    # 手动预留该 key（模拟首个 regenerate 请求已抢占、尚未完成回填 message_id）
+    assert store.reserve_regeneration("u_001", key) == ("reserved", None)
+    # 断言进行中态：message_id 为 None
+    assert store.reserve_regeneration("u_001", key) == ("exists", None)
+
+    # 记录当前 assistant message/run 数量
+    before_msgs = store.list_messages(d1["thread_id"], "u_001")
+    before_asst = [m for m in before_msgs if m["role"] == "assistant"]
+
+    # 并发同 key 请求 → 409，不得 dispatch（不新增 run/message）
+    rb = _run_client_stream(
+        client, f"/api/messages/{d1['message_id']}/regenerate", {},
+        idempotency_key=key,
+    )
+    assert rb.status_code == 409
+    assert "正在处理中" in rb.json()["detail"]
+
+    after_msgs = store.list_messages(d1["thread_id"], "u_001")
+    after_asst = [m for m in after_msgs if m["role"] == "assistant"]
+    assert len(after_asst) == len(before_asst)  # 未产生第二条 assistant message
+
+    # 释放后（首个请求失败场景）同 key 可重新 dispatch
+    assert store.release_regeneration("u_001", key) is True
+    rc = _run_client_stream(
+        client, f"/api/messages/{d1['message_id']}/regenerate", {},
+        idempotency_key=key,
+    )
+    assert rc.status_code == 200
+
+
 def test_regenerate_idempotency_replay_done_fields(client, fake_runtime):
     """幂等 replay 的 done 事件与正常路径同 §9 字段集（含 model/prompt/agent 版本）。"""
     fake_runtime.match_output = "v1"

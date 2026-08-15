@@ -296,11 +296,13 @@ class ConversationStore:
         """登记一次 regenerate 的幂等键；已存在返回 None（调用方复用首次结果）。"""
         return self._db.create_regeneration(user_id, key, message_id)
 
-    def reserve_regeneration(self, user_id: str, key: str) -> str | None:
-        """原子预留幂等键（上游预留，杜绝并发同 key 双跑）。
+    def reserve_regeneration(self, user_id: str, key: str) -> tuple[str, str | None]:
+        """原子预留幂等键（上游预留，杜绝并发同 key 双跑；三态契约）。
 
-        返回 None = 本次成功预留；返回既有 message_id = 已存在（复用首次结果；
-        值为 None 表示首个请求仍在进行中）。
+        返回 (state, message_id)：
+        - (\"reserved\", None)：本次成功预留，应 dispatch。
+        - (\"exists\", <message_id>)：已存在且已完成，应 replay 该 message。
+        - (\"exists\", None)：已存在但进行中（首个请求未回填），应 409。
         """
         return self._db.reserve_regeneration(user_id, key)
 

@@ -79,20 +79,20 @@ def test_regeneration_keys_idempotent_migration(store_and_db):
 
 
 def test_regeneration_reserve_complete_pg(store_and_db):
-    """原子预留语义在真库生效：reserve 抢占 → complete 回填 → 二次 reserve 返回既有 id。"""
+    """原子预留语义在真库生效：reserve 抢占 → complete 回填 → 二次 reserve 三段态。"""
     store, db = store_and_db
     db._ensure()
 
     mid = str(uuid4())
-    assert store.reserve_regeneration("u_r", "kr") is None          # 预留成功
-    assert store.reserve_regeneration("u_r", "kr") is None          # 进行中（message_id 未回填）
+    assert store.reserve_regeneration("u_r", "kr") == ("reserved", None)   # 预留成功
+    assert store.reserve_regeneration("u_r", "kr") == ("exists", None)     # 进行中（未回填）
     assert store.complete_regeneration("u_r", "kr", mid) == mid
-    assert store.reserve_regeneration("u_r", "kr") == mid           # 回填后返回既有 id
+    assert store.reserve_regeneration("u_r", "kr") == ("exists", mid)      # 回填后返回既有 id
     assert store.get_regeneration("u_r", "kr") == mid
 
     # release 后同 key 可重新预留
     assert store.release_regeneration("u_r", "kr") is True
-    assert store.reserve_regeneration("u_r", "kr") is None
+    assert store.reserve_regeneration("u_r", "kr") == ("reserved", None)
 
 
 def test_user_message_metadata_roundtrip_pg(store_and_db):

@@ -157,11 +157,13 @@ class ConversationDb(ABC):
     def create_regeneration(self, user_id: str, key: str, message_id: str) -> str | None: ...
 
     @abstractmethod
-    def reserve_regeneration(self, user_id: str, key: str) -> str | None:
-        """原子预留幂等键：返回 None 表示本次成功预留；返回既有 message_id 表示已存在。
+    def reserve_regeneration(self, user_id: str, key: str, message_id: str | None = None) -> tuple[str, str | None]:
+        """原子预留幂等键（三态契约）。
 
-        message_id 预留时为 None（未知），完成后由 complete_regeneration 回填；
-        冲突时返回既有 message_id（可能为 None=进行中，或最终 message_id=已完成）。
+        返回三元组 (state, message_id)：
+        - ``("reserved", None)``：本次成功新建预留（首个请求，应继续 dispatch）。
+        - ``("exists", <message_id>)``：行已存在且 message_id 已回填（已完成，应 replay）。
+        - ``("exists", None)``：行已存在且 message_id 仍为 NULL（首个请求进行中，应 409）。
         """
 
     @abstractmethod
@@ -592,29 +594,30 @@ class PostgresConversationDb(ConversationDb):
         return message_id
 
     @_synchronized
-    def reserve_regeneration(self, user_id, key) -> str | None:
-        """原子预留：INSERT ... ON CONFLICT DO NOTHING。
+    def reserve_regeneration(self, user_id, key, message_id=None) -> tuple[str, str | None]:
+        """原子预留：INSERT ... ON CONFLICT DO NOTHING + 读回（三态）。
 
-        - 本次插入成功（预留到）：返回 None。
-        - 已存在（冲突）：返回既有 message_id（None 表示首个请求仍在进行中）。
+        - 本次插入成功 → ``("reserved", None)``（成功预留，应 dispatch）。
+        - 已存在 → ``("exists", <message_id>)``，message_id 为 None 表示首个请求仍进行中。
         """
         with self._connect() as conn, conn.transaction():
             cur = conn.execute(
                 "INSERT INTO regeneration_keys (user_id, key, message_id, created_at) "
-                "VALUES (%s, %s, NULL, %s) "
+                "VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (user_id, key) DO NOTHING",
-                (user_id, key, _now()),
+                (user_id, key, message_id, _now()),
             )
             if cur.rowcount:
-                return None  # 本次插入成功，成功预留
+                return ("reserved", None)  # 本次插入成功，成功预留
             row = conn.execute(
                 "SELECT message_id FROM regeneration_keys WHERE user_id=%s AND key=%s",
                 (user_id, key),
             ).fetchone()
             if row is None:
-                return None
+                # 理论不可达：无冲突却无行。按预留成功处理，避免误报冲突。
+                return ("reserved", None)
             mid = row["message_id"]
-        return str(mid) if mid is not None else None
+        return ("exists", str(mid) if mid is not None else None)
 
     @_synchronized
     def complete_regeneration(self, user_id, key, message_id) -> str | None:
@@ -860,12 +863,13 @@ class FakeConversationDb(ConversationDb):
         self._regenerations[k] = message_id
         return message_id
 
-    def reserve_regeneration(self, user_id, key) -> str | None:
+    def reserve_regeneration(self, user_id, key, message_id=None) -> tuple[str, str | None]:
         k = (user_id, key)
         if k in self._regenerations:
-            return self._regenerations[k]  # 已存在 → 其 message_id 或 None（进行中）
-        self._regenerations[k] = None  # 预留成功，message_id 待回填
-        return None
+            mid = self._regenerations[k]
+            return ("exists", mid)  # 已存在 → 其 message_id 或 None（进行中）
+        self._regenerations[k] = message_id  # 预留，message_id 待回填（通常 None）
+        return ("reserved", None)
 
     def complete_regeneration(self, user_id, key, message_id) -> str | None:
         k = (user_id, key)
