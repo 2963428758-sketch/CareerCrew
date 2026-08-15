@@ -11,7 +11,9 @@ uuid 文件名，原文件名仅进元数据——磁盘路径不受客户端控
 """
 from __future__ import annotations
 
+import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -29,6 +31,17 @@ from careercrew_core.conversation.validation import (
 )
 
 router = APIRouter()
+
+# 文本类（md/txt）快速路径：扩展名不触发 MinerU 管线，直接 MarkdownLoader 直读。
+# 二进制类（pdf/docx/pptx/xlsx/png/jpg/jpeg）走 runtime.ingest_pipeline（MinerU 本地/API）。
+_TEXT_EXTS = {".md", ".markdown", ".txt"}
+
+# 允许发起 save-to-knowledge 的前置状态（failed 允许重试；ready 已解析未入库可直接入库）。
+_SAVEABLE_STATUSES = {"uploaded", "ready", "failed"}
+
+# 可注入的解析+入库执行函数（生产默认委托 runtime.ingest_document，测试注入 fake 断点）。
+# 返回 (knowledge_document_id, doc_id)；失败抛异常由后台线程捕获写入 parser_error。
+_parse_and_ingest: Callable[..., dict] | None = None
 
 # §14.1：5 文件 / turn
 _MAX_FILES_PER_TURN = 5
@@ -144,6 +157,9 @@ def list_attachments(
             "mime_type": r["mime_type"],
             "size_bytes": r["size_bytes"],
             "status": r["status"],
+            "parser_type": r.get("parser_type"),
+            "parser_error": r.get("parser_error"),
+            "knowledge_document_id": r.get("knowledge_document_id"),
             "created_at": r["created_at"],
             "expires_at": r["expires_at"],
         }
@@ -194,11 +210,101 @@ def download_attachment(
     return FileResponse(disk_path, media_type=row.get("mime_type"), filename=row["original_filename"])
 
 
-@router.post("/{attachment_id}/save-to-knowledge")
+def _default_parse_and_ingest(
+    rt: CareerCrewRuntime, disk_path: Path, user_id: str, filename: str,
+    attachment_id: str,
+) -> dict:
+    """默认解析+入库：md/txt 文本直读，二进制走 MinerU 管线（复用 runtime.ingest_document）。
+
+    knowledge 文档以附件 UUID 为 doc_id（服务端生成，稳定幂等），title=original_filename，
+    owner=当前用户、visibility=private。返回 {knowledge_document_id, doc_id, points}。
+    """
+    doc_id = attachment_id  # 服务端生成的稳定 UUID，避免用原始文件名（可能含中文/路径符）
+    # output_dir：按用户/附件隔离的解析产物目录（与 knowledge.py 上传端点对齐）
+    output_dir = storage.resolve_under(storage.L.parsed_knowledge, user_id, attachment_id)
+    result = rt.ingest_document(
+        str(disk_path),
+        user_id=user_id,
+        progress_cb=None,
+        category="knowledge",
+        output_dir=str(output_dir),
+        doc_name=filename,
+        visibility="private",
+    )
+    # ingest_document 的 doc_id 是 p.stem（=附件 UUID 文件名），即 == attachment_id
+    return {
+        "knowledge_document_id": attachment_id,
+        "doc_id": result.get("doc_id", attachment_id),
+        "points": result.get("points", 0),
+    }
+
+
+def _run_save_job(rt: CareerCrewRuntime, user_id: str, attachment_id: str) -> None:
+    """后台线程：解析+入库并更新附件状态机（失败不阻塞、不重抛到请求方）。
+
+    uploaded/ready/failed -> parsing（请求方已写入）-> ready（解析成功入库前）
+    -> saved_to_knowledge + knowledge_document_id + expires_at=NULL；
+    任一异常 -> failed + parser_error。
+    """
+    try:
+        row = rt.attachment_store.get(user_id, attachment_id)
+    except OwnershipError:
+        return
+    disk_path = _resolve_attachment_path(row["user_id"], row["thread_id"], attachment_id)
+
+    parse_fn = _parse_and_ingest or _default_parse_and_ingest
+    try:
+        result = parse_fn(
+            rt, disk_path, user_id, row["original_filename"], attachment_id
+        )
+        doc_id = result.get("knowledge_document_id", attachment_id)
+        # 解析成功、入库前：状态进入 ready（随后立即 mark_saved 置 saved_to_knowledge）
+        rt.attachment_store.update_status(user_id, attachment_id, "ready",
+                                          parser_type=_parser_type_for(row["original_filename"]))
+        rt.attachment_store.mark_saved(
+            attachment_id, user_id, knowledge_document_id=str(doc_id)
+        )
+    except Exception as e:  # noqa: BLE001 - 解析/入库错误统一收口到 parser_error
+        from careercrew_api.sse import friendly_error
+
+        try:
+            rt.attachment_store.update_status(
+                user_id, attachment_id, "failed", parser_error=friendly_error(e),
+            )
+        except OwnershipError:
+            pass
+
+
+def _parser_type_for(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    return "markdown" if ext in _TEXT_EXTS else "mineru"
+
+
+@router.post("/{attachment_id}/save-to-knowledge", status_code=202)
 def save_to_knowledge(
     attachment_id: str,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
-    """保存附件到知识库（T3.3 实现解析/入库；本任务预留）。"""
-    raise HTTPException(status_code=501, detail="保存到知识库功能将在后续版本提供")
+    """保存附件到知识库（异步）：状态机 + 后台解析入库。
+
+    - 所有权校验（404）；状态非 uploaded/ready/failed → 409（saved_to_knowledge 幂等拒绝）。
+    - 立即置 parsing 并返回 202 {status:"parsing"}；后台线程执行解析+入库：
+      成功 → ready → saved_to_knowledge + knowledge_document_id + expires_at=NULL；
+      失败 → failed + parser_error（可重试）。
+    """
+    user_id = current_user["id"]
+    row = _owned_attachment(rt, user_id, attachment_id)
+
+    if row["status"] not in _SAVEABLE_STATUSES:
+        detail = (
+            "该附件已存入知识库" if row["status"] == "saved_to_knowledge"
+            else f"附件当前状态（{row['status']}）不可保存"
+        )
+        raise HTTPException(status_code=409, detail=detail)
+
+    rt.attachment_store.update_status(user_id, attachment_id, "parsing")
+    threading.Thread(
+        target=_run_save_job, args=(rt, user_id, attachment_id), daemon=True,
+    ).start()
+    return {"status": "parsing", "id": attachment_id}
