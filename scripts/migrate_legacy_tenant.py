@@ -488,12 +488,22 @@ def main(argv: list[str] | None = None) -> int:
         target = args.target_user
     else:
         if args.account_db:
-            account_db = Path(args.account_db)
+            # 显式给出的旧 SQLite 账号库（历史抢救路径）
+            target = first_admin_id(Path(args.account_db))
         else:
+            # 默认：从 Postgres 认证库取最早的管理员
+            from careercrew_api.auth.store import PostgresAccountStore
             from careercrew_core.state.settings import load_auth_settings
 
-            account_db = Path(load_auth_settings().account_db_path)
-        target = first_admin_id(account_db)
+            store = PostgresAccountStore(load_auth_settings().database_url)
+            items, _ = store.list_accounts(0, 1000)
+            admins = sorted(
+                (a for a in items if a.get("role") == "admin"),
+                key=lambda a: (a.get("created_at") or "", a["id"]),
+            )
+            if not admins:
+                raise RuntimeError("Postgres 中没有管理员账号；bootstrap 一个后再迁移")
+            target = admins[0]["id"]
 
     total = MigrationResult()
     total.extend(migrate_checkpoint_sqlite(args.checkpoint_db, target, apply=args.apply))

@@ -35,6 +35,6 @@ Compress-Archive -Path data\uploads,data\parsed -DestinationPath "backup\data_$(
 ## 4. 例行事项
 
 - 过期刷新会话由应用内置清理任务自动删除（周期 `auth.cleanup_interval_hours`）。
-- 账号迁移：SQLite 仅测试用；运行时以 `auth.backend=postgres` + `AUTH_DATABASE_URL`（回退 `DATABASE_URL`）为准。
+- 账号迁移：认证存储唯一后端为 Postgres，DSN 取 `AUTH_DATABASE_URL`（未设置回退 `DATABASE_URL`）。历史 SQLite 账号库仅作为一次性抢救源（`scripts/migrate_accounts_postgres.py --sqlite-db`）。
 - 迁移类脚本均有 dry-run 默认值：`scripts/migrate_accounts_postgres.py`、`scripts/migrate_knowledge_visibility.py`、`scripts/migrate_legacy_tenant.py`、`scripts/migrate_uploads.py`。
 - **集成测试红线**：`POSTGRES_TEST_DSN` 只允许指向一次性测试库（推荐 `careercrew_test`），禁止指向生产库 `careercrew`——测试内置护栏（指向 careercrew 直接拒绝运行），违例会清空账号表。

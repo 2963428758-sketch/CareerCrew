@@ -183,13 +183,12 @@ def test_auth_backend_postgres_falls_back_to_database_url(tmp_path, monkeypatch)
 
     config = tmp_path / "settings.yaml"
     config.write_text(
-        "auth:\n  backend: postgres\n  database_url: ''\n", encoding="utf-8"
+        "auth:\n  database_url: ''\n", encoding="utf-8"
     )
     monkeypatch.setattr(settings_module, "DEFAULT_CONFIG_PATH", config)
     monkeypatch.setattr(settings_module, "load_dotenv", lambda: None)
     monkeypatch.setenv("DATABASE_URL", "postgresql://careercrew:careercrew@localhost:5432/careercrew")
     auth = settings_module.load_auth_settings()
-    assert auth.backend == "postgres"
     assert auth.database_url == "postgresql://careercrew:careercrew@localhost:5432/careercrew"
 
 
@@ -199,26 +198,11 @@ def test_auth_backend_postgres_without_dsn_fails(tmp_path, monkeypatch):
 
     config = tmp_path / "settings.yaml"
     config.write_text(
-        "auth:\n  backend: postgres\n  database_url: ''\n", encoding="utf-8"
+        "auth:\n  database_url: ''\n", encoding="utf-8"
     )
     monkeypatch.setattr(settings_module, "DEFAULT_CONFIG_PATH", config)
     monkeypatch.setattr(settings_module, "load_dotenv", lambda: None)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("AUTH_DATABASE_URL", raising=False)
     with pytest.raises(SettingsError, match="AUTH_DATABASE_URL"):
-        settings_module.load_auth_settings()
-
-
-def test_auth_backend_sqlite_rejected_in_production(tmp_path, monkeypatch):
-    from careercrew_core.state import settings as settings_module
-    from careercrew_core.state.settings import SettingsError
-
-    config = tmp_path / "settings.yaml"
-    config.write_text(
-        "auth:\n  environment: production\n  backend: sqlite\n"
-        "  jwt_secret: 'test-signing-secret-0123456789abcdef-0123456789'\n  cookie_secure: true\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(settings_module, "DEFAULT_CONFIG_PATH", config)
-    with pytest.raises(SettingsError, match="auth.backend=sqlite"):
         settings_module.load_auth_settings()

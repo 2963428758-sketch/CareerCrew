@@ -95,8 +95,8 @@ def _auth_dsn() -> str:
     from careercrew_core.state.settings import load_auth_settings
 
     settings = load_auth_settings()
-    if settings.backend != "postgres" or not settings.database_url:
-        raise SystemExit("auth.backend 不是 postgres 或 DSN 缺失；先检查 config/settings.yaml")
+    if not settings.database_url:
+        raise SystemExit("认证 DSN 缺失；先检查 AUTH_DATABASE_URL / DATABASE_URL")
     return settings.database_url
 
 

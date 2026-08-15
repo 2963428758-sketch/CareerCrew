@@ -121,11 +121,9 @@ langsmith:
   max_chars: 2000            # 单条字符串上传上限（超出截断）
 
 # ── 本地账号认证 ──
-# 账号/刷新会话存 Postgres（backend=postgres；AUTH_DATABASE_URL 未设置时回退 DATABASE_URL）。
-# SQLite 仅保留给单元测试/显式开发配置；生产环境必须 postgres。
+# 账号/刷新会话存 Postgres（唯一后端；AUTH_DATABASE_URL 未设置时回退 DATABASE_URL）。
 auth:
   environment: development   # 可用 CAREERCREW_ENV 覆盖为 production
-  backend: postgres
   database_url: "${AUTH_DATABASE_URL}"
   trusted_origins: ["http://localhost:5175", "http://127.0.0.1:5175"]
   login_max_failures: 5
@@ -136,4 +134,3 @@ auth:
   access_token_minutes: 15
   refresh_token_days: 7
   cookie_secure: false       # 生产环境必须为 true
-  account_db_path: ./data/db/accounts.db

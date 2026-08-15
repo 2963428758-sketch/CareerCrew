@@ -20,7 +20,7 @@ def tenant_api(tmp_path, monkeypatch):
 
     from careercrew_api.auth.dependencies import get_auth_service
     from careercrew_api.auth.service import AuthService
-    from careercrew_api.auth.store import create_account_store
+    from tests.fakes import FakeAccountStore
     from careercrew_api.deps import get_runtime_dep
     from careercrew_api.main import create_app
     from careercrew_api.routers import knowledge, resume
@@ -35,11 +35,9 @@ def tenant_api(tmp_path, monkeypatch):
 
     settings = AuthSettings(
         environment="test",
-        backend="sqlite",
         jwt_secret="tenant-isolation-test-signing-secret-with-enough-entropy",
-        account_db_path=str(tmp_path / "accounts.db"),
     )
-    auth = AuthService(settings, create_account_store(settings))
+    auth = AuthService(settings, FakeAccountStore())
     runtime = FakeRuntime()
     app = create_app()
     app.dependency_overrides[get_auth_service] = lambda: auth

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from careercrew_api.auth.store import AccountExistsError, PostgresAccountStore
+from careercrew_api.auth.store import AccountExistsError, PostgresAccountStore, hash_token
 
 pytestmark = pytest.mark.integration
 
@@ -71,3 +71,34 @@ def test_postgres_roundtrip_and_guards(store):
         )
         assert locked == (i >= 5)
     store.clear_login_failures(key)
+
+
+@pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
+def test_postgres_rotate_rejects_disabled_and_expired(store):
+    store.create_first_admin("admin", "$argon2$fake")
+    now = datetime.now(UTC)
+    store.create_refresh_session("active", "u_001", now + timedelta(days=1))
+    store.create_refresh_session("expired", "u_001", now - timedelta(minutes=1))
+    assert store.rotate_refresh_session("expired", "x1", now + timedelta(days=1)) is None
+    store.update_account("u_001", status="disabled")
+    assert store.rotate_refresh_session("active", "x2", now + timedelta(days=1)) is None
+
+
+@pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
+def test_postgres_delete_expired_refresh_sessions(store):
+    store.create_first_admin("admin", "$argon2$fake")
+    now = datetime.now(UTC)
+    store.create_refresh_session("expired", "u_001", now - timedelta(minutes=1))
+    store.create_refresh_session("alive", "u_001", now + timedelta(days=1))
+    store.create_refresh_session("old-revoked", "u_001", now + timedelta(days=1))
+    store.revoke_refresh_session("old-revoked")
+    with store._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE auth_refresh_sessions SET revoked_at = %s WHERE token_hash = %s",
+            (now - timedelta(days=60), hash_token("old-revoked")),
+        )
+    deleted = store.delete_expired_refresh_sessions(revoked_older_than_days=30)
+    assert deleted == 2
+    with store._connect() as conn:
+        remaining = {r["token_hash"] for r in conn.execute("SELECT token_hash FROM auth_refresh_sessions")}
+    assert remaining == {hash_token("alive")}

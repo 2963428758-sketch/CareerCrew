@@ -10,22 +10,20 @@ from careercrew_api.auth.service import (
     LoginLockedError,
     SelfAdminError,
 )
-from careercrew_api.auth.store import SqliteAccountStore
 from careercrew_core.state.settings import AuthSettings
+from tests.fakes import FakeAccountStore
 
 PASSWORD = "correct-horse-battery-staple"
 USER_PASSWORD = "user-password-123"  # 满足新密码策略（字母+数字）
 
 
 @pytest.fixture
-def service(tmp_path):
+def service():
     settings = AuthSettings(
         environment="test",
         jwt_secret="test-secret-" + "x" * 40,
-        account_db_path=str(tmp_path / "accounts.db"),
-        backend="sqlite",
     )
-    store = SqliteAccountStore(settings.account_db_path)
+    store = FakeAccountStore()
     svc = AuthService(settings, store)
     svc.bootstrap_admin("admin", PASSWORD)
     return svc

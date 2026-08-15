@@ -12,7 +12,6 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from careercrew_api.auth.store import (
     AccountExistsError,
     AccountStore,
-    SqliteAccountStore,
     create_account_store,
     hash_token,
     new_refresh_token,

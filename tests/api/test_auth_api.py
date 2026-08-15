@@ -9,22 +9,20 @@ USER_PASSWORD = "member-password-123"  # 满足新密码策略（字母+数字�
 
 
 @pytest.fixture
-def auth_client(tmp_path):
+def auth_client():
     from fastapi.testclient import TestClient
 
     from careercrew_api.auth.dependencies import get_auth_service
     from careercrew_api.auth.service import AuthService
-    from careercrew_api.auth.store import create_account_store
     from careercrew_core.state.settings import AuthSettings
     from careercrew_api.main import create_app
+    from tests.fakes import FakeAccountStore
 
     settings = AuthSettings(
         environment="test",
-        backend="sqlite",
         jwt_secret="test-signing-secret-that-is-long-enough-for-repeatable-api-tests",
-        account_db_path=str(tmp_path / "accounts.db"),
     )
-    service = AuthService(settings, create_account_store(settings))
+    service = AuthService(settings, FakeAccountStore())
     app = create_app()
     app.dependency_overrides[get_auth_service] = lambda: service
     with TestClient(app) as client:
@@ -131,7 +129,7 @@ def test_production_startup_requires_explicit_auth_secret(tmp_path, monkeypatch)
 
     config = tmp_path / "settings.yaml"
     config.write_text(
-        "auth:\n  environment: production\n  backend: postgres\n"
+        "auth:\n  environment: production\n"
         "  database_url: 'postgresql://careercrew:careercrew@localhost:5432/careercrew'\n"
         "  jwt_secret: ''\n  cookie_secure: true\n",
         encoding="utf-8",
