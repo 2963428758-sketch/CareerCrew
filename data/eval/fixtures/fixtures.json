@@ -1,0 +1,14 @@
+{
+  "c01-route-salary": {"source": "fixture", "route": "salary_negotiator"},
+  "c02-route-job": {"source": "fixture", "route": "job_matcher"},
+  "c03-route-resume": {"source": "fixture", "route": "resume_advisor"},
+  "c04-route-interview": {"source": "fixture", "route": "interviewer"},
+  "c05-retrieval-rag": {"source": "fixture", "retrieved": ["d1", "d9", "d2", "d3", "d4"]},
+  "c06-retrieval-langgraph": {"source": "fixture", "retrieved": ["d5", "d6"]},
+  "c07-retrieval-qdrant": {"source": "fixture", "retrieved": ["d7", "d8"]},
+  "c08-citation-checkpoint": {"source": "fixture", "answer": "LangGraph 通过 checkpointer 持久化状态，checkpoint 恢复中断点。"},
+  "c09-citation-rrf": {"source": "fixture", "answer": "dense 与 sparse 两路召回后用客户端 RRF 融合。"},
+  "c10-tool-matcher": {"source": "fixture", "tools": ["search_jobs"]},
+  "c11-memory-retention": {"source": "fixture", "answer": "用户技术栈以 RAG 与 Qdrant 向量检索为主。", "memory_hit": true},
+  "c12-consult-planner": {"source": "fixture", "agents": ["career_planner"], "latency_s": 120, "tokens": 4000}
+}
