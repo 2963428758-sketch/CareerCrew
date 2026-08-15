@@ -92,6 +92,25 @@ def test_unique_sequence_enforced(store_and_db):
     assert turn1["id"] != turn2["id"]
 
 
+def _begin_chat_turn(store, uid, module="chat", title="T", model="m"):
+    """按 T1.2 生命周期辅助的顺序搭一整套 turn（含 streaming 接线）。"""
+    legacy = f"t-{uuid4().hex}"
+    conv = store.ensure_conversation(legacy, uid, module, title)
+    turn = store.next_turn(legacy, uid)
+    user_msg = store.add_user_message(turn["id"], conv["id"], uid, "hello", "completed")
+    # 流式：assistant 消息先为空内容，set_message_status(streaming) 后开始跑
+    asst = store.add_assistant_message(turn["id"], conv["id"], uid, "", None, None)
+    asst = store.set_message_status(uid, asst["id"], "streaming")
+    run = store.start_run(
+        thread_id=conv["id"], turn_id=turn["id"], message_id=asst["id"],
+        user_id=uid, module=module, agent_id="a", model=model,
+        prompt_version="unversioned", agent_version="1",
+    )
+    # run 生成后回填 message.run_id（begin_turn 顺序）
+    asst = store.set_message_run_id(uid, asst["id"], run["id"])
+    return conv, turn, user_msg, asst, run
+
+
 def test_full_flow(store_and_db):
     store, _ = store_and_db
     uid = "u_001"
@@ -122,3 +141,100 @@ def test_full_flow(store_and_db):
     # 所有权：跨用户拒绝
     with pytest.raises(OwnershipError):
         store.list_messages(conv["id"], "u_002")
+
+
+def test_set_message_content_roundtrip(store_and_db):
+    """set_message_content：流式结束后内容回写 + 状态 + completed_at 落库。"""
+    store, db = store_and_db
+    uid = "u_content"
+    _, _, _, asst, _ = _begin_chat_turn(store, uid)
+    # 断言 streaming 起始态：空内容、无 completed_at
+    raw = db.get_message(uid, asst["id"])
+    assert raw["content"] == ""
+    assert raw["status"] == "streaming"
+    assert raw["completed_at"] is None
+    # 流式结束写最终内容
+    updated = store.set_message_content(uid, asst["id"], "final answer")
+    assert updated["content"] == "final answer"
+    assert updated["status"] == "completed"
+    assert updated["completed_at"] is not None
+    # 真库回读（绕过 store）确认持久化
+    persisted = db.get_message(uid, asst["id"])
+    assert persisted["content"] == "final answer"
+    assert persisted["status"] == "completed"
+    # 显式 status 参数生效
+    store.set_message_content(uid, asst["id"], "retry", status="failed")
+    assert db.get_message(uid, asst["id"])["status"] == "failed"
+    assert db.get_message(uid, asst["id"])["content"] == "retry"
+    # 所有权
+    with pytest.raises(OwnershipError):
+        store.set_message_content("u_other", asst["id"], "x")
+
+
+def test_set_message_run_id_roundtrip(store_and_db):
+    """set_message_run_id：run_id 回填 message 并持久化。"""
+    store, db = store_and_db
+    uid = "u_runid"
+    legacy = f"t-{uuid4().hex}"
+    conv = store.ensure_conversation(legacy, uid, "chat")
+    turn = store.next_turn(legacy, uid)
+    store.add_user_message(turn["id"], conv["id"], uid, "q", "completed")
+    asst = store.add_assistant_message(turn["id"], conv["id"], uid, "", None, None)
+    assert asst["run_id"] is None
+    run = store.start_run(
+        thread_id=conv["id"], turn_id=turn["id"], message_id=asst["id"],
+        user_id=uid, module="chat", agent_id="a", model="m",
+    )
+    # 回填前 message.run_id 仍为 NULL（真库）
+    assert db.get_message(uid, asst["id"])["run_id"] is None
+    updated = store.set_message_run_id(uid, asst["id"], run["id"])
+    assert updated["run_id"] == run["id"]
+    assert db.get_message(uid, asst["id"])["run_id"] == run["id"]
+    with pytest.raises(OwnershipError):
+        store.set_message_run_id("u_other", asst["id"], run["id"])
+
+
+def test_run_lifecycle(store_and_db):
+    """start_run → finish_run：status/latency/finished_at/tokens/error 持久化。"""
+    store, db = store_and_db
+    uid = "u_run"
+    _, _, _, asst, run = _begin_chat_turn(store, uid)
+    # 起始态 pending，finished_at 为 NULL
+    assert db.get_run(uid, run["id"])["status"] == "pending"
+    assert db.get_run(uid, run["id"])["finished_at"] is None
+    # finish_run 写 status + tokens + latency + finished_at
+    finished = store.finish_run(
+        user_id=uid, run_id=run["id"], status="completed",
+        input_tokens=10, output_tokens=20, total_tokens=30, latency_ms=420,
+        langsmith_run_id="ls-123",
+    )
+    assert finished["status"] == "completed"
+    assert finished["input_tokens"] == 10
+    assert finished["output_tokens"] == 20
+    assert finished["total_tokens"] == 30
+    assert finished["latency_ms"] == 420
+    assert finished["langsmith_run_id"] == "ls-123"
+    assert finished["finished_at"] is not None
+    persisted = db.get_run(uid, run["id"])
+    assert persisted["status"] == "completed"
+    assert persisted["latency_ms"] == 420
+    assert persisted["finished_at"] is not None
+
+
+def test_run_failure_persisted(store_and_db):
+    """finish_run 失败路径：status + error_* 字段落库。"""
+    store, db = store_and_db
+    uid = "u_fail"
+    _, _, _, _, run = _begin_chat_turn(store, uid)
+    store.finish_run(
+        user_id=uid, run_id=run["id"], status="failed",
+        error_type="AgentError", error_code="E1", error_summary="boom",
+    )
+    persisted = db.get_run(uid, run["id"])
+    assert persisted["status"] == "failed"
+    assert persisted["error_type"] == "AgentError"
+    assert persisted["error_code"] == "E1"
+    assert persisted["error_summary"] == "boom"
+    assert persisted["finished_at"] is not None
+    with pytest.raises(OwnershipError):
+        store.finish_run(user_id="u_other", run_id=run["id"], status="completed")
