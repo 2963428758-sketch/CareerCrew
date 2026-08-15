@@ -2,7 +2,7 @@
 
 /** NDJSON 事件（所有流式端点统一协议）。 */
 export type StreamEvent =
-  | { type: "stage"; stage: "match" | "resume" | "questions" | "consult" | "synthesis" | "knowledge" }
+  | { type: "stage"; stage: "match" | "resume" | "questions" | "consult" | "synthesis" | "knowledge" | "regenerate" }
   | { type: "chunk"; text: string; agent?: string }
   | { type: "dispatch"; round: number; agents: string[]; tasks?: Record<string, string> }
   | { type: "agent_start"; agent: string; round?: number }
@@ -14,6 +14,8 @@ export type StreamEvent =
       thread_id?: string; turn_id?: string; message_id?: string; run_id?: string;
       model?: string; prompt_version?: string; agent_version?: string; status?: string;
       legacy_thread_id?: string;
+      /** §19 regenerate：本消息重新生成自哪条 message_id。 */
+      regenerated_from_message_id?: string;
     }
   | { type: "error"; message: string }
   | { type: "input_request"; message: string; fields: ConsultInputField[] }
@@ -32,6 +34,8 @@ export interface ChatMessage {
   messageId?: string
   turnId?: string
   runId?: string
+  /** §19 regenerate：本消息重新生成自哪条 message_id（版本链）。 */
+  regeneratedFromMessageId?: string
 }
 
 /** 单条回答反馈（绑定 assistant message id）。 */

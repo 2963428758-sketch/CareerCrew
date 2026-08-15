@@ -11,11 +11,14 @@ import type { MessageFeedback } from "@/types"
 export function FeedbackArea({
   messageId,
   content,
+  completed = true,
   onRegenerate,
   onFeedback,
 }: {
   messageId: string
   content: string
+  /** 是否为已完成回答；false（streaming）时隐藏 👍/👎/↻（§17）。 */
+  completed?: boolean
   onRegenerate?: () => void
   onFeedback?: (fb: MessageFeedback) => void
 }) {
@@ -53,6 +56,8 @@ export function FeedbackArea({
       <MessageActions
         content={content}
         feedback={feedback}
+        completed={completed}
+        messageId={messageId}
         onCopy={() => {}}
         onToggleLike={toggleLike}
         onToggleDislike={toggleDislike}

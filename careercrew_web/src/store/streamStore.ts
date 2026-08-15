@@ -1,8 +1,9 @@
 import { create } from "zustand"
-import type { ConsultCall, ConsultInputRequest, KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
+import type { ChatMessage, ConsultCall, ConsultInputRequest, KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
 import { useThreadStore } from "@/store/threadStore"
 import { useChatStore } from "@/store/chatStore"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 /**
  * 每会话（thread_id）独立的流式会话 store（Codex 式并行对话）。
@@ -73,16 +74,19 @@ const thinkTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 interface StreamStoreState {
   sessions: Record<string, StreamSession>
-  start: (threadId: string, endpoint: string, body: Record<string, unknown>) => Promise<void>
+  start: (threadId: string, endpoint: string, body: Record<string, unknown>, opts?: { regenerate?: boolean }) => Promise<void>
+  /** §19：重新生成最后一条完整 assistant 消息（POST /api/messages/{id}/regenerate）。 */
+  regenerate: (threadId: string, messageId: string) => Promise<void>
   stop: (threadId: string) => void
   reset: (threadId: string) => void
   resetAll: () => void
 }
 
-export const useStreamStore = create<StreamStoreState>((set) => ({
+export const useStreamStore = create<StreamStoreState>((set, get) => ({
   sessions: {},
 
-  start: async (threadId, endpoint, body) => {
+  start: async (threadId, endpoint, body, opts) => {
+    const isRegenerate = Boolean(opts?.regenerate)
     // 同一会话重新发送：只终止该会话自己的旧请求，不影响其他会话
     controllers.get(threadId)?.abort()
     useThreadStore.getState().clearCompletedUnread(threadId)
@@ -135,8 +139,7 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
       })
 
       if (!resp.ok) {
-        const text = await resp.text().catch(() => "")
-        throw new Error(`HTTP ${resp.status}: ${text}`)
+        throw new Error(await apiErrorText(resp, "请求失败，请稍后重试"))
       }
 
       const reader = resp.body?.getReader()
@@ -145,6 +148,8 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
       const decoder = new TextDecoder()
       let buffer = ""
       let textAccum = ""
+      /** 流内已收到 error 事件：后续 done 事件不得覆盖错误状态 */
+      let failed = false
       const agentAccum: Record<string, string> = {}
       const eventsAccum: StreamEvent[] = []
 
@@ -182,6 +187,8 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
               disarmThinking()
               armThinking()
             } else if (evt.type === "done") {
+              // 已出错：忽略 done（后端异常路径可能补发空 done，避免错误提示被覆盖）
+              if (failed) continue
               const p: Partial<StreamSession> = {
                 doneContent: evt.content,
                 status: "done",
@@ -207,16 +214,36 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
               const msgs = [...chat.messages]
               for (let i = msgs.length - 1; i >= 0; i--) {
                 if (msgs[i].role === "assistant") {
-                  msgs[i] = {
+                  const patched: ChatMessage = {
                     ...msgs[i],
                     ...(evt.message_id ? { messageId: evt.message_id } : {}),
                     ...(evt.turn_id ? { turnId: evt.turn_id } : {}),
                     ...(evt.run_id ? { runId: evt.run_id } : {}),
+                    ...(evt.regenerated_from_message_id ? { regeneratedFromMessageId: evt.regenerated_from_message_id } : {}),
+                    content: evt.content,
+                    streaming: false,
+                  }
+                  if (isRegenerate) {
+                    // §19：regenerate 不覆盖旧消息——把新版本作为独立 ChatMessage 追加，
+                    // 与旧版本共享 turnId；groupTurns 按 turnId 把同 turn 的 assistant 归入 versions。
+                    // 若最后一个 assistant 是本次流占位符（空内容、无 messageId），则原位替换为
+                    // 新版本；否则追加新版本。旧消息对象从不 mutate。
+                    const isPlaceholder = !msgs[i].content && !msgs[i].messageId
+                    if (isPlaceholder) {
+                      const patchedMsgs = [...msgs]
+                      patchedMsgs[i] = patched
+                      useChatStore.setState({ messages: patchedMsgs })
+                    } else {
+                      useChatStore.setState({ messages: [...msgs, patched] })
+                    }
+                  } else {
+                    const patchedMsgs = [...msgs]
+                    patchedMsgs[i] = patched
+                    useChatStore.setState({ messages: patchedMsgs })
                   }
                   break
                 }
               }
-              useChatStore.setState({ messages: msgs })
               // legacy remap：done 返回 UUID thread_id 与本地 id 不同 → 更新 chatStore + threadStore，
               // 后续请求用新 UUID；同时把流式 session 重新挂到新 id（否则页面按新 id 查不到该流）。
               if (evt.thread_id && evt.thread_id !== threadId) {
@@ -258,6 +285,7 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
             } else if (evt.type === "input_request") {
               patchS({ pendingInput: { message: evt.message, fields: evt.fields } })
             } else if (evt.type === "error") {
+              failed = true
               patchS({ errorMsg: evt.message, status: "error" })
             }
           } catch {
@@ -274,7 +302,7 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
         patchS({ status: "idle" })
         return
       }
-      patchS({ errorMsg: (e as Error).message, status: "error" })
+      patchS({ errorMsg: networkErrorText(e, "生成回答失败，请稍后重试"), status: "error" })
     } finally {
       disarmThinking()
       // sessionKey（可能已被 remap 成新 UUID）才是 controller 当前所在 key
@@ -285,6 +313,9 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
   stop: (threadId) => {
     controllers.get(threadId)?.abort()
   },
+
+  regenerate: (threadId, messageId) =>
+    get().start(threadId, `/messages/${encodeURIComponent(messageId)}/regenerate`, {}, { regenerate: true }),
 
   reset: (threadId) => {
     set((s) => ({ sessions: { ...s.sessions, [threadId]: { ...IDLE_SESSION, threadId } } }))

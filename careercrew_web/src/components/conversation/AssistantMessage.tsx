@@ -18,6 +18,8 @@ export function AssistantMessage({
   label,
   color,
   streaming = false,
+  completed = true,
+  stableMessageId,
   thinking = false,
   initializing = false,
   workingText = "正在生成回答…",
@@ -25,6 +27,7 @@ export function AssistantMessage({
   sources,
   contentNode,
   children,
+  versionSwitcher,
   onRegenerate,
   onFeedback,
   className,
@@ -34,6 +37,10 @@ export function AssistantMessage({
   label?: string
   color?: string
   streaming?: boolean
+  /** 是否已完成回答；false 时隐藏 👍/👎/↻（§17）。 */
+  completed?: boolean
+  /** 后端稳定 message_id：More 菜单「复制消息 ID」与 Feedback 绑定（区别于 UI messageId）。 */
+  stableMessageId?: string
   thinking?: boolean
   initializing?: boolean
   workingText?: string
@@ -44,6 +51,8 @@ export function AssistantMessage({
   contentNode?: ReactNode
   /** 正文之后、操作栏之前的附加内容 */
   children?: ReactNode
+  /** 版本切换器（§19.2）：多版本时由上层渲染 `< 1/2 >`。 */
+  versionSwitcher?: ReactNode
   onRegenerate?: () => void
   /** 点赞/点踩（含原因）后回调：父级用于 toast / 上报 */
   onFeedback?: (fb: MessageFeedback) => void
@@ -82,8 +91,15 @@ export function AssistantMessage({
 
       {sources && <Sources sources={sources} />}
       {children}
+      {versionSwitcher}
 
-      <FeedbackArea messageId={messageId} content={content} onRegenerate={onRegenerate} onFeedback={onFeedback} />
+      <FeedbackArea
+        messageId={stableMessageId ?? messageId}
+        content={content}
+        completed={completed}
+        onRegenerate={onRegenerate}
+        onFeedback={onFeedback}
+      />
     </div>
   )
 }
