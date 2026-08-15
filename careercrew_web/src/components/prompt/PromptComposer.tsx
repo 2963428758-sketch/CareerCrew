@@ -28,6 +28,8 @@ interface PromptComposerProps {
   allowEmptySend?: boolean
   /** Codex 工具栏（+ / @ / Tools）：主聊天页开启，其余页面不显示 */
   toolbar?: boolean
+  /** 附件选择区（AttachmentPicker 等），渲染在工具栏上方；页面接线注入（defer 模式）。 */
+  attachments?: ReactNode
   /** 外部引用 textarea（编辑用户消息时聚焦回填） */
   textareaRef?: RefObject<HTMLTextAreaElement | null>
   className?: string
@@ -51,6 +53,7 @@ export function PromptComposer({
   sendLabel,
   allowEmptySend = false,
   toolbar = false,
+  attachments,
   textareaRef,
   className,
 }: PromptComposerProps) {
@@ -131,6 +134,7 @@ export function PromptComposer({
   return (
     <div className={cn("mx-auto w-full max-w-[820px]", className)}>
       {header}
+      {attachments && <div className="mb-2">{attachments}</div>}
       <div className="group/composer relative rounded-[14px] border border-input bg-workspace shadow-prompt transition-colors duration-100 focus-within:border-[var(--border-strong)]">
         {/* 拖拽手柄：按住上下拖调整高度（双击恢复自动） */}
         <Tooltip label="拖动调整输入框高度，双击恢复自动">
