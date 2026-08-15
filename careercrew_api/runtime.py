@@ -160,6 +160,13 @@ class ResourceNotFoundError(LookupError):
     """Authenticated tenant does not own the requested resource."""
 
 
+class RegenerateConflictError(Exception):
+    """regenerate 前置校验失败（非 assistant / 非 completed / 非最后一条 / 不支持的模块）。
+
+    路由映射为 409（区别于 ResourceNotFoundError 的 404）。
+    """
+
+
 class CareerCrewRuntime:
     """进程级重组件单例 + 会话级 agent/JobCycle 工厂。"""
 
@@ -310,13 +317,15 @@ class CareerCrewRuntime:
         return getattr(self.settings.llm, "model", "") or ""
 
     def _begin_chat_turn(self, thread_id: str, user_id: str, module: str,
-                         agent_id: str, user_text: str, title: str | None = None):
+                         agent_id: str, user_text: str, title: str | None = None,
+                         user_metadata: dict | None = None):
         """开启一轮对话（conversation 表四件套），失败不阻断主流程（返回 None）。
 
         prompt_version / agent_version 由 versioning 按 agent_id 计算（T1.5）：
         - 有单一 agent prompt 的入口写 sha256:<64hex>
         - 编排类入口（consult_orchestrator 无单一 prompt）→ agent_id 未注册 → unversioned，
           Phase 2/3 补编排级版本时再换。
+        user_metadata（T1.6）：写入 user 消息 metadata，供 regenerate 忠实重跑。
         """
         from careercrew_api.chat_lifecycle import begin_turn
         from careercrew_core.versioning import agent_version, prompt_version_for_agent
@@ -330,6 +339,7 @@ class CareerCrewRuntime:
                 model=self._conversation_model(), title=title,
                 prompt_version=prompt_version_for_agent(agent_id),
                 agent_version=agent_version(),
+                user_metadata=user_metadata,
             )
         except Exception:
             import logging
@@ -636,6 +646,9 @@ class CareerCrewRuntime:
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="resume", agent_id="resume_advisor",
             user_text=user_text,
+            # T1.6：user content 是截断摘要，完整 jd_text 存 metadata 供 regenerate
+            # 忠实重跑（截断至 5000 字符）。
+            user_metadata={"jd_text": jd_text[:5000]},
         )
         cycle = self.get_cycle(thread_id, user_id)
         try:
@@ -803,6 +816,8 @@ class CareerCrewRuntime:
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
             user_text=question,
+            # T1.6：category/scope 存 user metadata，供 regenerate 忠实重跑（同检索范围）。
+            user_metadata={"category": category, "scope": scope},
         )
         sources: list[dict] = []
         seen: set[str] = set()
@@ -896,6 +911,245 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         return StreamResult(content=content, sources=capped, turn=ctx)
+
+    # ── regenerate（§2.3 / §19 / §34 / §38）──
+
+    def run_regenerate_stream(self, message_id: str, user_id: str,
+                              cb: Callable[[str], None] | None = None,
+                              cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        """重新生成线程最后一条完整 assistant 消息（复用 turn，新 run + 新 message）。
+
+        校验矩阵（失败映射 404/409，见路由）：
+        - 非本人 / 不存在 → ResourceNotFoundError（404）
+        - role != assistant / status != completed / 非版本链最新者 → RegenerateConflictError（409）
+        - module ∈ consult / interview → RegenerateConflictError（第一版不支持，409）
+
+        稳定 ID：turn_id 不变；run_id / assistant_message_id 变；
+        新 message 的 regenerated_from_message_id = 旧 message id（版本链追加）。
+        module/agent_id/model/prompt_version/agent_version 从旧 run 行复用，保证可比性。
+        """
+        return traced_call(
+            self._run_regenerate_stream_impl,
+            name="careercrew.regenerate",
+            run_type="chain",
+            run_metadata={"endpoint": "regenerate"},
+            message_id=message_id,
+            user_id=user_id,
+            cb=cb,
+            cancel_check=cancel_check,
+        )
+
+    def _run_regenerate_stream_impl(self, message_id: str, user_id: str,
+                                    cb: Callable[[str], None] | None = None,
+                                    cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult, begin_regeneration
+
+        store = self.conversation_store
+        self._ensure_heavy()
+
+        msg, thread_id, turn_id, old_run, module, user_msg = self.validate_regenerate(
+            message_id, user_id
+        )
+        ctx = begin_regeneration(
+            store, thread_id=thread_id, turn_id=turn_id, user_id=user_id,
+            module=module or "chat",
+            agent_id=(old_run or {}).get("agent_id") or "unversioned",
+            model=(old_run or {}).get("model") or self._conversation_model(),
+            regenerated_from_message_id=message_id,
+            prompt_version=(old_run or {}).get("prompt_version") or "unversioned",
+            agent_version=(old_run or {}).get("agent_version") or "unversioned",
+        )
+
+        attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="regenerate")
+        ls_run_id = _capture_langsmith_run_id()
+        if cancel_check:
+            cancel_check()
+
+        # ── 6. 按 module 分派 agent 重跑 ──
+        content = ""
+        sources: list[dict] = []
+        try:
+            content, sources, obs = self._dispatch_regenerate(
+                module, thread_id, user_id, user_msg, cb, cancel_check
+            )
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
+        if cancel_check:
+            cancel_check()
+
+        metadata = {"sources": sources} if sources else None
+        self._finish_chat_turn(
+            ctx, content, metadata=metadata,
+            langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
+        if cancel_check:
+            cancel_check()
+        return StreamResult(content=content, sources=sources, turn=ctx)
+
+    def validate_regenerate(self, message_id: str, user_id: str):
+        """regenerate 前置校验（供路由同步 404/409 映射与 run 复用）。
+        
+        返回 (msg, thread_id, turn_id, old_run, module, user_msg)；
+        失败抛 ResourceNotFoundError（404）或 RegenerateConflictError（409）。
+        """
+        store = self.conversation_store
+        self._ensure_heavy()
+
+        msg = store.get_message(user_id, message_id)
+        if msg is None:
+            raise ResourceNotFoundError(f"message {message_id} not found")
+        if msg.get("role") != "assistant":
+            raise RegenerateConflictError("只能重新生成 assistant 消息")
+        if msg.get("status") != "completed":
+            raise RegenerateConflictError("只能重新生成已完成（completed）的消息")
+        if msg.get("deleted_at"):
+            raise RegenerateConflictError("该消息已删除，不可重新生成")
+
+        thread_id = msg["thread_id"]
+        turn_id = msg["turn_id"]
+
+        old_run = store.get_run(user_id, msg.get("run_id") or "") if msg.get("run_id") else None
+        module = (old_run or {}).get("module") or ""
+        if module in ("consult", "interview"):
+            raise RegenerateConflictError(
+                f"「{module}」模块暂不支持重新生成（第一版仅支持 matcher/resume/chat/knowledge）"
+            )
+
+        if not self._is_latest_assistant_version(store, user_id, thread_id, turn_id, message_id):
+            raise RegenerateConflictError(
+                "只能重新生成当前 turn 的最新 assistant 消息（旧版本不可重新生成）"
+            )
+
+        msgs = store.list_messages(thread_id, user_id)
+        user_msg = next(
+            (m for m in msgs if m["turn_id"] == turn_id and m["role"] == "user"), None
+        )
+        if user_msg is None:
+            raise RegenerateConflictError("该 turn 缺少用户消息，无法重跑")
+
+        return msg, thread_id, turn_id, old_run, module, user_msg
+
+    def _is_latest_assistant_version(self, store, user_id, thread_id, turn_id, message_id) -> bool:
+        """判定 message_id 是否为该 turn 版本链的最新 assistant（无后继指向它）。"""
+        msgs = store.list_messages(thread_id, user_id)
+        for m in msgs:
+            if m["turn_id"] == turn_id and m["role"] == "assistant" \
+                    and m.get("regenerated_from_message_id") == message_id:
+                return False
+        return True
+
+    def _dispatch_regenerate(self, module: str, thread_id: str, user_id: str,
+                             user_msg: dict, cb, cancel_check):
+        """按 module 重跑 agent，返回 (content, sources, obs)。"""
+        question = user_msg["content"]
+        meta = user_msg.get("metadata") or {}
+        ep = self._get_episodic(thread_id, user_id)
+
+        if module == "matcher":
+            cycle = self.get_cycle(thread_id, user_id)
+            cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
+            cycle.run_match(question)
+            lr = getattr(cycle.job_matcher, "last_result", None)
+            content = (getattr(lr, "content", "") or "").strip()
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            return content, [], obs
+
+        if module == "resume":
+            # jd_text 保真存储于 user metadata（截断摘要只在 user content），如实重跑。
+            jd_text = meta.get("jd_text") or question
+            cycle = self.get_cycle(thread_id, user_id)
+            cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
+            cycle.run_resume(jd_text)
+            lr = getattr(cycle.resume_advisor, "last_result", None)
+            content = (getattr(lr, "content", "") or "").strip()
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            return content, [], obs
+
+        if module == "chat":
+            from langchain_core.messages import HumanMessage
+
+            agent = self.new_career_planner(cb, episodic=ep)
+            state = {
+                "thread_id": thread_id, "user_id": user_id, "stage": "planning",
+                "user_intent": question,
+                "messages": [HumanMessage(content=question)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            }
+            agent.run(state)
+            lr = agent.last_result
+            content = (getattr(lr, "content", "") or "").strip() if lr else ""
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            return content, [], obs
+
+        if module == "knowledge":
+            from langchain_core.messages import HumanMessage
+
+            category = meta.get("category") or ""
+            scope = meta.get("scope") or "all"
+            sources: list[dict] = []
+            seen: set[str] = set()
+
+            def _sink(r):
+                if cancel_check:
+                    cancel_check()
+                if r.id in seen:
+                    return
+                seen.add(r.id)
+                sources.append({
+                    "doc": str(r.metadata.get("doc", "")),
+                    "source": str(r.metadata.get("source", "")),
+                    "score": round(float(r.score), 3),
+                    "text": r.text,
+                    "image_path": r.image_path or "",
+                    "page": r.page,
+                    "category": str(r.metadata.get("category", "")),
+                })
+
+            agent = self.new_knowledge_advisor(
+                cb, episodic=ep, rag_sink=_sink, category=category,
+                knowledge_access_filters=self._knowledge_scope_filters(user_id, scope),
+            )
+            state = {
+                "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
+                "user_intent": question,
+                "messages": [HumanMessage(content=question)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            }
+            agent.run(state)
+            lr = agent.last_result
+            content = (getattr(lr, "content", "") or "").strip()
+            capped = _cap_sources(
+                sources, limit=3, min_score=0.1,
+                keep_paths=_read_image_paths(lr),
+            )
+            # 观测检索行（与首次路径一致）
+            capped_docs = {_norm_path(s.get("image_path") or "") or s.get("source"): s for s in capped}
+            retrievals = []
+            for i, s in enumerate(sources):
+                key = _norm_path(s.get("image_path") or "") or s.get("source")
+                retrievals.append({
+                    "query_index": i,
+                    "query_text_redacted": question,
+                    "scope": scope,
+                    "document_id": str(s.get("doc") or "") or None,
+                    "chunk_id": None,
+                    "recall_score": float(s.get("score") or 0.0),
+                    "used_in_final_context": key in capped_docs,
+                })
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = retrievals
+            return content, capped, obs
+
+        raise RegenerateConflictError(
+            f"「{module}」模块暂不支持重新生成（第一版仅支持 matcher/resume/chat/knowledge）"
+        )
 
     def _thread_history_messages(self, user_id: str, thread_id: str,
                                  max_rounds: int = 10,

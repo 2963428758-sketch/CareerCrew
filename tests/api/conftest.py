@@ -256,6 +256,87 @@ class FakeRuntime:
         )
         return StreamResult(content=output, sources=sources, turn=ctx)
 
+    # ── T1.6 regenerate ──
+
+    def validate_regenerate(self, message_id: str, user_id: str):
+        from careercrew_api.runtime import RegenerateConflictError, ResourceNotFoundError
+
+        store = self.conversation_store
+        msg = store.get_message(user_id, message_id)
+        if msg is None:
+            raise ResourceNotFoundError(f"message {message_id} not found")
+        if msg.get("role") != "assistant":
+            raise RegenerateConflictError("只能重新生成 assistant 消息")
+        if msg.get("status") != "completed":
+            raise RegenerateConflictError("只能重新生成已完成（completed）的消息")
+        thread_id = msg["thread_id"]
+        turn_id = msg["turn_id"]
+        old_run = store.get_run(user_id, msg.get("run_id") or "") if msg.get("run_id") else None
+        module = (old_run or {}).get("module") or ""
+        if module in ("consult", "interview"):
+            raise RegenerateConflictError(
+                f"「{module}」模块暂不支持重新生成（第一版仅支持 matcher/resume/chat/knowledge）"
+            )
+        if not self._is_latest_assistant_version(store, user_id, thread_id, turn_id, message_id):
+            raise RegenerateConflictError("只能重新生成当前 turn 的最新 assistant 消息（旧版本不可重新生成）")
+        msgs = store.list_messages(thread_id, user_id)
+        user_msg = next((m for m in msgs if m["turn_id"] == turn_id and m["role"] == "user"), None)
+        if user_msg is None:
+            raise RegenerateConflictError("该 turn 缺少用户消息，无法重跑")
+        return msg, thread_id, turn_id, old_run, module, user_msg
+
+    def _is_latest_assistant_version(self, store, user_id, thread_id, turn_id, message_id):
+        for m in store.list_messages(thread_id, user_id):
+            if m["turn_id"] == turn_id and m["role"] == "assistant" \
+                    and m.get("regenerated_from_message_id") == message_id:
+                return False
+        return True
+
+    def run_regenerate_stream(self, message_id: str, user_id: str,
+                              cb: Callable[[str], None] | None = None,
+                              cancel_check: Callable[[], None] | None = None):
+        from careercrew_api.chat_lifecycle import StreamResult, begin_regeneration
+
+        store = self.conversation_store
+        msg, thread_id, turn_id, old_run, module, user_msg = self.validate_regenerate(message_id, user_id)
+        ctx = begin_regeneration(
+            store, thread_id=thread_id, turn_id=turn_id, user_id=user_id,
+            module=module or "chat",
+            agent_id=(old_run or {}).get("agent_id") or "unversioned",
+            model=self._conversation_model(),
+            regenerated_from_message_id=message_id,
+            prompt_version=(old_run or {}).get("prompt_version") or "unversioned",
+            agent_version=(old_run or {}).get("agent_version") or "unversioned",
+        )
+        if cancel_check:
+            cancel_check()
+        content = getattr(self, f"{module}_output", "") or self.planner_output
+        if cb:
+            cb(content)
+        metadata = None
+        if module == "knowledge":
+            metadata = {"sources": self.knowledge_sources}
+        self._finish_chat_turn(ctx, content, metadata=metadata)
+        return StreamResult(content=content, turn=ctx)
+
+    def _knowledge_scope_filters(self, user_id: str, scope: str) -> dict:
+        if scope == "public":
+            return {"visibility": "public"}
+        if scope == "private":
+            return {"owner_user_id": user_id}
+        return {"__access_user": user_id}
+
+    def new_knowledge_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
+                               rag_sink=None, category: str = "",
+                               knowledge_access_filters: dict | None = None):
+        class FakeAgent:
+            def __init__(self_inner):
+                self_inner.last_result = type("R", (), {"content": self.knowledge_output})()
+            def run(self_inner, state):
+                if cb:
+                    cb(self.knowledge_output)
+        return FakeAgent()
+
     def record_thread_messages(self, user_id: str, thread_id: str,
                                user_text: str, agent_text: str,
                                module: str = "chat",

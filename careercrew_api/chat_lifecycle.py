@@ -82,15 +82,21 @@ def begin_turn(
     title: str | None = None,
     prompt_version: str = "unversioned",
     agent_version: str = "unversioned",
+    user_metadata: dict | None = None,
 ) -> TurnContext:
     """开启一轮对话：ensure_conversation → next_turn → user message(completed)
-    → assistant message(streaming) → start_run(streaming)，返回稳定 ID 上下文。"""
+    → assistant message(streaming) → start_run(streaming)，返回稳定 ID 上下文。
+
+    user_metadata（可选富结构，如知识库 category/scope、简历 jd_text）写入 user
+    消息的 metadata 列，供 regenerate 忠实重跑（T1.6）；None=不写。
+    """
     conv = store.ensure_conversation(
         thread_id, user_id, module, title=title, retrieval_scope=None
     )
     turn = store.next_turn(thread_id, user_id)
     user_msg = store.add_user_message(
-        turn["id"], turn["thread_id"], user_id, user_text, "completed"
+        turn["id"], turn["thread_id"], user_id, user_text, "completed",
+        metadata=user_metadata,
     )
     asst_msg = store.add_assistant_message(
         turn["id"], turn["thread_id"], user_id, "", None, None
@@ -111,6 +117,53 @@ def begin_turn(
         legacy_thread_id=conv.get("legacy_thread_id"),
         turn_id=turn["id"],
         user_message_id=user_msg["id"],
+        assistant_message_id=asst_msg["id"],
+        run_id=run["id"],
+        module=module,
+        agent_id=agent_id,
+        model=model,
+        prompt_version=prompt_version,
+        agent_version=agent_version,
+        user_id=user_id,
+    )
+
+
+def begin_regeneration(
+    store: ConversationStore,
+    *,
+    thread_id: str,
+    turn_id: str,
+    user_id: str,
+    module: str,
+    agent_id: str,
+    model: str,
+    regenerated_from_message_id: str,
+    prompt_version: str = "unversioned",
+    agent_version: str = "unversioned",
+) -> TurnContext:
+    """开启一轮 regenerate：复用既有 turn（不新建 turn/用户消息），
+    新建 assistant message（streaming，regenerated_from_message_id=旧 id）+ 新 run。
+
+    与 begin_turn 的差异：无 ensure_conversation / next_turn / add_user_message；
+    module/agent_id/model/版本串由调用方从旧 run 行读取，保证可比性（§2.3 / §45）。
+    """
+    asst_msg = store.add_assistant_message(
+        turn_id, thread_id, user_id, "", None, regenerated_from_message_id
+    )
+    store.set_message_status(user_id, asst_msg["id"], "streaming")
+    run = store.start_run(
+        thread_id=thread_id, turn_id=turn_id, message_id=asst_msg["id"],
+        user_id=user_id, module=module, agent_id=agent_id, model=model,
+        prompt_version=prompt_version, agent_version=agent_version,
+        status="streaming",
+    )
+    store.set_message_run_id(user_id, asst_msg["id"], run["id"])
+
+    return TurnContext(
+        thread_id=thread_id,
+        legacy_thread_id=None,
+        turn_id=turn_id,
+        user_message_id="",  # regenerate 无新用户消息，保留位（无用户消息 id 上下文）
         assistant_message_id=asst_msg["id"],
         run_id=run["id"],
         module=module,
