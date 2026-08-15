@@ -197,6 +197,7 @@ class CareerCrewRuntime:
         self.memory_injector = None   # 自动注入
         self._episodic_vector_store = None
         self.conversation_store = None  # 对话核心存储（Phase 1 Source of Truth）
+        self.attachment_store = None   # 会话附件存储（Phase 3）
 
     # ── 重组件初始化 ──
 
@@ -292,6 +293,13 @@ class CareerCrewRuntime:
             from careercrew_core.conversation.store import ConversationStore
 
             self.conversation_store = ConversationStore(create_conversation_db(settings))
+            # 会话附件存储（chat_attachments 表，与 conversation 同库）
+            from careercrew_core.conversation.attachments import (
+                AttachmentStore,
+                create_attachment_db,
+            )
+
+            self.attachment_store = AttachmentStore(create_attachment_db(settings))
             self.episodic = episodic
             self.fact_store = fact_store
             self.policy_store = policy_store

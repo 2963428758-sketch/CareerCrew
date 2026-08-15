@@ -65,9 +65,11 @@ class FakeRuntime:
         from careercrew_core.memory.threads import ThreadStore
         from careercrew_core.conversation.db import FakeConversationDb
         from careercrew_core.conversation.store import ConversationStore
+        from careercrew_core.conversation.attachments import FakeAttachmentDb, AttachmentStore
 
         self.memory_db = FakeMemoryDb()
         self.conversation_store = ConversationStore(FakeConversationDb())
+        self.attachment_store = AttachmentStore(FakeAttachmentDb())
         self.fact_store = SemanticFactStore(self.memory_db, user_id="u_001")
         self.policy_store = MemoryPolicyStore(self.memory_db)
         self.thread_store = ThreadStore(self.memory_db)
