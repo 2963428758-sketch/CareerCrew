@@ -222,6 +222,16 @@ def test_reset_password_and_change_own_password(auth_client):
 
 
 @pytest.mark.web
+def test_refresh_rejects_untrusted_origin(auth_client):
+    _bootstrap(auth_client)
+    auth_client.post("/api/auth/token", json={"username": "admin", "password": PASSWORD})
+    evil = auth_client.post("/api/auth/refresh", headers={"Origin": "http://evil.example"})
+    assert evil.status_code == 403
+    trusted = auth_client.post("/api/auth/refresh", headers={"Origin": "http://localhost:5175"})
+    assert trusted.status_code == 200
+
+
+@pytest.mark.web
 def test_login_lock_returns_429_with_retry_after(auth_client):
     _bootstrap(auth_client)
     for _ in range(5):

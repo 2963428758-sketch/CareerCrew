@@ -5,27 +5,54 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from careercrew_api.auth.middleware import TrustedOriginMiddleware
 from careercrew_api.routers import auth, chat, consult, data, interview, knowledge, resume
 from careercrew_core.state.settings import load_auth_settings
 
 DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """过期/长期吊销刷新会话清理（守护线程，避免阻塞事件循环）。"""
+    from careercrew_api.auth.dependencies import get_auth_service
+
+    stop = threading.Event()
+    interval = max(get_auth_service().settings.cleanup_interval_hours, 1) * 3600
+
+    def _loop() -> None:
+        while not stop.wait(interval):
+            try:
+                get_auth_service().store.delete_expired_refresh_sessions()
+            except Exception:
+                pass  # 清理失败不中断服务；下一轮重试
+
+    thread = threading.Thread(target=_loop, name="refresh-session-cleanup", daemon=True)
+    thread.start()
+    yield
+    stop.set()
+
+
 def create_app() -> FastAPI:
     # 重组件保持惰性初始化，但认证生产配置必须在启动时 fail-fast。
-    load_auth_settings()
-    app = FastAPI(title="CareerCrew API", version="0.1.0")
+    auth_settings = load_auth_settings()
+    app = FastAPI(title="CareerCrew API", version="0.1.0", lifespan=lifespan)
 
     app.add_middleware(
+        TrustedOriginMiddleware, allowed_origins=list(auth_settings.trusted_origins)
+    )
+    app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5175", "http://127.0.0.1:5175"],
+        allow_origins=list(auth_settings.trusted_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
