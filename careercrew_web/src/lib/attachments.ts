@@ -103,7 +103,6 @@ export async function saveAttachmentToKnowledge(
 
 /** save-to-knowledge 的终态（解析/入库结束，前端停止轮询）。 */
 const TERMINAL_STATUSES: ReadonlySet<AttachmentStatus> = new Set([
-  "ready",
   "failed",
   "saved_to_knowledge",
   "deleted",
@@ -112,8 +111,9 @@ const TERMINAL_STATUSES: ReadonlySet<AttachmentStatus> = new Set([
 /**
  * 轮询直到附件的 save-to-knowledge 进入终态。
  *
- * 注意：ready 是「解析成功、入库前」的短暂中间态，后台线程会立刻推进到
- * saved_to_knowledge；把它列为终态可在极端时序下避免无限轮询。
+ * 后端把 parse+vectorize+store 合并为一次调用，不再产出可观测的 ready 中间态
+ * （ready 仅为 DB 契约保留的过渡值），故终态仅为 failed / saved_to_knowledge /
+ * deleted。
  */
 export async function pollSaveToKnowledge(
   threadId: string,

@@ -224,12 +224,13 @@ def test_save_uploaded_pdf_reaches_saved_to_knowledge(attach_client):
     assert row["status"] == "saved_to_knowledge"
     assert row["expires_at"] is None
     assert row["knowledge_document_id"]
-    # 知识库入库调用覆盖：path/owner/visibility/title
+    # 知识库入库调用覆盖：path/owner/visibility/title + category 自动识别（空串）
     assert len(rt.ingest_calls) == 1
     call = rt.ingest_calls[0]
     assert call["user_id"] == "u_001"
     assert call["visibility"] == "private"
     assert call["doc_name"] == "报告.pdf"
+    assert call["category"] == ""  # 空串触发 ingest_document 自动分类（不硬编码 knowledge）
 
 
 def _wait_status(client, thread_id, attachment_id, terminal, timeout=5.0, interval=0.02):
@@ -277,7 +278,7 @@ def test_save_failure_sets_failed_and_parser_error(attach_client):
 
 
 def test_save_failed_can_retry(attach_client):
-    """failed 状态允许重试：failed -> parsing -> saved_to_knowledge。"""
+    """failed 状态允许重试：failed -> parsing -> saved_to_knowledge，且成功清空 parser_error。"""
     client, rt, lay = attach_client
     rt.ingest_error = RuntimeError("第一次失败")
     up = _upload(client).json()
@@ -291,6 +292,29 @@ def test_save_failed_can_retry(attach_client):
     row = client.get("/api/chat/attachments", params={"thread_id": "t-1"}).json()[0]
     assert row["status"] == "saved_to_knowledge"
     assert row["expires_at"] is None
+    # 成功重试后不得残留上一次失败的 parser_error
+    assert row["parser_error"] is None
+
+
+def test_save_retry_success_clears_stale_parser_error(attach_client):
+    """important-3 回归：失败（parser_error 已写）→ 重试成功 → GET 无 parser_error。"""
+    client, rt, lay = attach_client
+    up = _upload(client).json()
+    # 第一次：注入解析异常 → failed + parser_error
+    rt.ingest_error = RuntimeError("第一次解析失败")
+    client.post(f"/api/chat/attachments/{up['id']}/save-to-knowledge")
+    _wait_status(client, "t-1", up["id"], {"failed"}, timeout=5.0)
+    row = client.get("/api/chat/attachments", params={"thread_id": "t-1"}).json()[0]
+    assert row["status"] == "failed"
+    assert row["parser_error"] is not None
+
+    # 第二次：清除异常 → 成功，parser_error 必须被清空
+    rt.ingest_error = None
+    client.post(f"/api/chat/attachments/{up['id']}/save-to-knowledge")
+    _wait_status(client, "t-1", up["id"], {"saved_to_knowledge"}, timeout=5.0)
+    row = client.get("/api/chat/attachments", params={"thread_id": "t-1"}).json()[0]
+    assert row["status"] == "saved_to_knowledge"
+    assert row["parser_error"] is None
 
 
 def test_save_ready_can_be_saved(attach_client):

@@ -36,7 +36,8 @@ router = APIRouter()
 # 二进制类（pdf/docx/pptx/xlsx/png/jpg/jpeg）走 runtime.ingest_pipeline（MinerU 本地/API）。
 _TEXT_EXTS = {".md", ".markdown", ".txt"}
 
-# 允许发起 save-to-knowledge 的前置状态（failed 允许重试；ready 已解析未入库可直接入库）。
+# 允许发起 save-to-knowledge 的前置状态（failed 允许重试；ready 为契约保留的
+# 过渡值——本实现不产出可观测的 ready，但历史/外部写入的 ready 行仍可直接入库）。
 _SAVEABLE_STATUSES = {"uploaded", "ready", "failed"}
 
 # 可注入的解析+入库执行函数（生产默认委托 runtime.ingest_document，测试注入 fake 断点）。
@@ -217,7 +218,8 @@ def _default_parse_and_ingest(
     """默认解析+入库：md/txt 文本直读，二进制走 MinerU 管线（复用 runtime.ingest_document）。
 
     knowledge 文档以附件 UUID 为 doc_id（服务端生成，稳定幂等），title=original_filename，
-    owner=当前用户、visibility=private。返回 {knowledge_document_id, doc_id, points}。
+    owner=当前用户、visibility=private、category 自动识别（category=""）。返回
+    {knowledge_document_id, doc_id, points}。
     """
     doc_id = attachment_id  # 服务端生成的稳定 UUID，避免用原始文件名（可能含中文/路径符）
     # output_dir：按用户/附件隔离的解析产物目录（与 knowledge.py 上传端点对齐）
@@ -226,7 +228,10 @@ def _default_parse_and_ingest(
         str(disk_path),
         user_id=user_id,
         progress_cb=None,
-        category="knowledge",
+        # category="" 触发自动分类：ingest_document 内部按 doc_name（原文件名）
+        # 调用 category_for_doc 识别（resume/knowledge/interview），与 knowledge.py
+        # 上传端点一致——chat 附件（含简历 PDF）不被硬编码成 "knowledge"。
+        category="",
         output_dir=str(output_dir),
         doc_name=filename,
         visibility="private",
@@ -242,9 +247,13 @@ def _default_parse_and_ingest(
 def _run_save_job(rt: CareerCrewRuntime, user_id: str, attachment_id: str) -> None:
     """后台线程：解析+入库并更新附件状态机（失败不阻塞、不重抛到请求方）。
 
-    uploaded/ready/failed -> parsing（请求方已写入）-> ready（解析成功入库前）
-    -> saved_to_knowledge + knowledge_document_id + expires_at=NULL；
-    任一异常 -> failed + parser_error。
+    uploaded/ready/failed -> parsing（请求方已写入）-> saved_to_knowledge +
+    knowledge_document_id + expires_at=NULL；任一异常 -> failed + parser_error。
+
+    注意：ingest_document 把 parse+vectorize+store 合并为一次调用，不存在可观测的
+    「解析成功、入库前」中间态，故不再写 ready（ready 仅为契约保留的过渡值，
+    见下方状态机注释）。成功时显式清空 parser_error，避免上一次失败重试成功后
+    残留过期错误。
     """
     try:
         row = rt.attachment_store.get(user_id, attachment_id)
@@ -258,11 +267,15 @@ def _run_save_job(rt: CareerCrewRuntime, user_id: str, attachment_id: str) -> No
             rt, disk_path, user_id, row["original_filename"], attachment_id
         )
         doc_id = result.get("knowledge_document_id", attachment_id)
-        # 解析成功、入库前：状态进入 ready（随后立即 mark_saved 置 saved_to_knowledge）
-        rt.attachment_store.update_status(user_id, attachment_id, "ready",
-                                          parser_type=_parser_type_for(row["original_filename"]))
+        # 成功路径：清除 parser_error（重试场景）并进入保存终态。
         rt.attachment_store.mark_saved(
             attachment_id, user_id, knowledge_document_id=str(doc_id)
+        )
+        rt.attachment_store.update_status(
+            user_id, attachment_id, "saved_to_knowledge",
+            parser_error=None,
+            parser_type=_parser_type_for(row["original_filename"]),
+            knowledge_document_id=str(doc_id),
         )
     except Exception as e:  # noqa: BLE001 - 解析/入库错误统一收口到 parser_error
         from careercrew_api.sse import friendly_error
@@ -290,7 +303,7 @@ def save_to_knowledge(
 
     - 所有权校验（404）；状态非 uploaded/ready/failed → 409（saved_to_knowledge 幂等拒绝）。
     - 立即置 parsing 并返回 202 {status:"parsing"}；后台线程执行解析+入库：
-      成功 → ready → saved_to_knowledge + knowledge_document_id + expires_at=NULL；
+      成功 → saved_to_knowledge + knowledge_document_id + expires_at=NULL + 清空 parser_error；
       失败 → failed + parser_error（可重试）。
     """
     user_id = current_user["id"]

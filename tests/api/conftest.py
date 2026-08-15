@@ -619,7 +619,7 @@ class FakeRuntime:
 
         self.ingest_calls.append({"path": path, "user_id": user_id,
                                   "output_dir": output_dir, "doc_name": doc_name,
-                                  "visibility": visibility})
+                                  "visibility": visibility, "category": category})
         if self.ingest_error:
             raise self.ingest_error
         if progress_cb:

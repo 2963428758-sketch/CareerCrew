@@ -154,14 +154,22 @@ describe("pollSaveToKnowledge（轮询）", () => {
     expect(apiFetch.mock.calls.length).toBe(3)
   })
 
-  it("ready（解析成功未入库）也视为终态避免死循环", async () => {
+  it("ready 非终态：继续轮询直到 saved_to_knowledge", async () => {
+    // ready 是契约保留的过渡值，不再视为终态，轮询须继续直到真实终态。
     const ready = { ...ATTACHMENT, status: "ready" as const }
-    apiFetch.mockResolvedValue(jsonResponse([ready]))
-    const result = await pollSaveToKnowledge("t-1", "att-1", {
+    const saved = { ...ATTACHMENT, status: "saved_to_knowledge" as const }
+    apiFetch
+      .mockResolvedValueOnce(jsonResponse([ready]))
+      .mockResolvedValue(jsonResponse([saved]))
+
+    const promise = pollSaveToKnowledge("t-1", "att-1", {
       intervalMs: 100,
       timeoutMs: 1000,
     })
-    expect(result.status).toBe("ready")
+    await vi.advanceTimersByTimeAsync(200)
+    const result = await promise
+    expect(result.status).toBe("saved_to_knowledge")
+    expect(apiFetch.mock.calls.length).toBe(2)
   })
 
   it("超时后抛出解析超时", async () => {

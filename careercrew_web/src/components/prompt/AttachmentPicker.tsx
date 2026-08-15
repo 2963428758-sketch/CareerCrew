@@ -115,7 +115,7 @@ export function AttachmentPicker({
     setError(null)
     try {
       await saveAttachmentToKnowledge(att.id)
-      // 异步：轮询直到终态（saved_to_knowledge / failed / ready / deleted）
+      // 异步：轮询直到终态（saved_to_knowledge / failed / deleted）
       const final = await pollSaveToKnowledge(threadId, att.id)
       // 用终态原位刷新本地列表，保证展示服务器最新状态
       emit(attachments.map((a) => (a.id === att.id ? final : a)))
