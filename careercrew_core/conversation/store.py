@@ -127,12 +127,14 @@ class ConversationStore:
     # ── messages ──
 
     def add_user_message(
-        self, turn_id: str, thread_id: str, user_id: str, content: str, status: str
+        self, turn_id: str, thread_id: str, user_id: str, content: str, status: str,
+        metadata: dict | None = None,
     ) -> dict:
         conv = self._require_owned(thread_id, user_id)
         msg_id = str(uuid7())
         return self._db.insert_message(
-            msg_id, conv["id"], turn_id, user_id, "user", content, None, None, status
+            msg_id, conv["id"], turn_id, user_id, "user", content, None, None,
+            status, metadata,
         )
 
     def add_assistant_message(
@@ -189,6 +191,10 @@ class ConversationStore:
     def list_messages(self, thread_id: str, user_id: str) -> list[dict]:
         conv = self._require_owned(thread_id, user_id)
         return self._db.list_messages(user_id, conv["id"])
+
+    def get_message(self, user_id: str, message_id: str) -> dict | None:
+        """按 user_id 取单条消息；不存在 / 所有权不匹配返回 None（跨用户视为不存在）。"""
+        return self._db.get_message(user_id, message_id)
 
     def list_message_versions(self, message_id: str, user_id: str) -> list[dict]:
         """同一 turn 的 assistant 版本链（root -> leaf，沿 regenerated_from 回溯）。"""
@@ -271,6 +277,20 @@ class ConversationStore:
         if error_summary is not None:
             fields["error_summary"] = error_summary
         return self._db.update_run(user_id, run_id, fields)
+
+    def get_run(self, user_id: str, run_id: str) -> dict | None:
+        """按 user_id 取 run 行；不存在 / 所有权不匹配返回 None（跨用户视为不存在）。"""
+        return self._db.get_run(user_id, run_id)
+
+    # ── regeneration idempotency ──
+
+    def get_regeneration(self, user_id: str, key: str) -> str | None:
+        """取某 (user_id, key) 首次 regenerate 生成的 message_id；无则 None。"""
+        return self._db.get_regeneration(user_id, key)
+
+    def create_regeneration(self, user_id: str, key: str, message_id: str) -> str | None:
+        """登记一次 regenerate 的幂等键；已存在返回 None（调用方复用首次结果）。"""
+        return self._db.create_regeneration(user_id, key, message_id)
 
     # ── retrievals / tool calls ──
 

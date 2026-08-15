@@ -119,6 +119,7 @@ class ConversationDb(ABC):
         run_id: str | None,
         regenerated_from_message_id: str | None,
         status: str,
+        metadata: dict | None = None,
     ) -> dict: ...
 
     @abstractmethod
@@ -146,6 +147,14 @@ class ConversationDb(ABC):
 
     @abstractmethod
     def get_run(self, user_id: str, run_id: str) -> dict | None: ...
+
+    # ── regeneration idempotency ──
+
+    @abstractmethod
+    def get_regeneration(self, user_id: str, key: str) -> str | None: ...
+
+    @abstractmethod
+    def create_regeneration(self, user_id: str, key: str, message_id: str) -> str | None: ...
 
     @abstractmethod
     def update_run(self, user_id: str, run_id: str, fields: dict) -> dict: ...
@@ -255,6 +264,13 @@ class PostgresConversationDb(ConversationDb):
                 "hitl_status VARCHAR(30), error_type VARCHAR(100), error_summary TEXT, "
                 "started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, "
                 "created_at TIMESTAMPTZ NOT NULL)"
+            )
+            # regenerate 幂等表（§38）：同 (user_id, key) 唯一，二次请求复用首次结果。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS regeneration_keys ("
+                "user_id VARCHAR(64) NOT NULL, key VARCHAR(200) NOT NULL, "
+                "message_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL, "
+                "UNIQUE(user_id, key))"
             )
             # legacy thread_id 映射（现状：前端用 `t-${Date.now()}` 非 UUID 线程 ID）。
             # 追加在方案 DDL 之后、幂等迁移添加；历史行回退 NULL。
@@ -383,14 +399,15 @@ class PostgresConversationDb(ConversationDb):
 
     @_synchronized
     def insert_message(self, message_id, thread_id, turn_id, user_id, role, content,
-                       run_id, regenerated_from_message_id, status) -> dict:
+                       run_id, regenerated_from_message_id, status, metadata=None) -> dict:
         with self._connect() as conn, conn.transaction():
             conn.execute(
                 "INSERT INTO messages (id, thread_id, turn_id, user_id, role, content, "
-                "run_id, regenerated_from_message_id, status, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "run_id, regenerated_from_message_id, status, metadata, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
                 (message_id, thread_id, turn_id, user_id, role, content, run_id,
-                 regenerated_from_message_id, status, _now()),
+                 regenerated_from_message_id, status,
+                 _json_dumps(metadata) if metadata is not None else None, _now()),
             )
         return self.get_message(user_id, message_id) or {}
 
@@ -516,6 +533,34 @@ class PostgresConversationDb(ConversationDb):
             )
         return self.get_run(user_id, run_id) or {}
 
+    # ── regeneration idempotency ──
+
+    @_synchronized
+    def get_regeneration(self, user_id, key) -> str | None:
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "SELECT message_id FROM regeneration_keys WHERE user_id=%s AND key=%s",
+                (user_id, key),
+            ).fetchone()
+        return str(row["message_id"]) if row else None
+
+    @_synchronized
+    def create_regeneration(self, user_id, key, message_id) -> str | None:
+        with self._connect() as conn, conn.transaction():
+            try:
+                conn.execute(
+                    "INSERT INTO regeneration_keys (user_id, key, message_id, created_at) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (user_id, key, message_id, _now()),
+                )
+            except Exception as err:
+                if _is_unique_violation(err):
+                    # 幂等命中：已存在同 (user_id, key)，返回 None（调用方用
+                    # get_regeneration 复用首次结果；与 Fake 实现/契约一致）。
+                    return None
+                raise
+        return message_id
+
     # ── retrievals / tool calls ──
 
     @_synchronized
@@ -570,6 +615,7 @@ class FakeConversationDb(ConversationDb):
         self._runs: dict[str, dict] = {}
         self._retrievals: dict[str, dict] = {}
         self._tool_calls: dict[str, dict] = {}
+        self._regenerations: dict[tuple[str, str], str] = {}
 
     # ── conversations ──
 
@@ -647,13 +693,13 @@ class FakeConversationDb(ConversationDb):
     # ── messages ──
 
     def insert_message(self, message_id, thread_id, turn_id, user_id, role, content,
-                       run_id, regenerated_from_message_id, status) -> dict:
+                       run_id, regenerated_from_message_id, status, metadata=None) -> dict:
         row = {
             "id": message_id, "thread_id": thread_id, "turn_id": turn_id,
             "user_id": user_id, "role": role, "content": content, "run_id": run_id,
             "regenerated_from_message_id": regenerated_from_message_id,
             "status": status, "created_at": _now(), "completed_at": None,
-            "deleted_at": None, "metadata": None,
+            "deleted_at": None, "metadata": metadata,
         }
         self._messages[message_id] = row
         return dict(row)
@@ -726,6 +772,18 @@ class FakeConversationDb(ConversationDb):
         if row and row["user_id"] == user_id:
             row.update(fields)
         return self.get_run(user_id, run_id) or {}
+
+    # ── regeneration idempotency ──
+
+    def get_regeneration(self, user_id, key) -> str | None:
+        return self._regenerations.get((user_id, key))
+
+    def create_regeneration(self, user_id, key, message_id) -> str | None:
+        k = (user_id, key)
+        if k in self._regenerations:
+            return None  # 冲突：已存在（路由据此复用首次结果）
+        self._regenerations[k] = message_id
+        return message_id
 
     # ── retrievals / tool calls ──
 
