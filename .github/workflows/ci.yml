@@ -50,6 +50,8 @@ jobs:
       - name: API tests (FakeRuntime) with coverage
         env:
           SILICONFLOW_API_KEY: "sk-test-ci-dummy"
+          # 新 auth 校验要求 DSN（load_auth_settings 强制）；api 测试用 FakeAccountStore，不会真实连接
+          DATABASE_URL: "postgresql://careercrew:careercrew@localhost:5432/careercrew"
         run: |
           pytest -q tests/api --cov=careercrew_api --cov=careercrew_core --cov-report=xml
       - name: Upload coverage
