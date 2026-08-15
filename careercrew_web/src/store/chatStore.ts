@@ -11,6 +11,7 @@ interface ChatState {
   threadNonce: number
   addMessage: (msg: ChatMessage) => void
   updateLastAssistant: (content: string) => void
+  removeLastEmptyAssistant: () => void
   setThreadId: (id: string) => void
   setSelectedJd: (jd: string) => void
   setLastMatchResult: (content: string) => void
@@ -42,6 +43,17 @@ export const useChatStore = create<ChatState>((set) => ({
         }
       }
       return { messages: msgs }
+    }),
+
+  removeLastEmptyAssistant: () =>
+    set((s) => {
+      const msgs = [...s.messages]
+      const last = msgs[msgs.length - 1]
+      if (last && last.role === "assistant" && last.streaming && !last.content) {
+        msgs.pop()
+        return { messages: msgs }
+      }
+      return {}
     }),
 
   setThreadId: (id) => set({ threadId: id }),

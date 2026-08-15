@@ -22,7 +22,7 @@ const nextId = () => `msg-${++msgId}`
 export default function ChatPage() {
   const [input, setInput] = useState("")
   const {
-    messages, addMessage, updateLastAssistant,
+    messages, addMessage, updateLastAssistant, removeLastEmptyAssistant,
     newConversation,
     bumpProfileNonce,
   } = useChatStore()
@@ -35,12 +35,17 @@ export default function ChatPage() {
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
 
   useEffect(() => {
+    if (stream.status === "error") {
+      // 流出错：移除未填充的空助手占位气泡
+      removeLastEmptyAssistant()
+      return
+    }
     if (stream.status === "done" && stream.doneContent) {
       updateLastAssistant(stream.doneContent)
       if (stream.stage === "match") useChatStore.getState().setLastMatchResult(stream.doneContent)
       bumpProfileNonce()
     }
-  }, [stream.status, stream.doneContent, updateLastAssistant, stream.stage, bumpProfileNonce])
+  }, [stream.status, stream.doneContent, updateLastAssistant, removeLastEmptyAssistant, stream.stage, bumpProfileNonce])
 
   // 当前会话变化（侧边栏选中历史 / 新建会话）时加载该 thread 的消息
   useEffect(() => {
