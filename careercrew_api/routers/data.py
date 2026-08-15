@@ -26,9 +26,9 @@ class RetrievalScopeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check(self):
-        if self.type not in ("all", "category"):
-            raise ValueError("type 必须为 all 或 category")
-        if self.type == "all":
+        if self.type not in ("all", "category", "public", "private"):
+            raise ValueError("type 必须为 all / category / public / private")
+        if self.type in ("all", "public", "private"):
             self.category_id = None
             return self
         if not self.category_id or not self.category_id.strip():

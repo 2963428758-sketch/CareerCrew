@@ -171,3 +171,4 @@ class KnowledgeAskRequest(BaseModel):
     question: str = Field(min_length=1)
     thread_id: str = "knowledge"
     category: str = ""  # resume / knowledge / interview，空串=全部
+    scope: str = "all"  # all（公共+本人私有）| public | private

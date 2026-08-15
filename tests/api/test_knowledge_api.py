@@ -99,6 +99,20 @@ def test_knowledge_delete(client):
 
 
 @pytest.mark.web
+def test_list_and_ask_pass_scope(client, fake_runtime):
+    fake_runtime.knowledge_docs_by_user["u_001"] = [
+        {"doc": "d1", "source": "s", "points": 1}
+    ]
+    assert client.get("/api/knowledge", params={"scope": "public"}).status_code == 200
+    assert client.get("/api/knowledge", params={"scope": "bogus"}).status_code == 422
+    resp = client.post("/api/knowledge/ask", json={
+        "question": "q", "thread_id": "t1", "scope": "private",
+    })
+    assert resp.status_code == 200
+    assert "private" in getattr(fake_runtime, "knowledge_ask_scopes", [])
+
+
+@pytest.mark.web
 def test_knowledge_ask_done_uses_final_answer(client, fake_runtime):
     """回归：知识库流式 chunk 带中间轮开头话时，done 内容取最终回答（与落库一致）。"""
     fake_runtime.knowledge_output = "这是基于知识库的最终回答。"

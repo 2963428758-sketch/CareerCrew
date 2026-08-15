@@ -9,8 +9,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from typing import Annotated
 
-from careercrew_api.auth.dependencies import CurrentUser
+from careercrew_api.auth.dependencies import CurrentUser, require_admin
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
@@ -61,7 +62,7 @@ def _new_job(filename: str, user_id: str) -> str:
 
 def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
                     user_id: str, category: str = "", doc_name: str = "",
-                    output_dir: str = "") -> None:
+                    output_dir: str = "", visibility: str = "private") -> None:
     """后台线程执行入库，通过进度回调更新任务状态。"""
 
     def cb(stage: str, progress: float) -> None:
@@ -81,7 +82,7 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
     try:
         result = rt.ingest_document(
             save_path, user_id=user_id, progress_cb=cb, category=category,
-            output_dir=output_dir or None, doc_name=doc_name,
+            output_dir=output_dir or None, doc_name=doc_name, visibility=visibility,
         )
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -104,12 +105,18 @@ async def upload_knowledge(
     current_user: CurrentUser,
     file: UploadFile = File(...),
     category: str = Form(""),
+    visibility: str = Form("private"),
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
     """上传文档入库（异步）：立即返回 job_id，进度通过 GET /upload/{job_id} 轮询。
 
     category: 内容分类（resume/knowledge/interview），空串按文件名自动识别。
+    visibility: private | public（公共库仅管理员可上传）。
     """
+    if visibility not in ("private", "public"):
+        raise HTTPException(status_code=422, detail="visibility 必须为 private 或 public")
+    if visibility == "public" and current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="只有管理员可以发布公共知识库")
     content = await file.read()
     if len(content) > _MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
@@ -127,7 +134,7 @@ async def upload_knowledge(
     output_dir = storage.resolve_under(storage.L.parsed_knowledge, user_id, job_id)
     threading.Thread(
         target=_run_ingest_job,
-        args=(rt, job_id, str(save_path), user_id, category, filename, str(output_dir)),
+        args=(rt, job_id, str(save_path), user_id, category, filename, str(output_dir), visibility),
         daemon=True,
     ).start()
     return {
@@ -152,11 +159,14 @@ def upload_status(job_id: str, current_user: CurrentUser) -> dict:
 @router.get("")
 def list_knowledge(
     current_user: CurrentUser,
+    scope: str = "all",
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
-    """知识库状态：总点数 + 文档列表。"""
+    """知识库状态：总点数 + 文档列表。scope: all（公共+本人私有）/public/private。"""
+    if scope not in ("all", "public", "private"):
+        raise HTTPException(status_code=422, detail="scope 必须为 all / public / private")
     try:
-        return rt.knowledge_status(current_user["id"])
+        return rt.knowledge_status(current_user["id"], scope)
     except RuntimeInitError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -167,14 +177,52 @@ def delete_knowledge(
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
-    """删除指定文档的全部向量点。"""
+    """删除指定文档的全部向量点（私有仅本人；公共仅管理员）。"""
     try:
-        n = rt.delete_document(current_user["id"], doc_id)
+        deleted, public_blocked = rt.delete_document(
+            current_user["id"], doc_id, is_admin=current_user["role"] == "admin"
+        )
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if public_blocked:
+        raise HTTPException(status_code=403, detail="只有管理员可以删除公共知识库文档")
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
+    return {"deleted": deleted, "doc_id": doc_id}
+
+
+@router.post("/{doc_id}/publish")
+def publish_knowledge(
+    doc_id: str,
+    _: Annotated[dict[str, str], Depends(require_admin)],
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> dict:
+    """管理员把自己名下的私有文档发布为公共。"""
+    try:
+        n = rt.publish_document(current_user["id"], doc_id)
     except RuntimeInitError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     if n == 0:
-        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
-    return {"deleted": n, "doc_id": doc_id}
+        raise HTTPException(status_code=404, detail=f"知识文档不存在或不可发布：{doc_id}")
+    return {"published": n, "doc_id": doc_id}
+
+
+@router.post("/{doc_id}/unpublish")
+def unpublish_knowledge(
+    doc_id: str,
+    _: Annotated[dict[str, str], Depends(require_admin)],
+    current_user: CurrentUser,
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> dict:
+    """管理员下架公共文档（转为自己的私有）。"""
+    try:
+        n = rt.unpublish_document(current_user["id"], doc_id)
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if n == 0:
+        raise HTTPException(status_code=404, detail=f"知识文档不存在或不可下架：{doc_id}")
+    return {"unpublished": n, "doc_id": doc_id}
 
 
 @router.post("/ask")
@@ -197,7 +245,7 @@ def ask_knowledge(
             nonlocal result
             result = rt.run_knowledge_ask_stream(
                 req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
-                category=req.category, cancel_check=cancel.check,
+                category=req.category, scope=req.scope, cancel_check=cancel.check,
             )
 
         try:
