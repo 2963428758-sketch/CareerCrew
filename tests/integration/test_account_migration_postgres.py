@@ -18,10 +18,23 @@ pytestmark = pytest.mark.integration
 pytestmark = pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
 
 
+def _require_disposable_db(dsn: str) -> None:
+    """安全闸：集成测试会清空 auth 表，只允许指向一次性测试库。"""
+    from urllib.parse import urlparse
+
+    dbname = urlparse(dsn.replace("postgresql://", "postgres://")).path.lstrip("/")
+    if dbname == "careercrew":
+        raise RuntimeError(
+            "POSTGRES_TEST_DSN 指向生产库 careercrew，拒绝运行（会清空账号表）。"
+            "请使用 careercrew_test 等一次性测试库。"
+        )
+
+
 @pytest.fixture
 def clean_pg():
     import psycopg
 
+    _require_disposable_db(DSN)
     with psycopg.connect(DSN) as conn, conn.transaction():
         conn.execute("DELETE FROM auth_refresh_sessions")
         conn.execute("DELETE FROM auth_accounts")
