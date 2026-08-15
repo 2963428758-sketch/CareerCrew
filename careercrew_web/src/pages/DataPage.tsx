@@ -29,7 +29,7 @@ export default function DataPage() {
   )
 }
 
-/** 设置面板内容（画像 / 记忆 / 记忆设置），供侧边栏"设置"弹窗与数据看板页共用。 */
+/** 数据设置内容（画像 / 记忆 / 记忆设置），供设置页与数据看板页共用。 */
 export function DataSettingsContent() {
   return (
     <Tabs defaultValue="profile">
