@@ -98,6 +98,12 @@ export const KB_SCOPE = [
   { id: "private", label: "个人库" },
 ] as const
 
+export const KB_SCOPE_LABELS: Record<string, string> = {
+  all: "全部",
+  public: "公共库",
+  private: "个人库",
+}
+
 
 /** 会诊 agent 选项。 */
 export const CONSULT_AGENTS = [

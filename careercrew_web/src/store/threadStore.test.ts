@@ -59,11 +59,50 @@ describe("threadStore retrieval_scope", () => {
     })
   })
 
-  it("PATCH 404 时回退 POST 创建", async () => {
+  it("PATCH 404 时不创建空线程，仅保留本地范围", async () => {
     apiFetch.mockResolvedValueOnce({ ok: false, status: 404 })
+    await useThreadStore.getState().setThreadScope("knowledge", "k-new", { type: "public" })
+    // 只发了一次 PATCH，没有回退 POST 创建线程
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(apiFetch.mock.calls[0][0]).toBe("/api/threads/k-new")
+    // 本地列表补上了该会话行并带范围
+    const row = useThreadStore.getState().threadsByModule.knowledge?.find(
+      (t) => t.thread_id === "k-new"
+    )
+    expect(row?.retrieval_scope).toEqual({ type: "public" })
+  })
+
+  it("setThreadScope 对已存在会话乐观更新选中态", async () => {
     apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
-    await useThreadStore.getState().setThreadScope("knowledge", "k-new", { type: "all" })
-    expect(apiFetch.mock.calls[1][0]).toBe("/api/threads")
-    expect(apiFetch.mock.calls[1][1].method).toBe("POST")
+    useThreadStore.setState({
+      threadsByModule: {
+        knowledge: [{ thread_id: "k-1", title: "t", module: "knowledge", pinned: false }],
+      },
+    })
+    await useThreadStore.getState().setThreadScope("knowledge", "k-1", { type: "private" })
+    expect(
+      useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope
+    ).toEqual({ type: "private" })
+  })
+
+  it("touchThread 携带本地 retrieval_scope 落库", async () => {
+    apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
+    useThreadStore.setState({
+      threadsByModule: {
+        knowledge: [
+          {
+            thread_id: "k-1",
+            title: "k-1",
+            module: "knowledge",
+            pinned: false,
+            retrieval_scope: { type: "public" },
+          },
+        ],
+      },
+    })
+    await useThreadStore.getState().touchThread("knowledge", "k-1", "你好")
+    const body = JSON.parse(apiFetch.mock.calls[0][1].body)
+    expect(body.title).toBe("你好")
+    expect(body.retrieval_scope).toEqual({ type: "public" })
   })
 })

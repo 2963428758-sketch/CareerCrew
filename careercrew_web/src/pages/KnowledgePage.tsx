@@ -11,7 +11,7 @@ import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore, type ThreadItem } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, type KnowledgeSource } from "@/types"
+import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, KB_SCOPE_LABELS, type KnowledgeSource } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/auth"
 
@@ -261,18 +261,23 @@ export default function KnowledgePage() {
 
           <div className="shrink-0 border-t bg-card/50 px-6 py-4">
             <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 text-[11px] font-medium text-muted-foreground">范围</span>
               {KB_SCOPE.map((s) => (
                 <button
                   key={s.id}
                   onClick={() => changeScope(s.id)}
                   className={cn(
-                    "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-all",
-                    scope === s.id ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted"
+                    "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all",
+                    scope === s.id
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-muted-foreground hover:bg-muted"
                   )}
                 >
                   {s.label}
                 </button>
               ))}
+              <span aria-hidden className="mx-1 h-3 w-px bg-border" />
+              <span className="mr-0.5 text-[11px] font-medium text-muted-foreground">分类</span>
               {KB_CATEGORIES.map((c) => (
                 <button
                   key={c.id || "all"}
@@ -288,7 +293,7 @@ export default function KnowledgePage() {
                 </button>
               ))}
               <span className="ml-auto text-[11px] text-muted-foreground">
-                检索范围：{KB_CATEGORY_LABELS[category] ?? "全部"}
+                当前：{KB_SCOPE_LABELS[scope]} · {KB_CATEGORY_LABELS[category] ?? "全部分类"}
               </span>
             </div>
             <div className="mx-auto flex max-w-3xl items-end gap-2">

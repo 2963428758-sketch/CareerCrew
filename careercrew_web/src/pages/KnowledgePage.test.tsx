@@ -53,13 +53,13 @@ describe("KnowledgePage 检索范围", () => {
 
   it("切换会话恢复其保存的范围", async () => {
     render(<KnowledgePage />)
-    expect(screen.getByText(/检索范围：全部/)).toBeTruthy()
+    expect(screen.getByText(/当前：全部 · 全部分类/)).toBeTruthy()
     useThreadStore.getState().selectThread("knowledge", "k-b")
-    await waitFor(() => expect(screen.getByText(/检索范围：面试题/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/当前：全部 · 面试题/)).toBeTruthy())
   })
 
   it("无保存范围的历史会话回退为全部", async () => {
     render(<KnowledgePage />)
-    await waitFor(() => expect(screen.getByText(/检索范围：全部/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/当前：全部 · 全部分类/)).toBeTruthy())
   })
 })

@@ -269,55 +269,95 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
               知识库为空，先上传一份文档吧
             </p>
           ) : (
-            <div className="space-y-1.5">
-              {status.docs.map((doc) => (
-                <div key={doc.doc + doc.visibility} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
-                  <BookOpen className="h-4 w-4 shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-1.5 truncate text-sm font-medium">
-                      <span className="truncate">{doc.doc}</span>
-                      <span className={cn(
-                        "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                        doc.visibility === "public" ? "bg-amber-500/15 text-amber-600" : "bg-primary/10 text-primary"
-                      )}>
-                        {doc.visibility === "public" ? "公共" : "我的"}
-                      </span>
-                      {doc.category && (
-                        <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                          {KB_CATEGORY_LABELS[doc.category] ?? doc.category}
-                        </span>
-                      )}
-                    </p>
-                    <p className="truncate text-[11px] text-muted-foreground">
-                      {doc.source.split(/[\\/]/).pop() || doc.source}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {isAdmin && (
-                      <button
-                        className="flex items-center gap-0.5 rounded p-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
-                        onClick={() => togglePublish(doc)}
-                        title={doc.visibility === "public" ? "下架公共文档" : "发布到公共库"}
-                      >
-                        <Globe className="h-3.5 w-3.5" />
-                      </button>
+            <div className="space-y-3">
+              {(() => {
+                const publicDocs = status.docs.filter((d) => d.visibility === "public")
+                const privateDocs = status.docs.filter((d) => d.visibility !== "public")
+                return (
+                  <>
+                    {publicDocs.length > 0 && (
+                      <div>
+                        <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-600">
+                          <Globe className="h-3.5 w-3.5" />
+                          公共知识库
+                          <span className="font-normal text-muted-foreground">（所有人可见 · {publicDocs.length} 份）</span>
+                        </p>
+                        <div className="space-y-1.5">
+                          {publicDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={handleDelete} onTogglePublish={togglePublish} />)}
+                        </div>
+                      </div>
                     )}
-                    {(doc.visibility === "private" ? doc.owner_user_id === me : isAdmin) && (
-                      <button
-                        className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                        onClick={() => handleDelete(doc)}
-                        title={`删除 ${doc.doc}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                    {privateDocs.length > 0 && (
+                      <div>
+                        <p className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                          我的资料
+                          <span className="ml-1 font-normal text-muted-foreground/70">（仅自己可见 · {privateDocs.length} 份）</span>
+                        </p>
+                        <div className="space-y-1.5">
+                          {privateDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={handleDelete} onTogglePublish={togglePublish} />)}
+                        </div>
+                      </div>
                     )}
-                  </div>
-                </div>
-              ))}
+                  </>
+                )
+              })()}
             </div>
           )}
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
+  doc: KnowledgeDoc
+  me: string
+  isAdmin: boolean
+  onDelete: (doc: KnowledgeDoc) => void
+  onTogglePublish: (doc: KnowledgeDoc) => void
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
+      <BookOpen className="h-4 w-4 shrink-0 text-primary" />
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+          <span className="truncate">{doc.doc}</span>
+          <span className={cn(
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+            doc.visibility === "public" ? "bg-amber-500/15 text-amber-600" : "bg-primary/10 text-primary"
+          )}>
+            {doc.visibility === "public" ? "公共" : "我的"}
+          </span>
+          {doc.category && (
+            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              {KB_CATEGORY_LABELS[doc.category] ?? doc.category}
+            </span>
+          )}
+        </p>
+        <p className="truncate text-[11px] text-muted-foreground">
+          {doc.source.split(/[\\/]/).pop() || doc.source}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        {isAdmin && (
+          <button
+            className="flex items-center gap-0.5 rounded p-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
+            onClick={() => onTogglePublish(doc)}
+            title={doc.visibility === "public" ? "下架公共文档" : "发布到公共库"}
+          >
+            <Globe className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {(doc.visibility === "private" ? doc.owner_user_id === me : isAdmin) && (
+          <button
+            className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+            onClick={() => onDelete(doc)}
+            title={`删除 ${doc.doc}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
     </div>
   )
 }
