@@ -65,6 +65,11 @@ class FakeChatModel(BaseChatModel):
             yield ChatGenerationChunk(
                 message=AIMessageChunk(content="", tool_call_chunks=chunks)
             )
+        # 真实流式模型会在流末以 usage chunk 回传 token 计量（T1.4 观测依赖此字段）
+        if getattr(resp, "usage_metadata", None):
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content="", usage_metadata=resp.usage_metadata)
+            )
 
     def _next(self) -> AIMessage:
         i = self._i
@@ -157,6 +162,12 @@ class FakeAccountStore(AccountStore):
         if user_id not in self.accounts:
             raise KeyError(user_id)
         self.accounts[user_id]["avatar"] = avatar_ref
+        self.accounts[user_id]["updated_at"] = _now().isoformat()
+
+    def update_display_name(self, user_id: str, name: str) -> None:
+        if user_id not in self.accounts:
+            raise KeyError(user_id)
+        self.accounts[user_id]["display_name"] = name
         self.accounts[user_id]["updated_at"] = _now().isoformat()
 
     def set_must_change_password(self, user_id: str, value: bool) -> None:

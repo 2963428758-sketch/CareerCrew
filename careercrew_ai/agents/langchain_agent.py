@@ -16,6 +16,7 @@ max_iterations 用 middleware 实现（``before_model`` 计数 + ``wrap_model_ca
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -57,12 +58,20 @@ class ReactIteration:
 
 @dataclass
 class AgentResult:
-    """ReAct 循环产出（契约不变）。"""
+    """ReAct 循环产出（契约不变）。
+
+    新增观测字段（T1.4，可 None / 空，向后兼容）：
+    - input_tokens/output_tokens：LLM usage_metadata 累计（无 usage 时为 None）
+    - tool_call_details：per-tool 明细 [{name, args, duration_ms, error}, ...]
+    """
 
     content: str
     iterations: list[ReactIteration]
     tool_calls_total: int
     stopped_reason: str  # final_answer | max_iterations | error
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tool_call_details: list[dict] = field(default_factory=list)
 
 
 class MaxIterationsMiddleware(AgentMiddleware):
@@ -96,6 +105,81 @@ class MaxIterationsMiddleware(AgentMiddleware):
                 tool_call_id=request.tool_call["id"],
                 name=request.tool_call.get("name"),
             )
+
+
+class UsageAccumulatorMiddleware(AgentMiddleware):
+    """累计 LLM token 用量（T1.4）。
+
+    wrap_model_call 里 handler 返回 ModelResponse（result[0] 为 AIMessage）或直接
+    AIMessage；从 ``usage_metadata`` 读 input_tokens/output_tokens 累加。缺失键静默
+    降级（不阻塞对话），模型不吐 usage 时累计值保持 0。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    @staticmethod
+    def _usage_of(msg: BaseMessage) -> dict | None:
+        usage = getattr(msg, "usage_metadata", None)
+        return usage if isinstance(usage, dict) else None
+
+    def _add_usage(self, usage: dict | None) -> None:
+        if not usage:
+            return
+        try:
+            self.input_tokens += int(usage.get("input_tokens") or 0)
+            self.output_tokens += int(usage.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            return  # 异常 usage 值静默忽略，不阻塞
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        response = handler(request)
+        # ModelResponse(result=[...]) 或直接 AIMessage（短路中间件返回形态）
+        msgs = getattr(response, "result", None)
+        if msgs is None:
+            msgs = [response]
+        for m in msgs or []:
+            if isinstance(m, AIMessage):
+                self._add_usage(self._usage_of(m))
+        return response
+
+    def snapshot(self) -> tuple[int, int]:
+        """返回 (input_tokens, output_tokens) 累计快照（供 run_agent 落 AgentResult）。"""
+        return self.input_tokens, self.output_tokens
+
+
+class ObservabilityMiddleware(AgentMiddleware):
+    """工具调用计时与错误记录（T1.4）。
+
+    wrap_tool_call 记 started/finished 毫秒、name/args，异常记录 error 文本后原样
+    上抛（工具错误仍由 MaxIterationsMiddleware 负责回喂 ToolMessage；此处只观测）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tool_call_details: list[dict] = []
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        tc = getattr(request, "tool_call", {}) or {}
+        name = tc.get("name", "") if isinstance(tc, dict) else ""
+        args = tc.get("args", {}) if isinstance(tc, dict) else {}
+        started = time.perf_counter()
+        error: str | None = None
+        try:
+            return handler(request)
+        except Exception as e:  # noqa: BLE001 - 观测层不吞异常，记录后上抛
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            self.tool_call_details.append({
+                "name": name,
+                "args": args,
+                "duration_ms": duration_ms,
+                "error": error,
+            })
 
 
 class ContextCompactionMiddleware(AgentMiddleware):
@@ -217,17 +301,29 @@ def build_agent(
     max_iterations: int = 10,
     extra_middleware: list[AgentMiddleware] | None = None,
 ):
-    """编译 create_agent 图（tools=None 时等效单模型节点）。"""
-    middleware = [MaxIterationsMiddleware(max_iterations)]
+    """编译 create_agent 图（tools=None 时等效单模型节点）。
+
+    观测中间件（UsageAccumulator / Observability）总是装配，并把实例挂在
+    返回图的 ``_observability`` 属性上供 run_agent 读取（不污染 AgentResult 契约）。
+    """
+    usage_mw = UsageAccumulatorMiddleware()
+    obs_mw = ObservabilityMiddleware()
+    middleware: list[AgentMiddleware] = [
+        MaxIterationsMiddleware(max_iterations),
+        usage_mw,
+        obs_mw,
+    ]
     if extra_middleware:
         middleware.extend(extra_middleware)
-    return create_agent(
+    agent = create_agent(
         model=llm,
         tools=tools or None,
         system_prompt=system_prompt,
         state_schema=AgentExecState,
         middleware=middleware,
     )
+    agent._observability = (usage_mw, obs_mw)  # type: ignore[attr-defined]
+    return agent
 
 
 def _msg_text(msg: BaseMessage) -> str:
@@ -317,9 +413,25 @@ def run_agent(
         stopped_reason = "max_iterations"
     else:
         stopped_reason = "final_answer"
+
+    # T1.4 观测字段：从 build_agent 挂载的观测中间件读取累计值
+    usage_mw, obs_mw = getattr(agent, "_observability", (None, None))
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tool_call_details: list[dict] = []
+    if usage_mw is not None:
+        in_tok, out_tok = usage_mw.snapshot()
+        input_tokens = in_tok or None
+        output_tokens = out_tok or None
+    if obs_mw is not None:
+        tool_call_details = list(obs_mw.tool_call_details)
+
     return AgentResult(
         content=content,
         iterations=iterations,
         tool_calls_total=tool_calls_total,
         stopped_reason=stopped_reason,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        tool_call_details=tool_call_details,
     )
