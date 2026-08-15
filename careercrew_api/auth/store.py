@@ -99,6 +99,9 @@ class AccountStore(ABC):
                         context: dict) -> None: ...
 
     @abstractmethod
+    def login_failure_locked(self, key: str) -> tuple[bool, str | None]: ...
+
+    @abstractmethod
     def record_login_failure(self, key: str, *, max_failures: int,
                              window: timedelta, lock: timedelta) -> tuple[bool, str | None]: ...
 
@@ -340,6 +343,16 @@ class SqliteAccountStore(AccountStore):
                 (actor_id, action, target_user_id, json.dumps(context, ensure_ascii=False),
                  _utcnow().isoformat()),
             )
+
+    def login_failure_locked(self, key: str) -> tuple[bool, str | None]:
+        """只读检查是否处于锁定期；不计数、不重置窗口。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT locked_until FROM auth_login_attempts WHERE key = ?", (key,)
+            ).fetchone()
+        if row and row["locked_until"] and datetime.fromisoformat(row["locked_until"]) > _utcnow():
+            return True, row["locked_until"]
+        return False, None
 
     def record_login_failure(self, key: str, *, max_failures: int,
                              window: timedelta, lock: timedelta) -> tuple[bool, str | None]:
@@ -590,6 +603,16 @@ class PostgresAccountStore(AccountStore):
                 "VALUES (%s, %s, %s, %s::jsonb)",
                 (actor_id, action, target_user_id, json.dumps(context, ensure_ascii=False)),
             )
+
+    def login_failure_locked(self, key: str) -> tuple[bool, str | None]:
+        """只读检查是否处于锁定期；不计数、不重置窗口。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT locked_until FROM auth_login_attempts WHERE key = %s", (key,)
+            ).fetchone()
+        if row and row["locked_until"] and row["locked_until"] > _utcnow():
+            return True, _iso(row["locked_until"])
+        return False, None
 
     def record_login_failure(self, key: str, *, max_failures: int,
                              window: timedelta, lock: timedelta) -> tuple[bool, str | None]:
