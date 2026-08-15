@@ -3,12 +3,24 @@ import { apiFetch } from "@/lib/auth"
 
 export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
-/** 会话检索范围（与后端 RetrievalScopeRequest 对齐；历史会话无该字段时为 null → "全部"）。 */
-export type RetrievalScope =
-  | { type: "all" }
-  | { type: "public" }
-  | { type: "private" }
-  | { type: "category"; category_id: string }
+/** 会话检索范围：可见范围 + 可选内容分类（两个正交维度，可同时生效）。 */
+export interface RetrievalScope {
+  type: "all" | "public" | "private"
+  category_id?: string | null
+}
+
+/** 把后端返回的 retrieval_scope（含旧格式 {"type":"category",...}）归一化为新模型。 */
+const normalizeScope = (raw: unknown): RetrievalScope | null => {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  let type = String(r.type ?? "all")
+  const categoryId = r.category_id ? String(r.category_id) : null
+  if (type === "category") type = "all"  // 旧格式：分类即全部范围+分类
+  if (type !== "all" && type !== "public" && type !== "private") return null
+  return categoryId
+    ? { type, category_id: categoryId }
+    : { type }
+}
 
 export interface ThreadItem {
   thread_id: string
@@ -16,6 +28,8 @@ export interface ThreadItem {
   module: string
   pinned: boolean
   retrieval_scope?: RetrievalScope | null
+  /** 是否已在后端落库。false=仅本地占位（未发过消息），不显示在侧边栏。 */
+  persisted?: boolean
   created_at?: string
   updated_at?: string
   entries?: number
@@ -121,9 +135,8 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
           title: String((t as Record<string, unknown>).title || tid),
           module: String((t as Record<string, unknown>).module || inferModule(tid)),
           pinned: Boolean((t as Record<string, unknown>).pinned),
-          retrieval_scope: ((t as Record<string, unknown>).retrieval_scope ?? null) as
-            | RetrievalScope
-            | null,
+          retrieval_scope: normalizeScope((t as Record<string, unknown>).retrieval_scope),
+          persisted: true,
           created_at: String((t as Record<string, unknown>).created_at || ""),
           updated_at: String((t as Record<string, unknown>).updated_at || ""),
           entries: Number((t as Record<string, unknown>).entries || 0),
@@ -172,8 +185,8 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       // 新会话首条消息：本地立即插入该行（流式期间就能看到脉冲圆点），
       // 后端 PATCH 异步补齐，完成时 bumpNonce 重新拉取对齐。
       const nextList = item
-        ? list.map((t) => (t.thread_id === tid ? { ...t, title: trimmed } : t))
-        : [...list, { thread_id: tid, title: trimmed, module: m, pinned: false, retrieval_scope: scope }]
+        ? list.map((t) => (t.thread_id === tid ? { ...t, title: trimmed, persisted: true } : t))
+        : [...list, { thread_id: tid, title: trimmed, module: m, pinned: false, retrieval_scope: scope, persisted: true }]
       return {
         ...s,
         threadsByModule: {
@@ -183,11 +196,19 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       }
     })
     try {
-      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
+      const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: trimmed, module: m, retrieval_scope: scope ?? null }),
       })
+      if (resp.status === 404) {
+        // 首条消息时线程可能还没落库：显式创建并带上当前检索范围
+        await apiFetch("/api/threads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: tid, module: m, title: trimmed, retrieval_scope: scope ?? null }),
+        })
+      }
     } catch {
       // 后端未就绪时忽略，仅保留本地标题
     }
@@ -196,16 +217,20 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   setThreadScope: async (m, tid, scope) => {
     // 乐观更新本地列表：无论该会话是否已在列表中，都落一条本地行，
     // 保证选择器立即反映选中状态（切换会话时也能恢复保存的范围）。
+    // 未落库的会话（persisted=false）只保留在本地，不写后端、不显示在侧边栏。
     set((s) => {
       const list = s.threadsByModule[m] || []
-      const nextList = list.some((t) => t.thread_id === tid)
+      const existing = list.find((t) => t.thread_id === tid)
+      const nextList = existing
         ? list.map((t) => (t.thread_id === tid ? { ...t, retrieval_scope: scope } : t))
-        : [...list, { thread_id: tid, title: tid, module: m, pinned: false, retrieval_scope: scope }]
+        : [...list, { thread_id: tid, title: tid, module: m, pinned: false, retrieval_scope: scope, persisted: false }]
       return {
         ...s,
         threadsByModule: { ...s.threadsByModule, [m]: sortThreads(nextList) },
       }
     })
+    const row = useThreadStore.getState().threadsByModule[m]?.find((t) => t.thread_id === tid)
+    if (!row || row.persisted === false) return  // 仅本地保留，首条消息时随 touchThread 落库
     try {
       const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
@@ -213,9 +238,15 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         body: JSON.stringify({ retrieval_scope: scope }),
       })
       if (resp.status === 404) {
-        // 尚未注册的会话（未发过消息）：只在本地保留范围，不创建空线程——
-        // 首条消息 touchThread 时会带着 retrieval_scope 一起落库，
-        // 避免勾选范围就产生一堆空对话。
+        // 服务端已不存在：退回本地占位，不再显示在侧边栏
+        set((s) => ({
+          threadsByModule: {
+            ...s.threadsByModule,
+            [m]: (s.threadsByModule[m] || []).map((t) =>
+              t.thread_id === tid ? { ...t, persisted: false } : t
+            ),
+          },
+        }))
       }
     } catch {
       // 后端未就绪：保留本地范围，下轮 fetchThreads 会以服务端为准

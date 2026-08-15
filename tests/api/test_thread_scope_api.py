@@ -15,7 +15,8 @@ def test_patch_scope_persists_and_lists(client):
     assert resp.status_code == 200
     rows = client.get("/api/threads", params={"module": "knowledge"}).json()
     row = next(r for r in rows if r["thread_id"] == "k-scope-1")
-    assert row["retrieval_scope"] == {"type": "category", "category_id": "resume"}
+    # 旧格式 {"type": "category"} 归一化为 type=all + category_id
+    assert row["retrieval_scope"] == {"type": "all", "category_id": "resume"}
 
 
 def test_legacy_thread_scope_none(client):
@@ -115,6 +116,21 @@ def test_create_thread_with_scope(client):
         "thread_id": "k-new", "module": "knowledge",
         "retrieval_scope": {"type": "category", "category_id": "job"}})
     assert resp.status_code == 200
+
+
+def test_scope_and_category_are_orthogonal(client):
+    client.post("/api/threads", json={
+        "thread_id": "k-ortho", "module": "knowledge",
+        "retrieval_scope": {"type": "public", "category_id": "resume"}})
+    assert client.patch("/api/threads/k-ortho", json={
+        "retrieval_scope": {"type": "private", "category_id": "interview"}}).status_code == 200
     rows = client.get("/api/threads", params={"module": "knowledge"}).json()
-    assert next(r for r in rows if r["thread_id"] == "k-new")["retrieval_scope"] == {
-        "type": "category", "category_id": "job"}
+    scope = next(r for r in rows if r["thread_id"] == "k-ortho")["retrieval_scope"]
+    assert scope["type"] == "private"
+    assert scope["category_id"] == "interview"
+    # 旧格式归一化：type=category → type=all + category_id
+    client.patch("/api/threads/k-ortho", json={
+        "retrieval_scope": {"type": "category", "category_id": "job"}})
+    rows = client.get("/api/threads", params={"module": "knowledge"}).json()
+    scope = next(r for r in rows if r["thread_id"] == "k-ortho")["retrieval_scope"]
+    assert scope["type"] == "all" and scope["category_id"] == "job"

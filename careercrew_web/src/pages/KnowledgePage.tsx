@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react"
-import { BookOpen, ChevronDown, Plus, Send, Square, X } from "lucide-react"
+import { BookOpen, ChevronDown, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { MultilineInput } from "@/components/MultilineInput"
-import { InputHint } from "@/components/InputHint"
+import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
+import { AgentMessage, UserMessage } from "@/components/agent/AgentThread"
+import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
+import { EmptyState } from "@/components/workspace/EmptyState"
 import KnowledgePanel from "@/components/KnowledgePanel"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatScroll } from "@/hooks/useChatScroll"
@@ -104,17 +106,14 @@ export default function KnowledgePage() {
   const threads = useThreadStore((s) => s.threadsByModule.knowledge ?? EMPTY_THREADS)
   const setThreadScope = useThreadStore((s) => s.setThreadScope)
   const savedScope = threads.find((t) => t.thread_id === currentThreadId)?.retrieval_scope
-  const category = savedScope?.type === "category" ? savedScope.category_id : ""
+  // 范围与分类是两个正交维度：可同时选中（如「公共库 · 面试题」）
+  const scope = savedScope?.type ?? "all"
+  const category = savedScope?.category_id ?? ""
   const changeCategory = (id: string) => {
-    void setThreadScope(
-      "knowledge",
-      currentThreadId,
-      id ? { type: "category", category_id: id } : { type: "all" }
-    )
+    void setThreadScope("knowledge", currentThreadId, { type: scope, category_id: id || null })
   }
-  const scope = savedScope?.type === "public" || savedScope?.type === "private" ? savedScope.type : "all"
   const changeScope = (next: "all" | "public" | "private") => {
-    void setThreadScope("knowledge", currentThreadId, { type: next })
+    void setThreadScope("knowledge", currentThreadId, { type: next, category_id: category || null })
   }
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
@@ -203,124 +202,105 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b px-6">
-        <div>
-          <h1 className="font-display text-xl font-semibold">知识库问答</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">基于知识库文档检索回答，点击来源可查看原文</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleNew}>
-            <Plus className="mr-1 h-3.5 w-3.5" />新对话
-          </Button>
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPanelOpen((v) => !v)}>
-            <BookOpen className="h-4 w-4 text-primary" />
-            知识库管理
-          </Button>
-        </div>
-      </header>
+      <WorkspaceHeader
+        title="知识库问答"
+        subtitle="基于知识库文档检索回答，点击来源可查看原文"
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={handleNew}>
+              <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新对话
+            </Button>
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPanelOpen((v) => !v)}>
+              <BookOpen className="h-3.5 w-3.5 text-primary" strokeWidth={1.7} />
+              知识库管理
+            </Button>
+          </>
+        }
+      />
 
       <div className="relative flex-1 overflow-hidden">
         <div className="flex h-full flex-col">
           <div className="relative flex-1 overflow-hidden">
-            <div ref={scrollRef} className="h-full overflow-y-auto px-6 py-6">
-              {messages.length === 0 && (
-                <div className="mx-auto mt-16 max-w-md text-center">
-                  <div className="mb-6 flex justify-center">
-                    <BookOpen className="h-10 w-10" style={{ color: meta.color }} />
-                  </div>
-                  <h2 className="font-display text-2xl font-semibold tracking-tight">向知识库提问</h2>
-                  <p className="mt-3 text-sm text-muted-foreground">
-                    输入问题后，自动检索知识库并生成回答；
-                    <br />
-                    回答会标注数据来源，点击即可查看对应片段。
-                  </p>
-                </div>
-              )}
-              <div className="mx-auto max-w-3xl space-y-4">
-                {messages.map((msg) => (
-                  <MessageBubble
-                    key={msg.id}
-                    msg={msg}
-                    isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
-                    streamingText={stream.streamingText}
-                    thinking={stream.thinking}
-                    initializing={initializing}
-                    onPreview={setPreviewUrl}
+            <div ref={scrollRef} className="h-full overflow-y-auto">
+              <div className="mx-auto w-full max-w-[820px] px-6 pb-8 pt-8">
+                {messages.length === 0 && (
+                  <EmptyState
+                    title="向知识库提问"
+                    description={
+                      <>
+                        输入问题后，自动检索知识库并生成回答；
+                        <br />
+                        回答会标注数据来源，点击即可查看对应片段。
+                      </>
+                    }
+                    accent={
+                      <span className="flex h-9 w-9 items-center justify-center rounded-[9px] bg-surface-2">
+                        <BookOpen className="h-4 w-4" style={{ color: meta.color }} strokeWidth={1.7} />
+                      </span>
+                    }
                   />
-                ))}
-
-                {stream.errorMsg && (
-                  <Card className="border-destructive">
-                    <CardContent className="p-4 text-sm text-destructive">{stream.errorMsg}</CardContent>
-                  </Card>
                 )}
+                <div className="space-y-7">
+                  {messages.map((msg) => (
+                    <MessageRow
+                      key={msg.id}
+                      msg={msg}
+                      isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
+                      streamingText={stream.streamingText}
+                      thinking={stream.thinking}
+                      initializing={initializing}
+                      onPreview={setPreviewUrl}
+                    />
+                  ))}
+
+                  {stream.errorMsg && (
+                    <Card className="border-destructive/40">
+                      <CardContent className="p-4 text-[13px] text-destructive">{stream.errorMsg}</CardContent>
+                    </Card>
+                  )}
+                </div>
               </div>
             </div>
             <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} />
           </div>
 
-          <div className="shrink-0 border-t bg-card/50 px-6 py-4">
-            <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 text-[11px] font-medium text-muted-foreground">范围</span>
-              {KB_SCOPE.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => changeScope(s.id)}
-                  className={cn(
-                    "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all",
-                    scope === s.id
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-card text-muted-foreground hover:bg-muted"
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-              <span aria-hidden className="mx-1 h-3 w-px bg-border" />
-              <span className="mr-0.5 text-[11px] font-medium text-muted-foreground">分类</span>
-              {KB_CATEGORIES.map((c) => (
-                <button
-                  key={c.id || "all"}
-                  onClick={() => changeCategory(c.id)}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all",
-                    category === c.id
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-card text-muted-foreground hover:bg-muted"
-                  )}
-                >
-                  {c.label}
-                </button>
-              ))}
-              <span className="ml-auto text-[11px] text-muted-foreground">
-                当前：{KB_SCOPE_LABELS[scope]} · {KB_CATEGORY_LABELS[category] ?? "全部分类"}
-              </span>
-            </div>
-            <div className="mx-auto flex max-w-3xl items-end gap-2">
-              <MultilineInput
-                value={input}
-                onChange={setInput}
-                onSend={handleAsk}
-                disabled={stream.status === "streaming"}
-                placeholder="输入问题，将自动检索知识库后回答"
-              />
-              {stream.status === "streaming" ? (
-                <Button variant="destructive" size="icon" onClick={() => stopStream(currentThreadId)} className="h-11 w-11 shrink-0">
-                  <Square className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button size="icon" onClick={handleAsk} disabled={!input.trim()} className="h-11 w-11 shrink-0">
-                  <Send className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-            <InputHint tip="知识库图片会自动内嵌显示" />
+          <div className="shrink-0 px-6 pb-4 pt-2">
+            <PromptComposer
+              value={input}
+              onChange={setInput}
+              onSend={handleAsk}
+              disabled={stream.status === "streaming"}
+              streaming={stream.status === "streaming"}
+              onStop={() => stopStream(currentThreadId)}
+              placeholder="输入问题，将自动检索知识库后回答"
+              hint="知识库图片会自动内嵌显示"
+              header={
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  <span className="mr-0.5 text-[11px] font-medium text-ink-faint">范围</span>
+                  {KB_SCOPE.map((s) => (
+                    <Chip key={s.id} active={scope === s.id} onClick={() => changeScope(s.id)}>
+                      {s.label}
+                    </Chip>
+                  ))}
+                  <span aria-hidden className="mx-1 h-3 w-px bg-[var(--border-normal)]" />
+                  <span className="mr-0.5 text-[11px] font-medium text-ink-faint">分类</span>
+                  {KB_CATEGORIES.map((c) => (
+                    <Chip key={c.id || "all"} active={category === c.id} onClick={() => changeCategory(c.id)}>
+                      {c.label}
+                    </Chip>
+                  ))}
+                  <span className="ml-auto text-[11px] text-ink-faint">
+                    当前：{KB_SCOPE_LABELS[scope]} · {KB_CATEGORY_LABELS[category] ?? "全部分类"}
+                  </span>
+                </div>
+              }
+            />
           </div>
         </div>
 
         {/* 右上角知识库管理抽屉 */}
         {panelOpen && (
-          <aside className="absolute inset-y-0 right-0 z-20 w-[400px] overflow-y-auto border-l bg-background/95 p-4 shadow-2xl backdrop-blur">
+          <aside className="absolute inset-y-0 right-0 z-20 w-[400px] overflow-y-auto border-l border-[var(--border-soft)] bg-workspace p-4">
             <KnowledgePanel onClose={() => setPanelOpen(false)} />
           </aside>
         )}
@@ -331,7 +311,23 @@ export default function KnowledgePage() {
   )
 }
 
-function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing, onPreview }: {
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors duration-100",
+        active
+          ? "border-transparent bg-button-ink text-button-onink"
+          : "border-[var(--border-soft)] bg-transparent text-ink-soft hover:bg-[var(--hover)] hover:text-ink"
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+function MessageRow({ msg, isStreaming, streamingText, thinking, initializing, onPreview }: {
   msg: KnowledgeMessage
   isStreaming: boolean
   streamingText: string
@@ -344,38 +340,29 @@ function MessageBubble({ msg, isStreaming, streamingText, thinking, initializing
   const content = isStreaming ? streamingText : msg.content
   const images = useAuthenticatedImages(isUser ? [] : imagePathsIn(content))
 
-  if (isUser) {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-lg rounded-br-sm bg-primary px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-primary-foreground">
-          {content}
-        </div>
-      </div>
-    )
-  }
+  if (isUser) return <UserMessage content={content} />
 
   return (
-    <div className="flex justify-start">
-      <div className="stream-fade-in max-w-[85%] rounded-lg rounded-bl-sm border bg-card px-4 py-3">
-        <div className="mb-1.5 flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
-          <span className="text-xs font-semibold" style={{ color: meta.color }}>{meta.label}</span>
-        </div>
-        {isStreaming && !content && initializing ? (
-          <InitIndicator text="正在检索知识库" />
-        ) : (
-          <>
-            <MarkdownContent className={cn(isStreaming && content && !thinking && "typing-cursor")}>
-              {renderKnowledgeText(content || "", images)}
-            </MarkdownContent>
-            {isStreaming && content && thinking && <ThinkingPulse />}
-            {!isStreaming && msg.sources && msg.sources.length > 0 && (
-              <SourceList sources={msg.sources} onPreview={onPreview} />
-            )}
-          </>
-        )}
-      </div>
-    </div>
+    <AgentMessage
+      label={meta.label}
+      color={meta.color}
+      working={isStreaming}
+      workingText="正在检索知识库…"
+    >
+      {isStreaming && !content && initializing ? (
+        <InitIndicator text="正在检索知识库" />
+      ) : (
+        <>
+          <MarkdownContent className={cn(isStreaming && content && !thinking && "typing-cursor")}>
+            {renderKnowledgeText(content || "", images)}
+          </MarkdownContent>
+          {isStreaming && content && thinking && <ThinkingPulse />}
+          {!isStreaming && msg.sources && msg.sources.length > 0 && (
+            <SourceList sources={msg.sources} onPreview={onPreview} />
+          )}
+        </>
+      )}
+    </AgentMessage>
   )
 }
 
@@ -394,8 +381,8 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
   }
 
   return (
-    <div className="mt-3 space-y-1.5 border-t pt-2">
-      <p className="text-[11px] font-medium text-muted-foreground">
+    <div className="mt-3 space-y-1.5 border-t border-[var(--border-soft)] pt-2.5">
+      <p className="text-[11px] font-medium text-ink-faint">
         数据来源（{sources.length}）· 点击查看原文
       </p>
       {sources.map((s, i) => {
@@ -406,36 +393,36 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
         const imgPath = s.image_path
         const image = imgPath ? images[imgPath] : undefined
         return (
-          <div key={`${s.doc}-${i}`} className="overflow-hidden rounded-md border bg-muted/30">
+          <div key={`${s.doc}-${i}`} className="overflow-hidden rounded-[8px] border border-[var(--border-soft)] bg-surface-2">
             <button
               onClick={() => toggle(i)}
-              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-muted"
+              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors duration-100 hover:bg-[var(--hover)]"
             >
-              <span className="text-[10px] font-semibold text-primary">[{i + 1}]</span>
-              <span className="min-w-0 flex-1 truncate text-xs font-medium">{name}</span>
+              <span className="text-[10.5px] font-medium text-ink-faint">[{i + 1}]</span>
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">{name}</span>
               {s.category && (
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <span className="shrink-0 rounded-[5px] bg-surface-3 px-1.5 py-0.5 text-[10px] text-ink-soft">
                   {KB_CATEGORY_LABELS[s.category] ?? s.category}
                 </span>
               )}
               {s.used_image ? (
-                <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                <span className="shrink-0 rounded-[5px] bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   已读图
                 </span>
               ) : (
-                <span className="shrink-0 text-[10px] text-muted-foreground">相关度 {pct}%</span>
+                <span className="shrink-0 text-[10px] text-ink-faint">相关度 {pct}%</span>
               )}
-              <ChevronDown className={cn("h-3 w-3 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-180")} />
+              <ChevronDown className={cn("h-3 w-3 shrink-0 text-ink-faint transition-transform duration-100", expanded && "rotate-180")} />
             </button>
             {expanded && (
-              <div className="border-t bg-card px-3 py-2">
+              <div className="border-t border-[var(--border-soft)] bg-workspace px-3 py-2">
                 {imgPath && (
                   failedImgs.has(imgPath) || image?.status === "error" ? (
-                    <p className="mb-1.5 truncate text-[10px] text-muted-foreground">
+                    <p className="mb-1.5 truncate text-[10.5px] text-ink-faint">
                       图片：{imgPath.replace(/\\/g, "/")}
                     </p>
                   ) : image?.status !== "ready" || !image.url ? (
-                    <p className="mb-1.5 text-[10px] text-muted-foreground">图片加载中…</p>
+                    <p className="mb-1.5 text-[10.5px] text-ink-faint">图片加载中…</p>
                   ) : (
                     <button
                       onClick={() => onPreview(image.url!)}
@@ -445,13 +432,13 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
                       <img
                         src={image.url}
                         alt={name}
-                        className="max-h-44 w-full bg-muted object-contain transition-opacity hover:opacity-90"
+                        className="max-h-44 w-full rounded-[7px] bg-surface-2 object-contain transition-opacity duration-100 hover:opacity-90"
                         onError={() => setFailedImgs((prev) => new Set(prev).add(imgPath))}
                       />
                     </button>
                   )
                 )}
-                <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">{s.text}</p>
+                <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-ink-soft">{s.text}</p>
               </div>
             )}
           </div>
@@ -557,7 +544,7 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
       onClick={onClose}
     >
       <button
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors duration-100 hover:bg-white/20"
         onClick={onClose}
         title="关闭"
       >
@@ -587,7 +574,7 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
         <span className="tabular-nums">缩放 {Math.round(view.scale * 100)}%</span>
         {view.scale > 1 && <span className="text-white/60">拖拽可移动</span>}
         <button
-          className="rounded bg-white/15 px-2 py-0.5 transition-colors hover:bg-white/25"
+          className="rounded-[5px] bg-white/15 px-2 py-0.5 transition-colors duration-100 hover:bg-white/25"
           onClick={resetZoom}
           title="重置缩放"
         >

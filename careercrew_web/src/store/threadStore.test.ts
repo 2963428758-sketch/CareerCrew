@@ -10,7 +10,7 @@ describe("threadStore retrieval_scope", () => {
     useThreadStore.setState({ threadsByModule: {}, currentThreadByModule: {} })
   })
 
-  it("fetchThreads 解析 retrieval_scope", async () => {
+  it("fetchThreads 解析新模型 retrieval_scope", async () => {
     apiFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => [
@@ -19,14 +19,34 @@ describe("threadStore retrieval_scope", () => {
           title: "t",
           module: "knowledge",
           pinned: false,
-          retrieval_scope: { type: "category", category_id: "resume" },
+          retrieval_scope: { type: "public", category_id: "resume" },
         },
       ],
     })
     await useThreadStore.getState().fetchThreads("knowledge")
     expect(useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope).toEqual({
-      type: "category",
+      type: "public",
       category_id: "resume",
+    })
+  })
+
+  it("历史会话旧格式归一化为 type=all + category_id", async () => {
+    apiFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        {
+          thread_id: "k-legacy",
+          title: "t",
+          module: "knowledge",
+          pinned: false,
+          retrieval_scope: { type: "category", category_id: "interview" },
+        },
+      ],
+    })
+    await useThreadStore.getState().fetchThreads("knowledge")
+    expect(useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope).toEqual({
+      type: "all",
+      category_id: "interview",
     })
   })
 
@@ -34,75 +54,74 @@ describe("threadStore retrieval_scope", () => {
     apiFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => [
-        { thread_id: "k-legacy", title: "t", module: "knowledge", pinned: false },
+        { thread_id: "k-none", title: "t", module: "knowledge", pinned: false },
       ],
     })
     await useThreadStore.getState().fetchThreads("knowledge")
     expect(useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope).toBeNull()
   })
 
-  it("setThreadScope 乐观更新并 PATCH", async () => {
-    apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
-    useThreadStore.setState({
-      threadsByModule: {
-        knowledge: [{ thread_id: "k-1", title: "t", module: "knowledge", pinned: false }],
-      },
-    })
-    await useThreadStore.getState().setThreadScope("knowledge", "k-1", { type: "all" })
-    expect(apiFetch).toHaveBeenCalledWith(
-      "/api/threads/k-1",
-      expect.objectContaining({ method: "PATCH" })
-    )
-    expect(JSON.parse(apiFetch.mock.calls[0][1].body).retrieval_scope).toEqual({ type: "all" })
-    expect(useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope).toEqual({
-      type: "all",
-    })
-  })
-
-  it("PATCH 404 时不创建空线程，仅保留本地范围", async () => {
-    apiFetch.mockResolvedValueOnce({ ok: false, status: 404 })
-    await useThreadStore.getState().setThreadScope("knowledge", "k-new", { type: "public" })
-    // 只发了一次 PATCH，没有回退 POST 创建线程
-    expect(apiFetch).toHaveBeenCalledTimes(1)
-    expect(apiFetch.mock.calls[0][0]).toBe("/api/threads/k-new")
-    // 本地列表补上了该会话行并带范围
-    const row = useThreadStore.getState().threadsByModule.knowledge?.find(
-      (t) => t.thread_id === "k-new"
-    )
-    expect(row?.retrieval_scope).toEqual({ type: "public" })
-  })
-
-  it("setThreadScope 对已存在会话乐观更新选中态", async () => {
-    apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
-    useThreadStore.setState({
-      threadsByModule: {
-        knowledge: [{ thread_id: "k-1", title: "t", module: "knowledge", pinned: false }],
-      },
-    })
-    await useThreadStore.getState().setThreadScope("knowledge", "k-1", { type: "private" })
-    expect(
-      useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope
-    ).toEqual({ type: "private" })
-  })
-
-  it("touchThread 携带本地 retrieval_scope 落库", async () => {
+  it("setThreadScope 对已落库会话乐观更新并 PATCH", async () => {
     apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
     useThreadStore.setState({
       threadsByModule: {
         knowledge: [
+          { thread_id: "k-1", title: "t", module: "knowledge", pinned: false, persisted: true },
+        ],
+      },
+    })
+    await useThreadStore.getState().setThreadScope("knowledge", "k-1", {
+      type: "private", category_id: "job",
+    })
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/api/threads/k-1",
+      expect.objectContaining({ method: "PATCH" })
+    )
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body).retrieval_scope).toEqual({
+      type: "private", category_id: "job",
+    })
+    expect(useThreadStore.getState().threadsByModule.knowledge[0].retrieval_scope).toEqual({
+      type: "private", category_id: "job",
+    })
+  })
+
+  it("未落库会话只保留本地占位：不 PATCH、不显示为已持久化", async () => {
+    await useThreadStore.getState().setThreadScope("knowledge", "k-fresh", { type: "public" })
+    expect(apiFetch).not.toHaveBeenCalled()
+    const row = useThreadStore.getState().threadsByModule.knowledge?.find(
+      (t) => t.thread_id === "k-fresh"
+    )
+    expect(row?.retrieval_scope).toEqual({ type: "public" })
+    expect(row?.persisted).toBe(false)
+  })
+
+  it("touchThread 对已落库会话 PATCH 携带范围；404 时 POST 创建并携带范围", async () => {
+    useThreadStore.setState({
+      threadsByModule: {
+        knowledge: [
           {
-            thread_id: "k-1",
-            title: "k-1",
-            module: "knowledge",
-            pinned: false,
-            retrieval_scope: { type: "public" },
+            thread_id: "k-1", title: "k-1", module: "knowledge", pinned: false,
+            persisted: true, retrieval_scope: { type: "public" },
           },
         ],
       },
     })
+    apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
     await useThreadStore.getState().touchThread("knowledge", "k-1", "你好")
-    const body = JSON.parse(apiFetch.mock.calls[0][1].body)
-    expect(body.title).toBe("你好")
-    expect(body.retrieval_scope).toEqual({ type: "public" })
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body).retrieval_scope).toEqual({ type: "public" })
+
+    apiFetch.mockReset()
+    apiFetch.mockResolvedValueOnce({ ok: false, status: 404 })
+    apiFetch.mockResolvedValueOnce({ ok: true, status: 200 })
+    useThreadStore.setState({ threadsByModule: {} })
+    await useThreadStore.getState().setThreadScope("knowledge", "k-2", {
+      type: "private", category_id: "resume",
+    })
+    await useThreadStore.getState().touchThread("knowledge", "k-2", "你好")
+    expect(apiFetch.mock.calls[1][0]).toBe("/api/threads")
+    expect(apiFetch.mock.calls[1][1].method).toBe("POST")
+    expect(JSON.parse(apiFetch.mock.calls[1][1].body).retrieval_scope).toEqual({
+      type: "private", category_id: "resume",
+    })
   })
 })

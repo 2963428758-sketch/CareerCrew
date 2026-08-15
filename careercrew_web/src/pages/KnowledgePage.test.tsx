@@ -16,13 +16,14 @@ describe("KnowledgePage 检索范围", () => {
     useThreadStore.setState({
       threadsByModule: {
         knowledge: [
-          { thread_id: "k-a", title: "A", module: "knowledge", pinned: false },
+          { thread_id: "k-a", title: "A", module: "knowledge", pinned: false, persisted: true },
           {
             thread_id: "k-b",
             title: "B",
             module: "knowledge",
             pinned: false,
-            retrieval_scope: { type: "category", category_id: "interview" },
+            persisted: true,
+            retrieval_scope: { type: "all", category_id: "interview" },
           },
         ],
       },
@@ -30,7 +31,7 @@ describe("KnowledgePage 检索范围", () => {
     })
   })
 
-  it("点击分类立即 PATCH 范围", async () => {
+  it("点击分类立即 PATCH 范围（保留当前可见范围）", async () => {
     render(<KnowledgePage />)
     fireEvent.click(screen.getByText("面试题"))
     await waitFor(() =>
@@ -48,7 +49,22 @@ describe("KnowledgePage 检索范围", () => {
         (c[1] as Record<string, unknown>)?.method === "PATCH"
     )!
     const body = JSON.parse((patchCall[1] as { body: string }).body)
-    expect(body.retrieval_scope).toEqual({ type: "category", category_id: "interview" })
+    expect(body.retrieval_scope).toEqual({ type: "all", category_id: "interview" })
+  })
+
+  it("范围与分类正交：选公共库后再选面试题，两者同时保留", async () => {
+    render(<KnowledgePage />)
+    fireEvent.click(screen.getByText("公共库"))
+    await waitFor(() => expect(screen.getByText(/当前：公共库 · 全部分类/)).toBeTruthy())
+    fireEvent.click(screen.getByText("面试题"))
+    await waitFor(() => expect(screen.getByText(/当前：公共库 · 面试题/)).toBeTruthy())
+    const patchCall = apiFetch.mock.calls.findLast(
+      (c) =>
+        c[0] === "/api/threads/k-a" &&
+        (c[1] as Record<string, unknown>)?.method === "PATCH"
+    )!
+    const body = JSON.parse((patchCall[1] as { body: string }).body)
+    expect(body.retrieval_scope).toEqual({ type: "public", category_id: "interview" })
   })
 
   it("切换会话恢复其保存的范围", async () => {

@@ -19,20 +19,27 @@ class ProfileUpdateRequest(BaseModel):
 
 
 class RetrievalScopeRequest(BaseModel):
-    """会话检索范围：all=全部知识库；category=指定知识库分类（为后续文档/简历范围留扩展）。"""
+    """会话检索范围（两个正交维度）：
+
+    type: 可见范围（all=全部 / public=公共库 / private=个人库）
+    category_id: 可选内容分类（resume/knowledge/interview/job）
+    兼容旧格式 {"type": "category", "category_id": ...}，归一化为 type=all + category_id。
+    """
 
     type: str = "all"
     category_id: str | None = None
 
     @model_validator(mode="after")
     def _check(self):
-        if self.type not in ("all", "category", "public", "private"):
-            raise ValueError("type 必须为 all / category / public / private")
-        if self.type in ("all", "public", "private"):
-            self.category_id = None
+        if self.type == "category":  # 旧格式归一化
+            if not self.category_id or not self.category_id.strip():
+                raise ValueError("type=category 时必须提供 category_id")
+            self.type = "all"
             return self
+        if self.type not in ("all", "public", "private"):
+            raise ValueError("type 必须为 all / public / private")
         if not self.category_id or not self.category_id.strip():
-            raise ValueError("type=category 时必须提供 category_id")
+            self.category_id = None
         return self
 
 
