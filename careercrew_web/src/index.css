@@ -175,6 +175,14 @@
   animation: anchorHighlight 900ms ease-out;
 }
 
+/* 搜索匹配：低饱和高亮（§11.4），克制的中性黄，不抢正文 */
+.search-mark {
+  background-color: color-mix(in srgb, var(--ink) 12%, transparent);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
 /* Composer 后方渐隐遮罩：内容滚入输入框前被柔化收住 */
 .composer-fade {
   background: linear-gradient(
