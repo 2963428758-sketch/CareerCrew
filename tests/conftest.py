@@ -2,12 +2,12 @@
 
 valid_config() 返回字段完整的合法配置 dict（每次新构造，可安全 mutate）。
 valid_settings / valid_config_data fixture 供需要配置的单测复用。
+Settings 惰性导入：避免收集任一测试目录时把 careercrew_core.state
+（langgraph/numpy 等重依赖链）拖进不需要它的 job（如 postgres-memory 只装 psycopg）。
 """
 from __future__ import annotations
 
 import pytest
-
-from careercrew_core.state.settings import Settings
 
 
 def valid_config() -> dict:
@@ -114,6 +114,8 @@ def valid_config_data() -> dict:
 
 
 @pytest.fixture
-def valid_settings() -> Settings:
+def valid_settings():
     """合法 Settings 实例（单测复用）。"""
+    from careercrew_core.state.settings import Settings
+
     return Settings.model_validate(valid_config())

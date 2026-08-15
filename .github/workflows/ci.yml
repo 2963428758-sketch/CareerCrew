@@ -83,7 +83,7 @@ jobs:
       - name: Install Postgres memory test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest "psycopg[binary]>=3.1.0" pydantic PyYAML python-dotenv "langgraph>=1.2.0"
+          pip install pytest "psycopg[binary]>=3.1.0" "langchain-core>=1.0.0" numpy pydantic
           pip install -e . --no-deps
       - name: Postgres episodic-memory regression test
         env:

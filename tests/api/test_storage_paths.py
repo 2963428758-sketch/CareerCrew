@@ -19,9 +19,10 @@ def test_resolve_under_rejects_traversal():
         resolve_under(L.resumes_raw, "..", "x.pdf")  # 从根目录直接越界
 
 
-def test_resolve_under_rejects_absolute():
+def test_resolve_under_rejects_absolute(tmp_path):
+    outside = tmp_path / "outside.txt"  # 平台无关的绝对路径（Windows/Linux 均有效）
     with pytest.raises(ValueError):
-        resolve_under(L.resumes_raw, "C:/Windows/System32/x.pdf")
+        resolve_under(L.resumes_raw, str(outside))
 
 
 def test_distinct_uploads_distinct_paths():

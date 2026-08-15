@@ -15,8 +15,13 @@ def test_health(client):
 
 
 @pytest.mark.web
-def test_config(client):
-    # config 复用 dashboard get_settings_summary()，FakeRuntime 下可能抛（无真实配置文件上下文）
-    # 这里只验证端点存在且返回 200 或可预期的错误
+def test_config(client, valid_settings, monkeypatch):
+    """config 端点返回 settings 汇总（monkeypatch load_settings，不依赖仓库真实配置/环境变量）。"""
+    from careercrew_core.state import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "load_settings", lambda *a, **k: valid_settings)
     resp = client.get("/api/config")
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["llm"] == valid_settings.llm.model
+    assert data["vector_store"] == valid_settings.vector_store.backend
