@@ -511,6 +511,109 @@ def fake_runtime() -> FakeRuntime:
     return FakeRuntime()
 
 
+# ── 跨用户隔离测试基础设施（T0.3） ──
+#
+# ``tenant_api`` 提供真实认证链（AuthService + FakeAccountStore）下的三账号客户端：
+#   - alice : admin（首个管理员，同时作为跨用户隔离测试里的“用户 A”）
+#   - bob   : user（“用户 B”）
+#   - carol : quality_reviewer（API 级边界断言用）
+# 每家产出一个 access-token 头，并完成新建用户的强制改密，使业务 API 放行。
+# Runtime 用 FakeRuntime 注入（duck-typed，不触发重组件初始化），鉴权依赖仍是真实的。
+
+TENANT_PASSWORD = "correct-horse-battery-staple"
+TENANT_MEMBER_PASSWORD = "member-password-123"
+TENANT_JWT_SECRET = "cross-user-isolation-test-signing-secret-with-enough-entropy"
+
+
+def build_tenant_client(tmp_path, monkeypatch, *, quality_reviewer: str = "carol"):
+    """构造三账号 TestClient；返回 (client, runtime, headers, ids)。
+
+    对齐既有 test_tenant_isolation_api.py 的构建模式，但把副本收敛到一处，
+    后续隔离测试直接复用本 helper / ``tenant_api`` fixture。
+    """
+    from fastapi.testclient import TestClient
+
+    from careercrew_api.auth.dependencies import get_auth_service
+    from careercrew_api.auth.service import AuthService
+    from careercrew_api.deps import get_runtime_dep
+    from careercrew_api.main import create_app
+    from careercrew_api.routers import knowledge
+    from careercrew_core.state.settings import AuthSettings
+    from tests.fakes import FakeAccountStore
+
+    # 上传落盘改到临时目录，避免污染 data/uploads（知识库路由按模块属性引用根目录）
+    monkeypatch.setattr(knowledge, "_DATA_ROOT", tmp_path)
+    from careercrew_api import storage
+    from careercrew_api.storage import layout
+
+    monkeypatch.setattr(storage, "L", layout(tmp_path / "data"))
+
+    auth = AuthService(
+        AuthSettings(environment="test", jwt_secret=TENANT_JWT_SECRET),
+        FakeAccountStore(),
+    )
+    runtime = FakeRuntime()
+    app = create_app()
+    app.dependency_overrides[get_auth_service] = lambda: auth
+    app.dependency_overrides[get_runtime_dep] = lambda: runtime
+    client = TestClient(app)
+
+    alice = client.post(
+        "/api/auth/bootstrap",
+        json={"username": "alice", "password": TENANT_PASSWORD},
+    ).json()
+    alice_login = client.post(
+        "/api/auth/token",
+        json={"username": "alice", "password": TENANT_PASSWORD},
+    ).json()
+    alice_headers = {"Authorization": f"Bearer {alice_login['access_token']}"}
+
+    def _member(username: str, role: str):
+        created = client.post(
+            "/api/auth/users",
+            json={"username": username, "password": TENANT_MEMBER_PASSWORD, "role": role},
+            headers=alice_headers,
+        )
+        assert created.status_code == 201, created.text
+        login = client.post(
+            "/api/auth/token",
+            json={"username": username, "password": TENANT_MEMBER_PASSWORD},
+        ).json()
+        # 新建用户带强制改密标记：先改密，业务 API 才放行
+        change = client.post(
+            "/api/auth/password",
+            json={"new_password": TENANT_MEMBER_PASSWORD},
+            headers={"Authorization": f"Bearer {login['access_token']}"},
+        )
+        assert change.status_code == 200
+        relogin = client.post(
+            "/api/auth/token",
+            json={"username": username, "password": TENANT_MEMBER_PASSWORD},
+        ).json()
+        return {"Authorization": f"Bearer {relogin['access_token']}"}, relogin["user"]
+
+    bob_headers, bob_user = _member("bob", "user")
+    reviewer_headers, reviewer_user = _member(quality_reviewer, "quality_reviewer")
+
+    headers = {
+        "alice": alice_headers,
+        "bob": bob_headers,
+        "quality_reviewer": reviewer_headers,
+    }
+    ids = {
+        "alice": alice["id"],
+        "bob": bob_user["id"],
+        "quality_reviewer": reviewer_user["id"],
+    }
+    return client, runtime, headers, ids
+
+
+@pytest.fixture
+def tenant_api(tmp_path, monkeypatch):
+    """跨用户隔离测试的共享双/三账号客户端（真实认证 + FakeRuntime）。"""
+    return build_tenant_client(tmp_path, monkeypatch)
+
+
 @pytest.fixture
 def client(fake_runtime: FakeRuntime):
     """TestClient with FakeRuntime injected via dependency_overrides."""
