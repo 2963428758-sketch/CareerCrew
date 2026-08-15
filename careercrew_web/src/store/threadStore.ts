@@ -3,11 +3,15 @@ import { apiFetch } from "@/lib/auth"
 
 export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
+/** 会话检索范围（与后端 RetrievalScopeRequest 对齐；历史会话无该字段时为 null → "全部"）。 */
+export type RetrievalScope = { type: "all" } | { type: "category"; category_id: string }
+
 export interface ThreadItem {
   thread_id: string
   title: string
   module: string
   pinned: boolean
+  retrieval_scope?: RetrievalScope | null
   created_at?: string
   updated_at?: string
   entries?: number
@@ -68,6 +72,7 @@ interface ThreadState {
   selectThread: (m: ThreadModule, tid: string) => void
   registerThread: (m: ThreadModule) => Promise<string>
   touchThread: (m: ThreadModule, tid: string, title: string) => Promise<void>
+  setThreadScope: (m: ThreadModule, tid: string, scope: RetrievalScope) => Promise<void>
   renameThread: (m: ThreadModule, tid: string, title: string) => Promise<void>
   togglePin: (m: ThreadModule, tid: string, pinned: boolean) => Promise<void>
   deleteThread: (m: ThreadModule, tid: string) => Promise<void>
@@ -75,6 +80,7 @@ interface ThreadState {
   markCompletedUnread: (tid: string) => void
   clearCompletedUnread: (tid: string) => void
   bumpNonce: () => void
+  resetAll: () => void
 }
 
 const sortThreads = (list: ThreadItem[]): ThreadItem[] =>
@@ -111,6 +117,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
           title: String((t as Record<string, unknown>).title || tid),
           module: String((t as Record<string, unknown>).module || inferModule(tid)),
           pinned: Boolean((t as Record<string, unknown>).pinned),
+          retrieval_scope: ((t as Record<string, unknown>).retrieval_scope ?? null) as
+            | RetrievalScope
+            | null,
           created_at: String((t as Record<string, unknown>).created_at || ""),
           updated_at: String((t as Record<string, unknown>).updated_at || ""),
           entries: Number((t as Record<string, unknown>).entries || 0),
@@ -175,6 +184,36 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       })
     } catch {
       // 后端未就绪时忽略，仅保留本地标题
+    }
+  },
+
+  setThreadScope: async (m, tid, scope) => {
+    // 乐观更新本地列表：切换会话时立即恢复保存的范围
+    set((s) => ({
+      threadsByModule: {
+        ...s.threadsByModule,
+        [m]: (s.threadsByModule[m] || []).map((t) =>
+          t.thread_id === tid ? { ...t, retrieval_scope: scope } : t
+        ),
+      },
+    }))
+    const body = JSON.stringify({ retrieval_scope: scope })
+    try {
+      const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body,
+      })
+      if (resp.status === 404) {
+        // 尚未注册的会话（未发过消息）：先创建线程行再写范围
+        await apiFetch("/api/threads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: tid, module: m, retrieval_scope: scope }),
+        })
+      }
+    } catch {
+      // 后端未就绪：保留本地范围，下轮 fetchThreads 会以服务端为准
     }
   },
 
@@ -270,4 +309,15 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     }),
 
   bumpNonce: () => set((s) => ({ nonce: s.nonce + 1 })),
+
+  resetAll: () =>
+    set({
+      threadsByModule: {},
+      currentThreadByModule: initialCurrent,
+      loading: false,
+      error: "",
+      copiedThreadId: null,
+      completedUnread: {},
+      nonce: 0,
+    }),
 }))

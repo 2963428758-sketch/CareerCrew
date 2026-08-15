@@ -174,18 +174,7 @@ class CareerCrewRuntime:
             )
             self.ingest_pipeline = pipe
 
-            # 知识库入库（首次：data/uploads 下的 PDF/图片/docx；data/knowledge 不参与）
-            uploads_dir = Path(__file__).resolve().parents[1] / "data" / "uploads"
-            if store.count() == 0:
-                ingest_files = sorted(
-                    p for p in uploads_dir.glob("*")
-                    if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
-                )
-                for f in ingest_files:
-                    try:
-                        pipe.ingest_file(f, metadata={"user_id": "u_001"})
-                    except Exception as e:
-                        print(f"[runtime] ingest 跳过 {f}: {e}")
+            # 知识库只经由上传端点显式入库（历史首启扫描已移除：简历原件不得自动入知识库）
 
             memory_db = create_memory_db(settings)
             episodic = EpisodicMemory(memory_db, user_id="u_001", thread_id="m1")
@@ -310,14 +299,19 @@ class CareerCrewRuntime:
         return self.thread_store.list(user_id, module=module)
 
     def register_thread(self, thread_id: str, user_id: str,
-                        module: str = "chat", title: str = "") -> dict:
+                        module: str = "chat", title: str = "",
+                        retrieval_scope: dict | None = None) -> dict:
         """登记线程（前端新会话时调用）。"""
         self._ensure_heavy()
-        return self.thread_store.upsert(user_id, thread_id, title=title, module=module)
+        return self.thread_store.upsert(
+            user_id, thread_id, title=title, module=module,
+            retrieval_scope=retrieval_scope,
+        )
 
     def touch_thread(self, thread_id: str, user_id: str, title: str | None = None,
-                     pinned: bool | None = None, module: str | None = None) -> dict:
-        """更新线程标题/置顶（PATCH）。"""
+                     pinned: bool | None = None, module: str | None = None,
+                     retrieval_scope: dict | None = None) -> dict:
+        """更新线程标题/置顶/检索范围（PATCH）。"""
         self._ensure_heavy()
         row = self.thread_store.get(user_id, thread_id)
         if row is None:
@@ -327,6 +321,8 @@ class CareerCrewRuntime:
             title=title if title is not None else row.get("title", ""),
             module=module or row.get("module") or "chat",
             pinned=pinned if pinned is not None else bool(row.get("pinned")),
+            retrieval_scope=retrieval_scope if retrieval_scope is not None
+            else row.get("retrieval_scope"),
         )
 
     def delete_thread(self, thread_id: str, user_id: str) -> dict:
@@ -988,14 +984,18 @@ class CareerCrewRuntime:
         tool = make_read_image_tool(self.settings)
         return tool.invoke({"image_path": path, "prompt": "请描述图片内容并提取其中的文字。"})
 
-    def load_document(self, path: str) -> str:
-        """MinerU 解析为文本（resume 上传 pdf/docx 等；按 provider 走云端 API 或本地子进程）。"""
+    def load_document(self, path: str, output_dir: str | None = None) -> str:
+        """MinerU 解析为文本（resume 上传 pdf/docx 等；按 provider 走云端 API 或本地子进程）。
+
+        output_dir：按用户/文档隔离的解析产物目录（默认取 settings.rag.loaders.output_dir）。
+        """
         loaders = self.settings.rag.loaders
+        out_dir = loaders.output_dir if output_dir is None else output_dir
         if loaders.provider == "local":
             from careercrew_core.rag.loaders.mineru_loader import MinerULoader
 
             parsed = MinerULoader(
-                loaders.output_dir,
+                out_dir,
                 device=loaders.device,
                 method=loaders.method,
                 formula=loaders.formula,
@@ -1004,7 +1004,7 @@ class CareerCrewRuntime:
             from careercrew_core.rag.loaders.mineru_api_loader import MinerUApiLoader
 
             parsed = MinerUApiLoader(
-                loaders.output_dir,
+                out_dir,
                 api_key=loaders.api_key,
                 model_version=loaders.model_version,
                 formula=loaders.formula,
@@ -1022,24 +1022,32 @@ class CareerCrewRuntime:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        output_dir: str | None = None,
+        doc_name: str = "",
     ) -> dict:
         """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。
 
         progress_cb(stage, progress) 可选进度回调：stage ∈ parse/vectorize/store，
         progress ∈ [0, 1]（阶段边界处的真实进度，非秒级平滑值）。
-        category: 内容分类（resume/knowledge/interview）；空串按文档名自动识别。
+        category: 内容分类（resume/knowledge/interview）；空串按 doc_name（原文件名）自动识别。
+        output_dir: 按用户/文档隔离的解析产物目录。
         """
         self._ensure_heavy()
         from pathlib import Path
 
-        p = Path(path)
+        from careercrew_api.storage import DATA_ROOT
+
+        p = Path(path).resolve()
+        if not p.is_relative_to(DATA_ROOT.resolve()):
+            raise ValueError(f"入库路径越界: {p} 不在 {DATA_ROOT} 内")
         if not category:
             from careercrew_core.rag.categories import category_for_doc
 
-            category = category_for_doc(p.stem)
+            category = category_for_doc(doc_name or p.stem)
         owner_metadata = {**(metadata or {}), "user_id": user_id}
         n = self.ingest_pipeline.ingest_file(
             p, metadata=owner_metadata, progress_cb=progress_cb, category=category,
+            output_dir=output_dir,
         )
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
@@ -1057,8 +1065,12 @@ class CareerCrewRuntime:
     def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
         """Verify an image source is referenced by this tenant's vector payload."""
         self._ensure_heavy()
-        resolved = str(Path(path).resolve())
-        return bool(self.store.metadata_exists({"user_id": user_id, "image_path": resolved}))
+        from careercrew_api.storage import DATA_ROOT
+
+        resolved = Path(path).resolve()
+        if not resolved.is_relative_to(DATA_ROOT.resolve()):
+            return False
+        return bool(self.store.metadata_exists({"user_id": user_id, "image_path": str(resolved)}))
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):

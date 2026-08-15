@@ -192,6 +192,8 @@ class PostgresMemoryDb(MemoryDb):
                            "module TEXT NOT NULL DEFAULT 'chat', pinned BOOLEAN NOT NULL DEFAULT false, "
                            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
                            "PRIMARY KEY (user_id, thread_id))")
+        # 会话检索范围（知识库分类等）元数据；历史行回退 NULL（前端视为"全部"）
+        self._conn.execute("ALTER TABLE threads ADD COLUMN IF NOT EXISTS retrieval_scope JSONB")
         self._conn.commit()
         return self._conn
 
@@ -425,16 +427,22 @@ class PostgresMemoryDb(MemoryDb):
     # ── threads ──
 
     @_synchronized
-    def upsert_thread(self, user_id, thread_id, title, module, pinned) -> dict:
+    def upsert_thread(self, user_id, thread_id, title, module, pinned, retrieval_scope=None) -> dict:
         conn = self._ensure()
         now = _now()
         existing = self.get_thread(user_id, thread_id)
         created_at = existing.get("created_at") or now if existing else now
         conn.execute(
-            "INSERT INTO threads (user_id, thread_id, title, module, pinned, created_at, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (user_id, thread_id) DO UPDATE SET "
-            "title=EXCLUDED.title, module=EXCLUDED.module, pinned=EXCLUDED.pinned, updated_at=EXCLUDED.updated_at",
-            (user_id, thread_id, title or "", module or "chat", bool(pinned), created_at, now),
+            "INSERT INTO threads (user_id, thread_id, title, module, pinned, retrieval_scope, "
+            "created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s) "
+            "ON CONFLICT (user_id, thread_id) DO UPDATE SET "
+            "title=EXCLUDED.title, module=EXCLUDED.module, pinned=EXCLUDED.pinned, "
+            "retrieval_scope=COALESCE(EXCLUDED.retrieval_scope, threads.retrieval_scope), "
+            "updated_at=EXCLUDED.updated_at",
+            (user_id, thread_id, title or "", module or "chat", bool(pinned),
+             _json_dumps(retrieval_scope) if retrieval_scope is not None else None,
+             created_at, now),
         )
         conn.commit()
         return self.get_thread(user_id, thread_id) or {}
@@ -443,7 +451,7 @@ class PostgresMemoryDb(MemoryDb):
     def get_thread(self, user_id, thread_id) -> dict | None:
         conn = self._ensure()
         row = conn.execute(
-            "SELECT user_id, thread_id, title, module, pinned, created_at, updated_at "
+            "SELECT user_id, thread_id, title, module, pinned, retrieval_scope, created_at, updated_at "
             "FROM threads WHERE user_id=%s AND thread_id=%s",
             (user_id, thread_id),
         ).fetchone()
@@ -452,16 +460,16 @@ class PostgresMemoryDb(MemoryDb):
     @_synchronized
     def list_threads(self, user_id, module=None) -> list[dict]:
         conn = self._ensure()
+        cols = "user_id, thread_id, title, module, pinned, retrieval_scope, created_at, updated_at"
         if module:
             rows = conn.execute(
-                "SELECT user_id, thread_id, title, module, pinned, created_at, updated_at "
-                "FROM threads WHERE user_id=%s AND module=%s ORDER BY pinned DESC, updated_at DESC",
+                f"SELECT {cols} FROM threads WHERE user_id=%s AND module=%s "
+                "ORDER BY pinned DESC, updated_at DESC",
                 (user_id, module),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT user_id, thread_id, title, module, pinned, created_at, updated_at "
-                "FROM threads WHERE user_id=%s ORDER BY pinned DESC, updated_at DESC",
+                f"SELECT {cols} FROM threads WHERE user_id=%s ORDER BY pinned DESC, updated_at DESC",
                 (user_id,),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
@@ -609,13 +617,15 @@ class FakeMemoryDb(MemoryDb):
         }
         return dict(self._global_policy)
 
-    def upsert_thread(self, user_id, thread_id, title, module, pinned) -> dict:
+    def upsert_thread(self, user_id, thread_id, title, module, pinned, retrieval_scope=None) -> dict:
         now = _now()
         existing = self.get_thread(user_id, thread_id)
         created_at = existing.get("created_at") or now if existing else now
         row = {
             "user_id": user_id, "thread_id": thread_id, "title": title or "",
             "module": module or "chat", "pinned": bool(pinned),
+            "retrieval_scope": retrieval_scope if retrieval_scope is not None
+            else (existing or {}).get("retrieval_scope"),
             "created_at": created_at, "updated_at": now,
         }
         self._threads[(user_id, thread_id)] = row
