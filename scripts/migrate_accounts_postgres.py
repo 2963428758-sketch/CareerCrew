@@ -110,7 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     dsn = args.postgres_dsn or _auth_dsn()
-    rows = sqlite_accounts(args.sqlite_db)
+    try:
+        rows = sqlite_accounts(args.sqlite_db)
+    except FileNotFoundError:
+        print(f"SQLite 账号库不存在（已归档或已迁移），无需迁移: {args.sqlite_db}")
+        return 0
     if not rows:
         print("SQLite 账号表为空，无需迁移")
         return 0
