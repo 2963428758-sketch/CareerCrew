@@ -73,8 +73,7 @@ def agent_version() -> str:
     except Exception:  # noqa: BLE001 - 版本获取失败不阻断主链路
         pass
 
-    _cached_agent_version = _UNVERSIONED
-    return _cached_agent_version
+    return _UNVERSIONED
 
 
 def prompt_version_for_agent(agent_id: str | None) -> str:

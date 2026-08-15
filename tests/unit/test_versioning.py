@@ -91,12 +91,26 @@ def test_agent_version_git_failure_returns_unversioned(monkeypatch):
 
 
 def test_agent_version_module_cache(monkeypatch):
-    """两次调用返回同一值（第二次不重新跑 subprocess）。"""
-    monkeypatch.setenv("CAREERCREW_AGENT_VERSION", "cache-me-123")
+    """两次调用仅在第一次跑 subprocess（第二次命中缓存，不重跑 git）。"""
+    import subprocess
+
+    calls = []
+
+    class _FakeProc:
+        returncode = 0
+        stdout = "fake-git-sha-1234\n"
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        return _FakeProc()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.delenv("CAREERCREW_AGENT_VERSION", raising=False)
     versioning._cached_agent_version = None
     first = versioning.agent_version()
     second = versioning.agent_version()
-    assert first == second == "cache-me-123"
+    assert first == second == "fake-git-sha-1234"
+    assert len(calls) == 1
 
 
 def test_agent_version_never_unknown(monkeypatch):
