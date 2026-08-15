@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tooltip } from "@/components/ui/tooltip"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { KB_CATEGORIES, KB_CATEGORY_LABELS } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch, getAuthSnapshot, subscribeAuth } from "@/lib/auth"
@@ -141,8 +143,10 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     }
   }
 
+  /** 待删除确认的文档（自定义 Codex 确认框，替代 window.confirm） */
+  const [confirmDoc, setConfirmDoc] = useState<KnowledgeDoc | null>(null)
+
   const handleDelete = async (doc: KnowledgeDoc) => {
-    if (!window.confirm(`确定从知识库删除「${doc.doc}」吗？删除后需重新上传才能恢复。`)) return
     const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}`, { method: "DELETE" })
     if (resp.status === 403) {
       setError("只有管理员可以删除公共知识库文档")
@@ -163,15 +167,17 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     <div className="space-y-4">
       {onClose && (
         <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold text-muted-foreground">知识库管理</p>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} title="关闭">
-            <X className="h-4 w-4" />
-          </Button>
+          <p className="text-[12px] font-medium text-ink-soft">知识库管理</p>
+          <Tooltip label="关闭">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} aria-label="关闭">
+              <X className="h-4 w-4" />
+            </Button>
+          </Tooltip>
         </div>
       )}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">上传知识文档</CardTitle>
+          <CardTitle className="text-[13px] font-medium">上传知识文档</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
@@ -180,10 +186,10 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                 key={c.id || "auto"}
                 onClick={() => setUploadCategory(c.id)}
                 className={cn(
-                  "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-all",
+                  "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors duration-100",
                   uploadCategory === c.id
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border bg-card hover:bg-muted"
+                    ? "border-transparent bg-button-ink text-button-onink"
+                    : "border-[var(--border-soft)] bg-transparent text-ink-soft hover:bg-[var(--hover)]"
                 )}
               >
                 {c.label}
@@ -192,12 +198,12 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
           </div>
           {isAdmin && (
             <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">可见性</span>
+              <span className="text-[12px] text-ink-soft">可见性</span>
               <button
                 onClick={() => setUploadVisibility((v) => (v === "private" ? "public" : "private"))}
                 className={cn(
-                  "rounded-full border px-2 py-0.5 text-[11px] font-medium transition-all",
-                  uploadVisibility === "public" ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted"
+                  "rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors duration-100",
+                  uploadVisibility === "public" ? "border-transparent bg-button-ink text-button-onink" : "border-[var(--border-soft)] bg-transparent text-ink-soft hover:bg-[var(--hover)]"
                 )}
               >
                 {uploadVisibility === "public" ? "发布到公共库" : "我的私有库"}
@@ -209,24 +215,24 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
               type="file"
               accept=".pdf,.png,.jpg,.jpeg,.docx,.pptx,.xlsx,.md,.markdown,.txt"
               onChange={(e) => setFiles(e.target.files)}
-              className="h-9 max-w-sm text-sm"
+              className="h-9 max-w-sm text-[13px]"
             />
             <Button size="sm" className="gap-1.5" onClick={handleUpload} disabled={uploading || !files || files.length === 0}>
               <Upload className="h-3.5 w-3.5" />
               {uploading ? "解析入库中…" : "上传入库"}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-[12px] text-ink-soft">
             支持 PDF / 图片 / DOCX / PPTX / XLSX / Markdown / TXT。PDF 与图片会先经 MinerU
             抽取文本再向量化，约需 1-2 分钟，请耐心等待。
           </p>
           {job && job.status !== "error" && (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <div className="flex items-center justify-between text-[12px] text-ink-soft">
                 <span>{job.status === "done" ? "完成" : STAGE_LABELS[job.stage] ?? job.stage}</span>
                 <span className="tabular-nums">{Math.round(displayPct)}%</span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
                 <div
                   className={
                     job.status === "done"
@@ -237,35 +243,35 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                 />
               </div>
               {job.status !== "done" && job.stage === "parse" && (
-                <p className="text-xs text-muted-foreground">PDF / 图片解析较慢，期间进度条会缓慢推进，请勿关闭页面…</p>
+                <p className="text-[12px] text-ink-faint">PDF / 图片解析较慢，期间进度条会缓慢推进，请勿关闭页面…</p>
               )}
             </div>
           )}
           {job?.status === "done" && displayPct >= 99 && job.result && (
-            <p className="text-xs font-medium text-green-600">
+            <p className="text-[12px] font-medium text-green-600">
               ✓ 入库成功：{job.filename} → doc_id={job.result.doc_id}，
               {Number(job.result.points)} 个向量点
             </p>
           )}
-          {job?.status === "error" && <p className="text-xs font-medium text-destructive">上传失败：{job.error}</p>}
-          {uploadError && <p className="text-xs font-medium text-destructive">上传失败：{uploadError}</p>}
+          {job?.status === "error" && <p className="text-[12px] font-medium text-destructive">上传失败：{job.error}</p>}
+          {uploadError && <p className="text-[12px] font-medium text-destructive">上传失败：{uploadError}</p>}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">
+          <CardTitle className="text-[13px] font-medium">
             库内文档
-            {status && <span className="ml-1 font-normal text-muted-foreground">（{status.docs.length} 份）</span>}
+            {status && <span className="ml-1 font-normal text-ink-faint">（{status.docs.length} 份）</span>}
           </CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
             <Skeleton className="h-32 w-full" />
           ) : error ? (
-            <p className="text-sm text-destructive">加载失败：{error}</p>
+            <p className="text-[13px] text-destructive">加载失败：{error}</p>
           ) : !status || status.docs.length === 0 ? (
-            <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+            <p className="rounded-[8px] border border-dashed border-[var(--border-normal)] px-3 py-6 text-center text-[13px] text-ink-faint">
               知识库为空，先上传一份文档吧
             </p>
           ) : (
@@ -277,10 +283,10 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                   <>
                     {publicDocs.length > 0 && (
                       <div>
-                        <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-600">
+                        <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-amber-600">
                           <Globe className="h-3.5 w-3.5" />
                           公共知识库
-                          <span className="font-normal text-muted-foreground">（所有人可见 · {publicDocs.length} 份）</span>
+                          <span className="font-normal text-ink-faint">（所有人可见 · {publicDocs.length} 份）</span>
                         </p>
                         <div className="space-y-1.5">
                           {publicDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={handleDelete} onTogglePublish={togglePublish} />)}
@@ -289,9 +295,9 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                     )}
                     {privateDocs.length > 0 && (
                       <div>
-                        <p className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                        <p className="mb-1.5 text-[12px] font-medium text-ink-soft">
                           我的资料
-                          <span className="ml-1 font-normal text-muted-foreground/70">（仅自己可见 · {privateDocs.length} 份）</span>
+                          <span className="ml-1 font-normal text-ink-faint">（仅自己可见 · {privateDocs.length} 份）</span>
                         </p>
                         <div className="space-y-1.5">
                           {privateDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={handleDelete} onTogglePublish={togglePublish} />)}
@@ -317,45 +323,49 @@ function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
   onTogglePublish: (doc: KnowledgeDoc) => void
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
-      <BookOpen className="h-4 w-4 shrink-0 text-primary" />
+    <div className="flex items-center gap-2 rounded-[8px] border border-[var(--border-soft)] bg-workspace px-3 py-2">
+      <BookOpen className="h-4 w-4 shrink-0 text-primary" strokeWidth={1.7} />
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+        <p className="flex items-center gap-1.5 truncate text-[13px] font-medium text-ink">
           <span className="truncate">{doc.doc}</span>
           <span className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+            "shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px] font-medium",
             doc.visibility === "public" ? "bg-amber-500/15 text-amber-600" : "bg-primary/10 text-primary"
           )}>
             {doc.visibility === "public" ? "公共" : "我的"}
           </span>
           {doc.category && (
-            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            <span className="shrink-0 rounded-[5px] bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-ink-soft">
               {KB_CATEGORY_LABELS[doc.category] ?? doc.category}
             </span>
           )}
         </p>
-        <p className="truncate text-[11px] text-muted-foreground">
+        <p className="truncate text-[11px] text-ink-faint">
           {doc.source.split(/[\\/]/).pop() || doc.source}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
         {isAdmin && (
-          <button
-            className="flex items-center gap-0.5 rounded p-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
-            onClick={() => onTogglePublish(doc)}
-            title={doc.visibility === "public" ? "下架公共文档" : "发布到公共库"}
-          >
-            <Globe className="h-3.5 w-3.5" />
-          </button>
+          <Tooltip label={doc.visibility === "public" ? "下架公共文档" : "发布到公共库"}>
+            <button
+              className="flex items-center gap-0.5 rounded-[5px] p-1 text-[11px] text-ink-faint transition-colors duration-100 hover:text-primary"
+              onClick={() => onTogglePublish(doc)}
+              aria-label={doc.visibility === "public" ? "下架公共文档" : "发布到公共库"}
+            >
+              <Globe className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
         )}
         {(doc.visibility === "private" ? doc.owner_user_id === me : isAdmin) && (
-          <button
-            className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-            onClick={() => onDelete(doc)}
-            title={`删除 ${doc.doc}`}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          <Tooltip label={`删除 ${doc.doc}`}>
+            <button
+              className="shrink-0 rounded-[5px] p-1 text-ink-faint transition-colors duration-100 hover:text-destructive"
+              onClick={() => setConfirmDoc(doc)}
+              aria-label={`删除 ${doc.doc}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
         )}
       </div>
     </div>

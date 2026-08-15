@@ -72,6 +72,9 @@ class AccountStore(ABC):
     def update_password_hash(self, user_id: str, password_hash: str) -> None: ...
 
     @abstractmethod
+    def update_avatar(self, user_id: str, avatar_ref: str) -> None: ...
+
+    @abstractmethod
     def set_must_change_password(self, user_id: str, value: bool) -> None: ...
 
     @abstractmethod
@@ -114,7 +117,7 @@ class AccountStore(ABC):
     def _public(row: dict[str, Any]) -> dict[str, Any]:
         return {k: row[k] for k in ("id", "username", "role", "status",
                                     "token_version", "created_at", "updated_at",
-                                    "must_change_password")
+                                    "must_change_password", "avatar")
                 if k in row and row.get(k) is not None}
 
 
@@ -139,6 +142,10 @@ class PostgresAccountStore(AccountStore):
             conn.execute(
                 "ALTER TABLE auth_accounts "
                 "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false"
+            )
+            conn.execute(
+                "ALTER TABLE auth_accounts "
+                "ADD COLUMN IF NOT EXISTS avatar TEXT"
             )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS auth_refresh_sessions ("
@@ -250,6 +257,15 @@ class PostgresAccountStore(AccountStore):
                 (password_hash, user_id),
             )
 
+    def update_avatar(self, user_id: str, avatar_ref: str) -> None:
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "UPDATE auth_accounts SET avatar = %s, updated_at = now() WHERE id = %s",
+                (avatar_ref, user_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(user_id)
+
     def set_must_change_password(self, user_id: str, value: bool) -> None:
         with self._connect() as conn, conn.transaction():
             conn.execute(
@@ -281,7 +297,7 @@ class PostgresAccountStore(AccountStore):
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
                 "SELECT s.expires_at, a.id, a.username, a.role, a.status, a.token_version, "
-                "a.created_at, a.updated_at, a.must_change_password "
+                "a.created_at, a.updated_at, a.must_change_password, a.avatar "
                 "FROM auth_refresh_sessions s JOIN auth_accounts a ON a.id = s.user_id "
                 "WHERE s.token_hash = %s AND s.revoked_at IS NULL AND a.status = 'active'",
                 (old_hash,),

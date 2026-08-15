@@ -3,7 +3,7 @@ import {
 } from "react"
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import {
-  BookOpen, Copy, FileText, GraduationCap, Loader2, MessageCircle, MessageSquare,
+  BookOpen, Copy, FileText, GraduationCap, Loader2, MessageSquare,
   MoreHorizontal, PanelLeftClose, Pencil, Pin, Plus,
   Sun, Moon, Target, Trash2, UserCog, Users,
 } from "lucide-react"
@@ -12,6 +12,8 @@ import { isDark, toggleTheme } from "@/lib/theme"
 import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
 import { useChatStore } from "@/store/chatStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
+import { Tooltip } from "@/components/ui/tooltip"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { UserMenu } from "@/components/UserMenu"
 import type { AuthUser } from "@/lib/auth"
 
@@ -80,13 +82,15 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
         {/* 品牌行 */}
         <div className={cn("flex h-12 shrink-0 items-center", compact ? "justify-center px-1.5" : "gap-2 px-2.5")}>
           {compact ? (
-            <button
-              onClick={onToggleCollapsed}
-              className="rounded-[7px] p-1.5 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
-              title="展开侧边栏"
-            >
-              <BrandMark />
-            </button>
+            <Tooltip label="展开侧边栏">
+              <button
+                onClick={onToggleCollapsed}
+                aria-label="展开侧边栏"
+                className="rounded-[7px] p-1.5 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+              >
+                <BrandMark />
+              </button>
+            </Tooltip>
           ) : (
             <>
               <BrandMark />
@@ -94,13 +98,15 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
                 CareerCrew
               </span>
               {!overlay && (
-                <button
-                  onClick={onToggleCollapsed}
-                  className="rounded-[7px] p-1.5 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
-                  title="收起侧边栏"
-                >
-                  <PanelLeftClose className="h-4 w-4" strokeWidth={1.7} />
-                </button>
+                <Tooltip label="收起侧边栏">
+                  <button
+                    onClick={onToggleCollapsed}
+                    aria-label="收起侧边栏"
+                    className="rounded-[7px] p-1.5 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+                  >
+                    <PanelLeftClose className="h-4 w-4" strokeWidth={1.7} />
+                  </button>
+                </Tooltip>
               )}
             </>
           )}
@@ -108,17 +114,19 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
 
         {/* 主操作：新对话 */}
         <div className="px-2">
-          <button
-            onClick={handleNewTask}
-            title={compact ? "新对话" : undefined}
-            className={cn(
-              "flex w-full items-center rounded-[7px] text-[13px] font-medium text-ink transition-colors duration-100 hover:bg-[var(--hover)]",
-              compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px]"
-            )}
-          >
-            <Plus className="h-4 w-4 shrink-0 text-ink-soft" strokeWidth={1.7} />
-            {!compact && <span className="flex-1 text-left">新对话</span>}
-          </button>
+          <Tooltip label={compact ? "新对话" : undefined}>
+            <button
+              onClick={handleNewTask}
+              aria-label={compact ? "新对话" : undefined}
+              className={cn(
+                "flex w-full items-center rounded-[7px] text-[13px] font-medium text-ink transition-colors duration-100 hover:bg-[var(--hover)]",
+                compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px]"
+              )}
+            >
+              <Plus className="h-4 w-4 shrink-0 text-ink-soft" strokeWidth={1.7} />
+              {!compact && <span className="flex-1 text-left">新对话</span>}
+            </button>
+          </Tooltip>
         </div>
 
         {/* 模块导航 */}
@@ -129,32 +137,33 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
         )}
         <div className="flex flex-col gap-[2px] px-2">
           {NAV.filter((item) => !item.adminOnly || auth?.role === "admin").map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              title={compact ? item.label : undefined}
-              onClick={overlay ? onOverlayClose : undefined}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center rounded-[7px] font-[450] transition-colors duration-100",
-                  compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px] text-[13px]",
-                  isActive
-                    ? "bg-[var(--active)] text-ink"
-                    : "text-ink-soft hover:bg-[var(--hover)] hover:text-ink"
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  <item.icon
-                    className={cn("h-4 w-4 shrink-0", isActive ? "text-ink" : "text-ink-faint")}
-                    strokeWidth={1.7}
-                  />
-                  {!compact && item.label}
-                </>
-              )}
-            </NavLink>
+            <Tooltip key={item.to} label={compact ? item.label : undefined}>
+              <NavLink
+                to={item.to}
+                end={item.end}
+                aria-label={compact ? item.label : undefined}
+                onClick={overlay ? onOverlayClose : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center rounded-[7px] font-[450] transition-colors duration-100",
+                    compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px] text-[13px]",
+                    isActive
+                      ? "bg-[var(--active)] text-ink"
+                      : "text-ink-soft hover:bg-[var(--hover)] hover:text-ink"
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <item.icon
+                      className={cn("h-4 w-4 shrink-0", isActive ? "text-ink" : "text-ink-faint")}
+                      strokeWidth={1.7}
+                    />
+                    {!compact && item.label}
+                  </>
+                )}
+              </NavLink>
+            </Tooltip>
           ))}
         </div>
 
@@ -175,16 +184,19 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
   )
 }
 
-function ThemeToggle() {
+export function ThemeToggle() {
   const [dark, setDark] = useState(isDark())
+  const label = dark ? "切换到浅色模式" : "切换到深色模式"
   return (
-    <button
-      onClick={() => { toggleTheme(); setDark(isDark()) }}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
-      title={dark ? "切换到浅色模式" : "切换到深色模式"}
-    >
-      {dark ? <Sun className="h-4 w-4" strokeWidth={1.7} /> : <Moon className="h-4 w-4" strokeWidth={1.7} />}
-    </button>
+    <Tooltip label={label}>
+      <button
+        onClick={() => { toggleTheme(); setDark(isDark()) }}
+        aria-label={label}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+      >
+        {dark ? <Sun className="h-4 w-4" strokeWidth={1.7} /> : <Moon className="h-4 w-4" strokeWidth={1.7} />}
+      </button>
+    </Tooltip>
   )
 }
 
@@ -229,8 +241,10 @@ function ThreadList() {
     navigate(moduleMeta.path)
   }
 
+  /** 待删除确认的会话（自定义 Codex 确认框，替代 window.confirm） */
+  const [confirmDelete, setConfirmDelete] = useState<ThreadItem | null>(null)
+
   const handleDelete = (tid: string) => {
-    if (!window.confirm("确定删除这个对话吗？删除后该对话的记忆将无法恢复。")) return
     deleteThread(module, tid)
   }
 
@@ -256,13 +270,21 @@ function ThreadList() {
                 onSelect={() => handleSelect(thread.thread_id)}
                 onRename={(title) => renameThread(module, thread.thread_id, title)}
                 onTogglePin={(pinned) => togglePin(module, thread.thread_id, pinned)}
-                onDelete={() => handleDelete(thread.thread_id)}
+                onDelete={() => setConfirmDelete(thread)}
                 onCopy={() => copyThreadId(thread.thread_id)}
               />
             ))}
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="删除这个对话？"
+        message={`「${confirmDelete?.title ?? ""}」删除后，该对话的记忆将无法恢复。`}
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete.thread_id)}
+        onClose={() => setConfirmDelete(null)}
+      />
     </div>
   )
 }
@@ -313,7 +335,6 @@ function ThreadRow({ module: _module, thread, isActive, copied, onSelect, onRena
           onSelect()
         }}
       >
-        <MessageCircle className={cn("h-3 w-3 shrink-0 opacity-60", thread.pinned && "text-primary")} />
         {renaming ? (
           <input
             autoFocus
@@ -331,33 +352,39 @@ function ThreadRow({ module: _module, thread, isActive, copied, onSelect, onRena
           <>
             {thread.pinned && <Pin className="h-3 w-3 shrink-0 text-primary" />}
             {session.status === "streaming" && (
-              <span className="flex shrink-0" title="正在生成回答…">
-                <Loader2 className="h-3 w-3 animate-spin text-ink-faint" />
-              </span>
+              <Tooltip label="正在生成回答…">
+                <span className="flex shrink-0">
+                  <Loader2 className="h-3 w-3 animate-spin text-ink-faint" />
+                </span>
+              </Tooltip>
             )}
             {session.status === "done" && unread && (
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ink)] opacity-60"
-                title="回答完成，点击查看"
-              />
+              <Tooltip label="回答完成，点击查看">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ink)] opacity-60"
+                />
+              </Tooltip>
             )}
             {session.status === "error" && (
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full bg-destructive/70"
-                title="生成出错"
-              />
+              <Tooltip label="生成出错">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-destructive/70"
+                />
+              </Tooltip>
             )}
             <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-            <button
-              className="shrink-0 rounded-[5px] p-0.5 opacity-0 transition-opacity duration-100 hover:bg-[var(--hover)] group-hover:opacity-100"
-              onClick={(e) => {
-                e.stopPropagation()
-                setMenuOpen((o) => !o)
-              }}
-              title="更多操作"
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
+            <Tooltip label="更多操作">
+              <button
+                className="shrink-0 rounded-[5px] p-0.5 opacity-0 transition-opacity duration-100 hover:bg-[var(--hover)] group-hover:opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuOpen((o) => !o)
+                }}
+                aria-label="更多操作"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
           </>
         )}
       </div>

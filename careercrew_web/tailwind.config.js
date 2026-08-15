@@ -10,9 +10,18 @@ export default {
     },
     extend: {
       fontFamily: {
-        display: ['"Space Grotesk"', "-apple-system", '"PingFang SC"', '"Microsoft YaHei"', "sans-serif"],
-        sans: ["-apple-system", "BlinkMacSystemFont", '"Segoe UI"', '"PingFang SC"', '"Microsoft YaHei"', "sans-serif"],
-        mono: ['"SF Mono"', '"Cascadia Code"', '"JetBrains Mono"', "monospace"],
+        display: [
+          '"Inter"', "-apple-system", "BlinkMacSystemFont", '"Segoe UI"',
+          '"PingFang SC"', '"Microsoft YaHei"', "sans-serif",
+        ],
+        sans: [
+          '"Inter"', "-apple-system", "BlinkMacSystemFont", '"Segoe UI"',
+          '"PingFang SC"', '"Microsoft YaHei"', "sans-serif",
+        ],
+        mono: [
+          '"SFMono-Regular"', '"SF Mono"', '"Cascadia Code"',
+          '"JetBrains Mono"', '"Roboto Mono"', "monospace",
+        ],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -44,12 +53,22 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        sidebar: {
-          DEFAULT: "hsl(var(--sidebar))",
-          hover: "hsl(var(--sidebar-hover))",
-          border: "hsl(var(--sidebar-border))",
-          text: "hsl(var(--sidebar-text))",
-          active: "hsl(var(--sidebar-text-active))",
+        /* Codex 分层表面 */
+        shell: "var(--shell)",
+        workspace: "var(--workspace)",
+        surface: {
+          1: "var(--surface-1)",
+          2: "var(--surface-2)",
+          3: "var(--surface-3)",
+        },
+        ink: {
+          DEFAULT: "var(--ink)",
+          soft: "var(--ink-soft)",
+          faint: "var(--ink-faint)",
+        },
+        button: {
+          ink: "var(--button-ink)",
+          onink: "var(--on-ink)",
         },
         /* Agent 身份色系 */
         agent: {
@@ -61,9 +80,16 @@ export default {
         },
       },
       borderRadius: {
+        xs: "var(--radius-xs)",
+        sm: "var(--radius-sm)",
         lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        md: "var(--radius-md)",
+        xl: "var(--radius-xl)",
+      },
+      boxShadow: {
+        workspace: "var(--shadow-workspace)",
+        popover: "var(--shadow-popover)",
+        prompt: "var(--shadow-prompt)",
       },
     },
   },

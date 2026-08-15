@@ -2,35 +2,107 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * CareerCrew — Codex 风格设计系统
+ * Application Shell（暖灰）→ Sidebar（融入外壳）→ Floating Workspace（白色大圆角面板）
+ * 层级靠背景与留白区分，边框与阴影只做最弱的提示。
+ */
+
 @layer base {
   :root {
-    /* 暖纸色内容区 + 深色侧边栏 */
-    --background: 40 33% 98%;          /* #FBFAF7 暖纸 */
-    --foreground: 12 6% 10%;           /* #1C1917 暖近黑 */
-    --card: 0 0% 100%;                 /* #FFFFFF 纯白卡片 */
-    --card-foreground: 12 6% 10%;
-    --primary: 173 80% 32%;            /* #0D9488 深青 */
-    --primary-foreground: 40 33% 98%;
-    --secondary: 30 10% 95%;           /* #F0EEE9 暖灰 */
-    --secondary-foreground: 12 6% 15%;
-    --muted: 30 10% 95%;
-    --muted-foreground: 30 6% 43%;     /* #78716C 石灰 */
-    --accent: 32 95% 44%;              /* #D97706 琥珀 */
-    --accent-foreground: 40 33% 98%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 30 6% 89%;               /* #E7E5E4 暖浅灰 */
-    --input: 30 6% 89%;
+    /* ── 语义色（Tailwind hsl 通道） ── */
+    --background: 60 15% 95%;              /* #f4f4f1 暖灰应用外壳 */
+    --foreground: 60 6% 11%;               /* #1d1d1b 近黑正文 */
+    --card: 0 0% 100%;                     /* #ffffff 工作区/面板 */
+    --card-foreground: 60 6% 11%;
+    --primary: 173 80% 32%;                /* #0D9488 品牌青（仅链接/主操作/状态） */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 60 8% 92%;                /* #eeeeeb */
+    --secondary-foreground: 60 6% 11%;
+    --muted: 60 8% 96%;                    /* #f6f6f3 表面 */
+    --muted-foreground: 60 4% 40%;
+    --accent: 60 8% 93%;                   /* 中性 hover 面 */
+    --accent-foreground: 60 6% 11%;
+    --destructive: 4 56% 45%;              /* 低饱和红 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 60 4% 91%;
+    --input: 60 4% 87%;
     --ring: 173 80% 32%;
 
-    /* 侧边栏（始终深色） */
-    --sidebar: 213 21% 8%;             /* #0F1419 深墨 */
-    --sidebar-hover: 215 22% 15%;      /* #1E242E */
-    --sidebar-border: 215 20% 20%;     /* #2D3340 */
-    --sidebar-text: 210 13% 65%;       /* 静默文字 */
-    --sidebar-text-active: 173 80% 45%; /* 青色高亮 */
+    /* ── 半径体系 ── */
+    --radius-xs: 5px;
+    --radius-sm: 7px;
+    --radius-md: 9px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius: 0.625rem;                    /* tailwind lg=10px */
 
-    --radius: 0.5rem;
+    /* ── 扩展 token（原生色，供任意值与内联样式使用） ── */
+    --shell: #f4f4f1;
+    --workspace: #ffffff;
+    --surface-1: #fafaf8;
+    --surface-2: #f6f6f3;
+    --surface-3: #eeeeeb;
+    --user-bubble: #f0f0ed;               /* 用户气泡（右对齐，弱灰） */
+    --user-bubble-highlight: #ecece8;     /* anchor 跳转高亮的起始色 */
+    --ink: #1d1d1b;
+    --ink-soft: rgba(29, 29, 27, 0.62);
+    --ink-faint: rgba(29, 29, 27, 0.42);
+    --border-soft: rgba(0, 0, 0, 0.055);
+    --border-normal: rgba(0, 0, 0, 0.085);
+    --border-strong: rgba(0, 0, 0, 0.12);
+    --hover: rgba(0, 0, 0, 0.04);
+    --active: rgba(0, 0, 0, 0.065);
+    --button-ink: #191919;                 /* 发送/主操作按钮 */
+    --on-ink: #ffffff;
+    --shadow-workspace: 0 1px 2px rgba(0, 0, 0, 0.03), 0 6px 20px rgba(0, 0, 0, 0.025);
+    --shadow-popover: 0 8px 30px rgba(0, 0, 0, 0.1);
+    --shadow-prompt: 0 2px 8px rgba(0, 0, 0, 0.035);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.16);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.26);
+  }
+
+  .dark {
+    --background: 60 2% 9.5%;              /* #181817 */
+    --foreground: 60 6% 92%;
+    --card: 60 2% 12.5%;                   /* #20201f */
+    --card-foreground: 60 6% 92%;
+    --primary: 173 70% 42%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 60 2% 16%;
+    --secondary-foreground: 60 6% 90%;
+    --muted: 60 2% 14%;                    /* #242423 */
+    --muted-foreground: 60 3% 62%;
+    --accent: 60 2% 19%;                   /* #30302f */
+    --accent-foreground: 60 6% 92%;
+    --destructive: 4 60% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 60 2% 21%;
+    --input: 60 2% 25%;
+    --ring: 173 70% 42%;
+
+    --shell: #181817;
+    --workspace: #20201f;
+    --surface-1: #242423;
+    --surface-2: #292928;
+    --surface-3: #30302f;
+    --user-bubble: #2c2c2a;
+    --user-bubble-highlight: #3a3a37;
+    --ink: rgba(255, 255, 255, 0.92);
+    --ink-soft: rgba(255, 255, 255, 0.62);
+    --ink-faint: rgba(255, 255, 255, 0.4);
+    --border-soft: rgba(255, 255, 255, 0.055);
+    --border-normal: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --hover: rgba(255, 255, 255, 0.055);
+    --active: rgba(255, 255, 255, 0.08);
+    --button-ink: #e8e8e6;
+    --on-ink: #1d1d1b;
+    --shadow-workspace: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 30px rgba(0, 0, 0, 0.25);
+    --shadow-popover: 0 8px 30px rgba(0, 0, 0, 0.4);
+    --shadow-prompt: 0 2px 8px rgba(0, 0, 0, 0.25);
+    --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
   }
 }
 
@@ -38,23 +110,32 @@
   * {
     @apply border-border;
   }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
-  /* Space Grotesk for display/headings */
+  /* 标题与正文统一使用 Inter 系中性无衬线（不再使用装饰性 Display 字体） */
   .font-display {
-    font-family: "Space Grotesk", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    letter-spacing: -0.02em;
+    font-family:
+      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+      "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  ::selection {
+    background: hsl(var(--primary) / 0.18);
   }
 }
 
-/* 打字机光标 - 琥珀色脉冲 */
+/* 打字机光标 - 中性色块脉冲 */
 .typing-cursor::after {
   content: "▋";
-  color: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.85);
   animation: blink 0.8s steps(2) infinite;
   margin-left: 1px;
 }
@@ -64,23 +145,60 @@
   51%, 100% { opacity: 0; }
 }
 
-/* 流式消息淡入 */
+/* 流式消息淡入（克制：只做轻微位移） */
 .stream-fade-in {
-  animation: fadeInUp 0.3s ease-out;
+  animation: fadeInUp 0.24s ease-out;
 }
 
 @keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Agent 工作中：柔和透明度脉冲 */
+.working-pulse {
+  animation: workingPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes workingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Anchor 跳转：用户气泡从高亮灰渐变回常态（900ms，不用闪烁黄） */
+@keyframes anchorHighlight {
+  from { background-color: var(--user-bubble-highlight); }
+  to { background-color: var(--user-bubble); }
+}
+
+.anchor-highlight {
+  animation: anchorHighlight 900ms ease-out;
+}
+
+/* Composer 后方渐隐遮罩：内容滚入输入框前被柔化收住 */
+.composer-fade {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--workspace) 0%, transparent),
+    color-mix(in srgb, var(--workspace) 90%, transparent) 45%,
+    var(--workspace) 75%
+  );
 }
 
 @media (prefers-reduced-motion: reduce) {
   .typing-cursor::after { animation: none; }
   .stream-fade-in { animation: none; }
+  .working-pulse { animation: none; }
+  .anchor-highlight { animation: none; }
 }
 
-/* 滚动条 */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+/* 滚动条：细、低存在感 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: hsl(30 6% 80%); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: hsl(30 6% 70%); }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }

@@ -147,6 +147,12 @@ class FakeAccountStore(AccountStore):
         self.accounts[user_id]["password_hash"] = password_hash
         self.accounts[user_id]["updated_at"] = _now().isoformat()
 
+    def update_avatar(self, user_id: str, avatar_ref: str) -> None:
+        if user_id not in self.accounts:
+            raise KeyError(user_id)
+        self.accounts[user_id]["avatar"] = avatar_ref
+        self.accounts[user_id]["updated_at"] = _now().isoformat()
+
     def set_must_change_password(self, user_id: str, value: bool) -> None:
         self.accounts[user_id]["must_change_password"] = value
         self.accounts[user_id]["updated_at"] = _now().isoformat()

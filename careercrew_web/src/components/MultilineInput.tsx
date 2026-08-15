@@ -1,5 +1,4 @@
 import { useRef, useEffect, type KeyboardEvent } from "react"
-import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 
 interface MultilineInputProps {
@@ -12,9 +11,10 @@ interface MultilineInputProps {
 }
 
 /**
- * 多行输入框：auto-grow textarea。
+ * 多行输入框：auto-grow textarea（独立使用时为极简无边框样式）。
  * - Enter 发送 / Shift + Enter 换行
  * - 多行粘贴原样保留（核心痛点：CLI input() 只取一行）
+ * 聊天页统一使用 PromptComposer；本组件保留给其他内嵌场景。
  */
 export function MultilineInput({
   value,
@@ -46,7 +46,7 @@ export function MultilineInput({
   }
 
   return (
-    <Textarea
+    <textarea
       ref={ref}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -54,7 +54,12 @@ export function MultilineInput({
       placeholder={placeholder}
       disabled={disabled}
       rows={1}
-      className={cn("resize-none min-h-[44px] max-h-[240px]", className)}
+      className={cn(
+        "block w-full resize-none rounded-[7px] border border-input bg-card px-2.5 py-2 text-[14px] leading-[1.5] outline-none",
+        "placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50",
+        "min-h-[40px] max-h-[240px]",
+        className
+      )}
     />
   )
 }

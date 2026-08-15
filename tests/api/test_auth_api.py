@@ -135,7 +135,7 @@ def test_production_startup_requires_explicit_auth_secret(tmp_path, monkeypatch)
         encoding="utf-8",
     )
     monkeypatch.setattr(settings_module, "DEFAULT_CONFIG_PATH", config)
-    monkeypatch.setattr(settings_module, "load_dotenv", lambda: None)
+    monkeypatch.setattr(settings_module, "load_dotenv", lambda *a, **k: None)
     with pytest.raises(SettingsError, match="auth.jwt_secret"):
         create_app()
 

@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter, Cookie, Depends, File, HTTPException, Request, Response, UploadFile, status,
+)
+from fastapi.responses import FileResponse
 
 from careercrew_api.auth.dependencies import get_auth_service, get_current_user, require_admin
 from careercrew_api.auth.service import (
@@ -14,6 +18,7 @@ from careercrew_api.auth.service import (
     LoginLockedError,
     SelfAdminError,
 )
+from careercrew_api.oss import download_bytes, oss_config, upload_bytes
 from careercrew_api.schemas import (
     AccountListItem,
     ChangePasswordRequest,
@@ -25,9 +30,100 @@ from careercrew_api.schemas import (
     UserListResponse,
     UserPatchRequest,
 )
+from careercrew_api.storage import DATA_ROOT, resolve_under
 
 router = APIRouter()
 _REFRESH_COOKIE = "careercrew_refresh"
+
+# ── 头像上传 ──
+
+# 允许的头像格式与最大体积（5MB）
+_AVATAR_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+
+# 未配置 OSS 时的本地回退目录：data/uploads/avatars/{user_id}/{uuid}.{ext}
+AVATAR_ROOT = DATA_ROOT / "uploads" / "avatars"
+
+# 头像扩展名 -> MIME（OSS 代理读取时使用）
+_AVATAR_MIME = {v: k for k, v in _AVATAR_EXTENSIONS.items()}
+
+
+@router.post("/avatar")
+async def upload_avatar(
+    file: Annotated[UploadFile, File(...)],
+    user: Annotated[dict[str, str], Depends(get_current_user)],
+    auth: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, bool]:
+    """上传/替换当前用户头像。配置 OSS 时直传阿里云 OSS，否则落本地存储回退。"""
+    content_type = (file.content_type or "").lower()
+    if content_type not in _AVATAR_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="仅支持 PNG / JPG / WebP / GIF 格式的头像",
+        )
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像文件为空")
+    if len(data) > _AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像不能超过 5MB")
+
+    ext = _AVATAR_EXTENSIONS[content_type]
+    user_id = user["id"]
+    config = oss_config()
+    if config:
+        # 对象键：{dir_prefix}/avatars/{user_id}/{uuid}.{ext}
+        prefix = config.get("dir_prefix") or ""
+        key = f"{prefix}/avatars/{user_id}/{uuid4().hex}{ext}" if prefix else f"avatars/{user_id}/{uuid4().hex}{ext}"
+        try:
+            upload_bytes(config, key, data, content_type)
+        except Exception as err:  # 网络/签名失败等：明确报错，不静默降级
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"OSS 上传失败：{err}",
+            ) from err
+        auth.store.update_avatar(user_id, f"oss:{key}")
+    else:
+        user_dir = resolve_under(AVATAR_ROOT, user_id)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        name = f"{uuid4().hex}{ext}"
+        (user_dir / name).write_bytes(data)
+        auth.store.update_avatar(user_id, f"local:{user_id}/{name}")
+    return {"ok": True}
+
+
+@router.get("/avatar/{user_id}")
+def get_avatar(
+    user_id: str,
+    _user: Annotated[dict[str, str], Depends(get_current_user)],
+    auth: Annotated[AuthService, Depends(get_auth_service)],
+):
+    """读取用户头像：OSS 头像经同源代理返回（避免跨域 CORS），本地回退头像直接返回文件。"""
+    account = auth.store.account_by_id(user_id)
+    avatar_ref = (account or {}).get("avatar") or ""
+    if avatar_ref.startswith("oss:"):
+        config = oss_config()
+        if config is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="avatar not available")
+        key = avatar_ref[len("oss:"):]
+        media_type = _AVATAR_MIME.get("." + key.rsplit(".", 1)[-1].lower(), "application/octet-stream")
+        try:
+            data = download_bytes(config, key)
+        except Exception as err:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OSS 读取失败：{err}") from err
+        return Response(content=data, media_type=media_type)
+    if avatar_ref.startswith("local:"):
+        # 格式固定为 local:{user_id}/{uuid}.{ext}，由上传侧生成，不含额外路径段
+        name = avatar_ref[len("local:"):]
+        path = resolve_under(AVATAR_ROOT, *name.split("/"))
+        if not path.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="avatar not found")
+        return FileResponse(str(path))
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="avatar not set")
 
 
 def _set_refresh_cookie(response: Response, auth: AuthService, refresh_token: str) -> None:

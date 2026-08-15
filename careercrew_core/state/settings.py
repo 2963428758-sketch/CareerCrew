@@ -249,6 +249,16 @@ class AuthSettings(BaseModel):
         raise SettingsError("auth.jwt_secret 未设置（生产环境必须设置 AUTH_JWT_SECRET）")
 
 
+class OSSSettings(BaseModel):
+    """阿里云 OSS 对象存储（头像等文件；access_key 四项全空=未配置，回退本地存储）。"""
+
+    endpoint: str = ""          # 如 oss-cn-beijing.aliyuncs.com
+    access_key_id: str = ""
+    access_key_secret: str = ""
+    bucket_name: str = ""
+    dir_prefix: str = "uploads"  # 对象键前缀（头像最终落在 {dir_prefix}/avatars/...）
+
+
 class Settings(BaseModel):
     """顶层配置，结构与 config/settings.yaml 一一对应。"""
 
@@ -264,6 +274,7 @@ class Settings(BaseModel):
     hitl: HitlSettings
     langsmith: LangSmithSettings
     auth: AuthSettings = AuthSettings()
+    oss: OSSSettings = OSSSettings()
 
 
 # ── 环境变量替换 ──
@@ -394,8 +405,12 @@ def validate_settings(settings: Settings) -> None:
 
 
 def load_settings(path: str | Path | None = None) -> Settings:
-    """加载并校验配置。fail-fast：文件缺失 / 字段缺失 / 语义非法均抛 SettingsError。"""
-    load_dotenv()  # 读取 .env（已 gitignore），注入 SILICONFLOW_API_KEY 等
+    """加载并校验配置。fail-fast：文件缺失 / 字段缺失 / 语义非法均抛 SettingsError。
+
+    override=True：项目根 .env 是本地配置的唯一权威来源，
+    覆盖 Shell/系统遗留的同名环境变量（避免历史旧值串配置）。
+    """
+    load_dotenv(override=True)  # 读取 .env（已 gitignore），注入 SILICONFLOW_API_KEY 等
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
         raise SettingsError(f"配置文件不存在: {config_path}")
@@ -422,7 +437,7 @@ def load_auth_settings(path: str | Path | None = None) -> AuthSettings:
     LLM、向量库等所有配置在 import 时可用。环境变量 CAREERCREW_ENV 明确覆盖
     YAML 的 auth.environment，方便生产部署与隔离测试。
     """
-    load_dotenv()
+    load_dotenv(override=True)  # .env 为权威来源，覆盖 Shell/系统遗留同名变量
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
         raise SettingsError(f"配置文件不存在: {config_path}")

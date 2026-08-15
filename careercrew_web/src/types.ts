@@ -22,6 +22,20 @@ export interface ChatMessage {
   streaming?: boolean
 }
 
+/** 单条回答反馈（绑定 assistant message id）。 */
+export interface MessageFeedback {
+  messageId: string
+  rating: "positive" | "negative"
+  reason?:
+    | "incorrect"
+    | "not_helpful"
+    | "did_not_answer"
+    | "too_verbose"
+    | "hard_to_understand"
+    | "other"
+  comment?: string
+}
+
 /** 面试 QA。 */
 export interface InterviewQA {
   question: string
