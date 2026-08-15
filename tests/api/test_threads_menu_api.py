@@ -141,3 +141,41 @@ def test_clear_empty_conversation_ok(tenant_api):
     r = client.post("/api/threads/t-clear-empty/clear", headers=alice)
     assert r.status_code == 200
     assert runtime.conversation_store.get_conversation("t-clear-empty", ids["alice"]) is not None
+
+
+@pytest.mark.web
+def test_delete_legacy_only_thread(tenant_api):
+    """仅 legacy thread_store 元数据（无 conversation 行）→ DELETE 仍成功（回归修复）。"""
+    client, runtime, headers, ids = tenant_api
+    alice = headers["alice"]
+    # 仅登记 memory 线程元数据，不建 conversation
+    runtime.register_thread("t-legacy-del", ids["alice"], module="chat", title="老线程")
+    assert runtime.conversation_store.get_conversation("t-legacy-del", ids["alice"]) is None
+
+    d = client.delete("/api/threads/t-legacy-del", headers=alice)
+    assert d.status_code == 200, d.text
+    # legacy thread_store 元数据已删
+    assert runtime.thread_store.get(ids["alice"], "t-legacy-del") is None
+
+
+@pytest.mark.web
+def test_delete_conversation_only_thread(tenant_api):
+    """有 conversation 行但无 legacy thread_store 元数据 → DELETE 仍成功。"""
+    client, runtime, headers, ids = tenant_api
+    alice = headers["alice"]
+    # 直接用 store 建 conversation（不经 register_thread，无 legacy 元数据）
+    runtime.conversation_store.ensure_conversation("t-conv-only", ids["alice"], "chat", "T")
+    assert runtime.thread_store.get(ids["alice"], "t-conv-only") is None
+
+    d = client.delete("/api/threads/t-conv-only", headers=alice)
+    assert d.status_code == 200, d.text
+    assert runtime.conversation_store.get_conversation("t-conv-only", ids["alice"]) is None
+
+
+@pytest.mark.web
+def test_delete_missing_thread_404(tenant_api):
+    """两者都不存在 → DELETE 404。"""
+    client, _runtime, headers, _ids = tenant_api
+    alice = headers["alice"]
+    d = client.delete("/api/threads/t-never-existed", headers=alice)
+    assert d.status_code == 404

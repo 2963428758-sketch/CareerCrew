@@ -60,8 +60,10 @@ def create_app() -> FastAPI:
 
     # /api 路由
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-    # threads（conversation Source of Truth）先于 data 注册：POST /api/threads 归 conversation；
-    # data.py 仍提供 GET/PATCH/DELETE /api/threads（memory 线程列表与元数据）。
+    # threads（conversation Source of Truth）先于 data 注册，故 POST/PATCH/DELETE
+    # /api/threads 及 /api/threads/{id}/messages|clear|export、/api/messages/{id}/regenerate
+    # 均由 threads.py 接管；data.py 仍定义 GET /api/threads（memory 列表）与其
+    # PATCH/DELETE 旧路由，但后者已被 threads.py 的同路径路由遮蔽（保留供兼容引用）。
     app.include_router(threads.router, prefix="/api", tags=["threads"])
     app.include_router(data.router, prefix="/api", tags=["data"])
     app.include_router(chat.router, prefix="/api/chat", tags=["chat"])

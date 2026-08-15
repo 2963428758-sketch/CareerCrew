@@ -552,6 +552,13 @@ class PostgresConversationDb(ConversationDb):
         turns 再删。runs/retrievals/tool_calls 一并清理，避免悬挂 run 引用。
         """
         with self._connect() as conn, conn.transaction():
+            # regeneration_keys 孤儿清理：先删（其 message_id 指向将被删除的 messages），
+            # 作用域限定为受影响 thread 的消息，避免误删他人幂等键。
+            conn.execute(
+                "DELETE FROM regeneration_keys WHERE message_id IN "
+                "(SELECT id FROM messages WHERE thread_id=%s AND user_id=%s)",
+                (conversation_id, user_id),
+            )
             # runs 关联的 retrievals / tool_calls 先删（按 run_id 子查询归属该 thread）
             conn.execute(
                 "DELETE FROM agent_run_tool_calls WHERE run_id IN "
@@ -913,6 +920,14 @@ class FakeConversationDb(ConversationDb):
 
     def clear_conversation(self, user_id, conversation_id) -> int:
         removed = 0
+        # regeneration_keys 孤儿清理：message_id 指向将删 messages 的行一并移除，
+        # 作用域限定为受影响的 thread。
+        message_ids = {mid for mid, m in self._messages.items()
+                       if m["thread_id"] == conversation_id and m["user_id"] == user_id}
+        for mid in message_ids:
+            for key, val in list(self._regenerations.items()):
+                if val == mid:
+                    self._regenerations.pop(key, None)
         # 删 turns（级联 messages）、runs、retrievals、tool_calls
         turn_ids = {tid for tid, t in self._turns.items()
                     if t["thread_id"] == conversation_id and t["user_id"] == user_id}

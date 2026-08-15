@@ -188,15 +188,14 @@ def rename_thread(thread_id: str, req: ThreadRenameRequest, current_user: Curren
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
 
-    # §13.1：title 同步 conversation 表（有 conversation 行才更新；无则静默跳过，
-    # 保持 legacy 纯线程可正常改 title/pinned/scope）。
+    # §13.1：title 同步 conversation 表（有 conversation 行才更新；仅 legacy-only
+    # 线程静默跳过，其余异常上抛——不静默接受 title 分歧）。
     if req.title is not None and req.title.strip():
         try:
             rt.conversation_store.rename_title(thread_id, user_id, req.title.strip()[:50])
         except OwnershipError:
             pass  # 无 conversation 行（纯 legacy 线程）：只更新 thread_store，符合既有行为
-        except Exception:
-            pass
+        # 其余异常（DB 等）不吞：直接上抛，避免 title 分歧静默存在。
 
     return legacy
 
@@ -204,19 +203,34 @@ def rename_thread(thread_id: str, req: ThreadRenameRequest, current_user: Curren
 @router.delete("/threads/{thread_id}")
 def delete_conversation(thread_id: str, current_user: CurrentUser,
                         rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
-    """删除会话（§13.5）：conversation 表全删 + legacy thread_store/情景事件一并删除。"""
+    """删除会话（§13.5）：conversation 表全删 + legacy thread_store/情景事件一并删除。
+
+    顺序：先删 legacy thread_store（纯 legacy 线程 ≥ T1.3 无 conversation 行也要能删），
+    失败即中止（无部分删除）、错误上抛；成功后再删 conversation 行。仅当 conversation
+    删成功（或本就是纯 legacy 线程）才返回成功；两者都不存在（或跨用户）→ 404。
+    """
     user_id = current_user["id"]
     rt._ensure_heavy()
+
+    # 1) 先删 legacy thread_store（sidebar 元数据 + 情景事件）；失败即中止、上抛，
+    #    避免 conversation 先删而后 legacy 清理失败造成部分删除。
     try:
-        removed = rt.conversation_store.delete_conversation(thread_id, user_id)
-    except OwnershipError as e:
-        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
-    # 同步 legacy thread_store（sidebar 列表 + 情景事件）；失败不阻断。
+        legacy = rt.delete_thread(thread_id, user_id)
+    except ResourceNotFoundError as e:
+        # 无 legacy 元数据：若存在 conversation 则继续删 conversation，否则整体 404。
+        conv_exists = True
+        try:
+            rt.conversation_store.delete_conversation(thread_id, user_id)
+        except OwnershipError:
+            raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
+        return {"deleted": conv_exists, "thread_id": thread_id}
+
+    # 2) legacy 已删；再删 conversation 行（无 conversation 行 → 纯 legacy 线程，已删成）。
     try:
-        rt.delete_thread(thread_id, user_id)
-    except Exception:
-        pass
-    return {"deleted": removed, "thread_id": thread_id}
+        rt.conversation_store.delete_conversation(thread_id, user_id)
+    except OwnershipError:
+        pass  # 纯 legacy 线程（无 conversation 行）：legacy 路径已删除成功
+    return {"deleted": legacy.get("deleted", False), "thread_id": thread_id}
 
 
 @router.post("/threads/{thread_id}/clear")

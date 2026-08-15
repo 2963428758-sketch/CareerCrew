@@ -502,6 +502,40 @@ def test_delete_conversation_missing_raises(store):
         store.delete_conversation("t-none", "u_1")
 
 
+def test_clear_removes_orphaned_regeneration_keys(store):
+    """clear 删除受影响 messages 的 regeneration_keys（避免悬挂 idempotency 键）。"""
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+
+    # 同 message 的幂等键 + 他人/他消息的幂等键（不得误删）
+    store.complete_regeneration("u_1", "key-hit-1", msg["id"])
+    store.complete_regeneration("u_1", "key-hit-2", msg["id"])
+    # 预留中（message_id=None）的键：不属于任何 message，不受 thread 清理影响
+    assert store.reserve_regeneration("u_1", "key-reserved") == ("reserved", None)
+    # 他人同名键（不同 message）不得被清
+    t2 = store.next_turn("t-1", "u_1")
+    m2 = store.add_assistant_message(t2["id"], t2["thread_id"], "u_1", "b", None, None)
+    store.complete_regeneration("u_1", "key-other-msg", m2["id"])
+
+    store.clear_conversation("t-1", "u_1")
+
+    assert store.get_regeneration("u_1", "key-hit-1") is None
+    assert store.get_regeneration("u_1", "key-hit-2") is None
+    # 预留中（message_id=None）的键不受 thread 作用域删除影响
+    assert store.reserve_regeneration("u_1", "key-reserved") == ("exists", None)
+
+
+def test_delete_removes_orphaned_regeneration_keys(store):
+    """delete 同样清理受影响 messages 的 regeneration_keys。"""
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    store.complete_regeneration("u_1", "key-del", msg["id"])
+    store.delete_conversation("t-1", "u_1")
+    assert store.get_regeneration("u_1", "key-del") is None
+
+
 # ── list runs ──
 
 
