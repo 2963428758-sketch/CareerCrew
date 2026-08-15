@@ -98,12 +98,22 @@ def test_memory_delete_cannot_delete_other_users_memory(tenant_api):
     client, runtime, headers, ids = tenant_api
     runtime.record_thread_messages(ids["alice"], "a-del-thread", "待删的 Alice 记忆", "回答")
 
-    # B 尝试按 A 的 thread_id 删除 → 不生效
+    # 删除前的完整快照（作为逐字节不变断言的基线）
+    before = client.get("/api/memory", params={"thread_id": "a-del-thread"},
+                        headers=headers["alice"]).json()
+    assert len(before) >= 2
+
+    # B 尝试按 A 的 thread_id 删除 → 不生效，且明确返回 removed == 0
     resp = client.delete("/api/memory", params={"thread_id": "a-del-thread"},
                          headers=headers["bob"])
     assert resp.status_code == 200
-    assert client.get("/api/memory", params={"thread_id": "a-del-thread"},
-                      headers=headers["alice"]).json() != []
+    assert resp.json()["removed"] == 0
+    assert resp.json()["deleted"] == 0
+
+    # A 的记忆逐字节不变（而非仅"非空"）——B 的删除必须是彻底的 no-op
+    after = client.get("/api/memory", params={"thread_id": "a-del-thread"},
+                       headers=headers["alice"]).json()
+    assert after == before
 
 
 # ── Knowledge 隔离 ──
