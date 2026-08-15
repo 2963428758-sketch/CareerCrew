@@ -23,11 +23,14 @@ from uuid import UUID
 from careercrew_core.conversation.uuid7 import uuid7
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now() -> datetime:
+    """单一 aware-UTC 时钟：始终返回带时区信息的 datetime 对象。
 
-
-def _now_dt() -> datetime:
+    时间戳列均为 TIMESTAMPTZ：直接传 datetime 对象，避免 ISO 字符串再经
+    ``.astimezone(utc)`` 转换时对 naive datetime 的解释歧义（可能静默偏移，
+    破坏 7 天 TTL）。所有 created_at / last_used_at / expires_at 的比较与写入
+    都使用本 helper 产出的 aware-UTC datetime。
+    """
     return datetime.now(timezone.utc)
 
 
@@ -72,9 +75,9 @@ class AttachmentDb(ABC):
         parser_type: str | None = None,
         parser_error: str | None = None,
         knowledge_document_id: str | None = None,
-        created_at: str | None = None,
-        last_used_at: str | None = None,
-        expires_at: str | None = None,
+        created_at: datetime | None = None,
+        last_used_at: datetime | None = None,
+        expires_at: datetime | None = None,
     ) -> dict: ...
 
     @abstractmethod
@@ -88,7 +91,7 @@ class AttachmentDb(ABC):
                       parser_error: str | None = None,
                       parser_type: str | None = None,
                       knowledge_document_id: str | None = None,
-                      last_used_at: str | None = None) -> dict: ...
+                      last_used_at: datetime | None = None) -> dict: ...
 
     @abstractmethod
     def delete_attachment(self, user_id: str, attachment_id: str) -> bool: ...
@@ -100,7 +103,7 @@ class AttachmentDb(ABC):
     def clear_expires_at(self, user_id: str, attachment_id: str) -> dict: ...
 
     @abstractmethod
-    def list_expired(self, now: str) -> list[dict]: ...
+    def list_expired(self, now: datetime) -> list[dict]: ...
 
 
 class PostgresAttachmentDb(AttachmentDb):
@@ -351,7 +354,7 @@ class AttachmentStore:
 
     def create(self, thread_id: str, user_id: str, original_filename: str,
                storage_key: str, mime_type: str | None, size_bytes: int | None,
-               status: str = "uploaded", expires_at: str | None = None,
+               status: str = "uploaded", expires_at: datetime | None = None,
                attachment_id: str | None = None) -> dict:
         """创建附件行（默认 uuid7 id，可显式传入 attachment_id 供路由落盘前复用）。
 
@@ -360,7 +363,7 @@ class AttachmentStore:
         if attachment_id is None:
             attachment_id = str(uuid7())
         if expires_at is None:
-            expires_at = _iso(_now_dt() + timedelta(days=DEFAULT_TTL_DAYS))
+            expires_at = _now() + timedelta(days=DEFAULT_TTL_DAYS)
         return self._db.create_attachment(
             attachment_id, user_id, thread_id, original_filename, storage_key,
             mime_type, size_bytes, status, expires_at=expires_at,
@@ -414,11 +417,7 @@ class AttachmentStore:
     def expired_attachments(self, now: datetime | None = None) -> list[dict]:
         """返回已过期（expires_at < now）且未保存到知识库的附件行。"""
         ref = now or datetime.now(timezone.utc)
-        return self._db.list_expired(_iso(ref))
-
-
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
+        return self._db.list_expired(ref)
 
 
 def create_attachment_db(settings) -> AttachmentDb:

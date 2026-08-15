@@ -41,6 +41,25 @@ def _resolve_attachment_path(user_id: str, thread_id: str, attachment_id: str) -
     )
 
 
+async def _read_bounded(file: UploadFile, limit: int) -> bytes | None:
+    """分块读取上传内容，最多读 limit 字节。
+
+    通过限制读取量避免把超大上传整体缓冲进内存：读到 limit 字节后若仍有剩余
+    （下一 chunk 非空）即返回 None 表示超限；否则返回完整字节内容。
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("", status_code=201)
 async def upload_attachment(
     current_user: CurrentUser,
@@ -57,9 +76,9 @@ async def upload_attachment(
     if existing >= _MAX_FILES_PER_TURN:
         raise HTTPException(status_code=422, detail="每个会话最多上传 5 个附件")
 
-    # ── 读内容（先做大小上限，避免超大文件全读进内存）──
-    content = await file.read()
-    if len(content) > MAX_ATTACHMENT_SIZE:
+    # ── 读内容（分块读，最多 MAX+1 字节；超过即拒绝，避免超大文件全读进内存）──
+    content = await _read_bounded(file, MAX_ATTACHMENT_SIZE)
+    if content is None:
         raise HTTPException(status_code=413, detail="附件超过 25MB 限制")
 
     # 文件名防路径穿越：只取 basename；原名仅进元数据。
@@ -68,7 +87,10 @@ async def upload_attachment(
 
     # ── 校验（扩展名/MIME/magic/大小，纯函数）──
     try:
-        meta = validate_attachment(filename, mime, content[:64], len(content))
+        # 文本类需要全文做 UTF-8 校验，故传完整 content；二进制类签名只取头。
+        meta = validate_attachment(
+            filename, mime, content[:64], len(content), content=content,
+        )
     except AttachmentValidationError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 

@@ -124,6 +124,24 @@ def test_text_requires_decodable_utf8():
         validate_attachment("x.txt", "text/plain", b"\xff\xfe\x00\x80", size=10)
 
 
+def test_text_rejects_invalid_utf8_after_64_byte_head():
+    # 非法字节出现在前 64 字节之后也必须被拒绝（全文校验，而非仅头 64 字节）。
+    body = b"a" * 64 + b"\xff\xfe\x00\x80"
+    with pytest.raises(AttachmentValidationError):
+        validate_attachment(
+            "x.txt", "text/plain", body[:64], size=len(body), content=body,
+        )
+
+
+def test_text_accepts_valid_utf8_full_body():
+    # 全文均为合法 UTF-8 时通过。
+    body = "第".encode("utf-8") + b"a" * 200
+    result = validate_attachment(
+        "x.txt", "text/plain", body[:64], size=len(body), content=body,
+    )
+    assert result["extension"] == ".txt"
+
+
 # ── 归一化 ──
 
 def test_normalizes_uppercase_extension_and_untrusted_mime():

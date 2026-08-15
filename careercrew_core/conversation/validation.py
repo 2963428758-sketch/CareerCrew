@@ -78,13 +78,14 @@ def _extension_of(filename: str) -> str:
 
 
 def validate_attachment(filename: str, mime: str, content_head: bytes,
-                        size: int) -> dict:
+                        size: int, *, content: bytes | None = None) -> dict:
     """校验单个附件，返回归一化元数据 {extension, mime}。
 
     :param filename: 原始文件名（含扩展名）
     :param mime: 客户端声明的 MIME（大小写不敏感）
     :param content_head: 文件头字节（至少前若干字节，用于 magic 校验）
     :param size: 文件字节数
+    :param content: 完整文件内容（文本类 md/txt 的 UTF-8 校验需要全文，二进制类可省略）
     :raises AttachmentValidationError: 任一维度不合法（中文详情）
     """
     ext = _extension_of(filename)
@@ -112,9 +113,11 @@ def validate_attachment(filename: str, mime: str, content_head: bytes,
         if not any(head.startswith(sig) for sig in signatures):
             raise AttachmentValidationError("文件内容与扩展名不符（magic 签名校验失败）")
     else:
-        # md / txt：无 magic 签名，靠 UTF-8 可解码兜底拒绝二进制伪装文本。
+        # md / txt：无 magic 签名，靠全文 UTF-8 可解码兜底拒绝二进制伪装文本。
+        # 必须校验完整内容（而非仅 64 字节头），否则前 64 字节之后的非法字节会被漏过。
+        body = content if content is not None else (content_head or b"")
         try:
-            (content_head or b"").decode("utf-8")
+            body.decode("utf-8")
         except UnicodeDecodeError:
             raise AttachmentValidationError("文本附件必须为合法 UTF-8 编码")
 

@@ -46,10 +46,6 @@ def store_and_db():
         conn.execute("DELETE FROM chat_attachments")
 
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
-
-
 def test_tables_exist(store_and_db):
     _, db = store_and_db
     db._ensure()
@@ -101,7 +97,7 @@ def test_expired_and_saved_to_knowledge(store_and_db):
     store, db = store_and_db
     uid = "u_001"
     tid = str(uuid4())
-    past = _iso(datetime.now(timezone.utc) - timedelta(days=1))
+    past = datetime.now(timezone.utc) - timedelta(days=1)
     exp = store.create(tid, uid, "old.pdf", "o", "application/pdf", 1,
                        expires_at=past)
     # 保存到知识库：expires_at=NULL + status=saved_to_knowledge

@@ -24,10 +24,6 @@ ALL_STATUSES = {
 }
 
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
-
-
 def _uuid() -> str:
     return str(uuid4())
 
@@ -149,8 +145,8 @@ def test_count_nondeleted_per_thread(db):
 
 def test_list_expired_returns_past_expires_at(db):
     now = datetime.now(timezone.utc)
-    past = _iso(now - timedelta(days=1))
-    future = _iso(now + timedelta(days=1))
+    past = now - timedelta(days=1)
+    future = now + timedelta(days=1)
     db.create_attachment(**_db_kwargs(expires_at=past))
     db.create_attachment(**_db_kwargs(expires_at=future))
     db.create_attachment(**_db_kwargs(expires_at=None))
@@ -162,7 +158,7 @@ def test_list_expired_returns_past_expires_at(db):
 
 def test_expire_skips_saved_to_knowledge(db):
     now = datetime.now(timezone.utc)
-    past = _iso(now - timedelta(days=1))
+    past = now - timedelta(days=1)
     db.create_attachment(**_db_kwargs(expires_at=past, status="saved_to_knowledge"))
     # saved_to_knowledge 应 expires_at=NULL；即使仍带过期时间也不应被清理
     store = AttachmentStore(db)
@@ -171,7 +167,7 @@ def test_expire_skips_saved_to_knowledge(db):
 
 
 def test_save_to_knowledge_clears_expires_at(db):
-    kw = _db_kwargs(expires_at=_iso(datetime.now(timezone.utc) + timedelta(days=1)))
+    kw = _db_kwargs(expires_at=datetime.now(timezone.utc) + timedelta(days=1))
     db.create_attachment(**kw)
     store = AttachmentStore(db)
     store.mark_saved(kw["attachment_id"], "u_1", knowledge_document_id=str(uuid4()))
@@ -210,6 +206,8 @@ def test_store_create_sets_default_expires_at(store):
 
 def test_store_default_expires_about_7_days(store):
     created = store.create(**_store_kwargs(user_id="u_1"))
-    exp = datetime.fromisoformat(created["expires_at"])
+    exp = created["expires_at"]
+    assert isinstance(exp, datetime)
+    assert exp.tzinfo is not None and exp.utcoffset() == timedelta(0)
     delta = exp - datetime.now(timezone.utc)
     assert timedelta(days=6, hours=12) < delta < timedelta(days=7, hours=12)
