@@ -328,7 +328,7 @@ def migrate_qdrant_client(
         for point in all_points:
             payload = dict(point.payload or {})
             logical_id = str(payload.get("_id") or point.id)
-            owner = payload.get("user_id")
+            owner = payload.get("user_id") or payload.get("owner_user_id")
             if owner not in (None, "", LEGACY_USER_ID, target_user_id):
                 continue
             expected_id = QdrantStore._to_qid(logical_id, target_user_id)
