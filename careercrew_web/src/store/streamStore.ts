@@ -3,7 +3,6 @@ import type { ChatMessage, ConsultCall, ConsultInputRequest, KnowledgeSource, St
 import { useThreadStore } from "@/store/threadStore"
 import { useChatStore } from "@/store/chatStore"
 import { apiFetch } from "@/lib/auth"
-import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 /**
  * 每会话（thread_id）独立的流式会话 store（Codex 式并行对话）。
@@ -139,7 +138,8 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
       })
 
       if (!resp.ok) {
-        throw new Error(await apiErrorText(resp, "请求失败，请稍后重试"))
+        const text = await resp.text().catch(() => "")
+        throw new Error(`HTTP ${resp.status}: ${text}`)
       }
 
       const reader = resp.body?.getReader()
@@ -148,8 +148,6 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
       const decoder = new TextDecoder()
       let buffer = ""
       let textAccum = ""
-      /** 流内已收到 error 事件：后续 done 事件不得覆盖错误状态 */
-      let failed = false
       const agentAccum: Record<string, string> = {}
       const eventsAccum: StreamEvent[] = []
 
@@ -187,8 +185,6 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
               disarmThinking()
               armThinking()
             } else if (evt.type === "done") {
-              // 已出错：忽略 done（后端异常路径可能补发空 done，避免错误提示被覆盖）
-              if (failed) continue
               const p: Partial<StreamSession> = {
                 doneContent: evt.content,
                 status: "done",
@@ -285,7 +281,6 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
             } else if (evt.type === "input_request") {
               patchS({ pendingInput: { message: evt.message, fields: evt.fields } })
             } else if (evt.type === "error") {
-              failed = true
               patchS({ errorMsg: evt.message, status: "error" })
             }
           } catch {
@@ -302,7 +297,7 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
         patchS({ status: "idle" })
         return
       }
-      patchS({ errorMsg: networkErrorText(e, "生成回答失败，请稍后重试"), status: "error" })
+      patchS({ errorMsg: (e as Error).message, status: "error" })
     } finally {
       disarmThinking()
       // sessionKey（可能已被 remap 成新 UUID）才是 controller 当前所在 key

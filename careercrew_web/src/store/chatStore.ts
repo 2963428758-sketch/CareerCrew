@@ -12,8 +12,6 @@ interface ChatState {
   addMessage: (msg: ChatMessage) => void
   updateLastAssistant: (content: string) => void
   removeLastEmptyAssistant: () => void
-  /** §19：把 regenerate 产生的新 assistant 版本追加到指定 turn 的版本列表（不覆盖旧消息）。 */
-  appendAssistantVersion: (turnId: string, msg: ChatMessage) => void
   setThreadId: (id: string) => void
   setSelectedJd: (jd: string) => void
   setLastMatchResult: (content: string) => void
@@ -56,27 +54,6 @@ export const useChatStore = create<ChatState>((set) => ({
         return { messages: msgs }
       }
       return {}
-    }),
-
-  // §19：新版本追加在「该 turn 最后一个 assistant 版本」之后，保持版本顺序（旧 → 新）。
-  // 定位：从后往前找 turnId 匹配的最后一条 assistant；若消息未带 turnId，
-  // 退化为追加到末尾（流式占位场景）。旧消息永不 mutate（spread 新建）。
-  appendAssistantVersion: (turnId, msg) =>
-    set((s) => {
-      const msgs = [...s.messages]
-      let idx = -1
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === "assistant" && msgs[i].turnId === turnId) {
-          idx = i
-          break
-        }
-      }
-      if (idx >= 0) {
-        msgs.splice(idx + 1, 0, msg)
-      } else {
-        msgs.push(msg)
-      }
-      return { messages: msgs }
     }),
 
   setThreadId: (id) => set({ threadId: id }),

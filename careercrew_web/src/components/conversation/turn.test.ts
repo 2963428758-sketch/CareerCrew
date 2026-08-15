@@ -41,14 +41,22 @@ describe("groupTurns 多版本分组（§19）", () => {
     expect(v1.messageId).toBe("m1")
   })
 
-  it("无 turnId 的连续 assistant 仍紧随后续（不误判为同版本）", () => {
+  it("无 turnId 的第二个 assistant 不归入前 turn 版本，而是孤儿 turn（合成 turn）", () => {
     // 无共享 turnId 时，第二个 assistant 是孤儿（挂到合成 turn），不是版本
     const messages: ChatMessage[] = [
       msg("u1", "user", "q"),
       msg("a1", "assistant", "v1", { messageId: "m1" }),
+      msg("a2", "assistant", "v2", { messageId: "m2" }),
     ]
     const turns = groupTurns(messages)
-    expect(turns).toHaveLength(1)
-    expect(turns[0].versions).toEqual([turns[0].assistant])
+    expect(turns).toHaveLength(2)
+    // 第一个 turn：user + 单版本 assistant
+    expect(turns[0].assistant?.content).toBe("v1")
+    expect(turns[0].versions?.map((v) => v.content)).toEqual(["v1"])
+    // 第二个 turn：孤儿 assistant（无共享 turnId，合成 turn，无 anchor marker）
+    expect(turns[1].id).toBe("a2")
+    expect(turns[1].user?.id).toBe("a2")
+    expect(turns[1].assistant?.content).toBe("v2")
+    expect(turns[1].versions?.map((v) => v.content)).toEqual(["v2"])
   })
 })
