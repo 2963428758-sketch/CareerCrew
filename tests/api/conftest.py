@@ -108,11 +108,14 @@ class FakeRuntime:
         return FakeCycle()
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
-                         cb: Callable[[str], None] | None = None) -> str:
+                         cb: Callable[[str], None] | None = None,
+                         cancel_check: Callable[[], None] | None = None) -> str:
         self.last_call = {
             "method": "run_match_stream", "thread_id": thread_id,
             "user_id": user_id, "intent": intent,
         }
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -120,7 +123,10 @@ class FakeRuntime:
         return self.match_output
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
-                          cb: Callable[[str], None] | None = None) -> str:
+                          cb: Callable[[str], None] | None = None,
+                          cancel_check: Callable[[], None] | None = None) -> str:
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -128,7 +134,10 @@ class FakeRuntime:
         return self.resume_output
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
-                                cb: Callable[[str], None] | None = None) -> str:
+                                cb: Callable[[str], None] | None = None,
+                                cancel_check: Callable[[], None] | None = None) -> str:
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
@@ -137,9 +146,12 @@ class FakeRuntime:
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
-                                 category: str = "") -> str:
+                                 category: str = "",
+                                 cancel_check: Callable[[], None] | None = None) -> str:
         output = self.knowledge_output_by_user.get(user_id, self.knowledge_output)
         sources = self.knowledge_sources_by_user.get(user_id, self.knowledge_sources)
+        if cancel_check:
+            cancel_check()
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)

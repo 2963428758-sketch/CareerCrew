@@ -14,7 +14,13 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
-from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
+from careercrew_api.sse import (
+    CancellationEvent,
+    done_event,
+    error_event,
+    stage_event,
+    stream_agent,
+)
 from careercrew_api import storage
 
 router = APIRouter()
@@ -185,19 +191,20 @@ def ask_knowledge(
 
     def gen():
         result: dict = {"content": "", "sources": []}
+        cancel = CancellationEvent()
 
         def _run(cb):
             nonlocal result
             result = rt.run_knowledge_ask_stream(
                 req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
-                category=req.category,
+                category=req.category, cancel_check=cancel.check,
             )
 
         try:
             yield stage_event("knowledge")
             content_parts: list[str] = []
             # agentic 检索 + VLM 读图可能长时间无文本 chunk，统一空闲超时（与会诊一致）
-            for line in stream_agent(_run):
+            for line in stream_agent(_run, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])

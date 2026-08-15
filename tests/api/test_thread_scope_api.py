@@ -30,7 +30,7 @@ def test_patch_title_preserves_scope(client):
     client.patch("/api/threads/k-pres", json={"title": "新标题"})
     rows = client.get("/api/threads", params={"module": "knowledge"}).json()
     assert next(r for r in rows if r["thread_id"] == "k-pres")["retrieval_scope"] == {
-        "type": "all", "category_id": ""}
+        "type": "all"}
 
 
 def test_invalid_scope_rejected(client):

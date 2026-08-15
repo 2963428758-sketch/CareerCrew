@@ -194,5 +194,6 @@ jobs:
         run: |
           pytest -q -m "integration or e2e"
       - name: Real-model eval (optional, non-blocking)
+        # TODO(eval): collect_real 落地（真实模型/服务 + secrets）后启用，当前恒为 skipped 留痕
         run: |
           python scripts/eval_runner.py --real || echo "real eval skipped (missing keys/service)"

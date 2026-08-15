@@ -22,13 +22,16 @@ class RetrievalScopeRequest(BaseModel):
     """会话检索范围：all=全部知识库；category=指定知识库分类（为后续文档/简历范围留扩展）。"""
 
     type: str = "all"
-    category_id: str = ""
+    category_id: str | None = None
 
     @model_validator(mode="after")
     def _check(self):
         if self.type not in ("all", "category"):
             raise ValueError("type 必须为 all 或 category")
-        if self.type == "category" and not self.category_id.strip():
+        if self.type == "all":
+            self.category_id = None
+            return self
+        if not self.category_id or not self.category_id.strip():
             raise ValueError("type=category 时必须提供 category_id")
         return self
 
@@ -123,7 +126,7 @@ def create_thread(req: ThreadCreateRequest, current_user: CurrentUser,
     """登记新会话线程。"""
     return rt.register_thread(
         req.thread_id, current_user["id"], module=req.module, title=req.title,
-        retrieval_scope=req.retrieval_scope.model_dump() if req.retrieval_scope else None,
+        retrieval_scope=req.retrieval_scope.model_dump(exclude_none=True) if req.retrieval_scope else None,
     )
 
 
@@ -136,7 +139,7 @@ def patch_thread(thread_id: str, req: ThreadPatchRequest, current_user: CurrentU
             thread_id, current_user["id"],
             title=req.title, pinned=req.pinned,
             module=req.module,
-            retrieval_scope=req.retrieval_scope.model_dump() if req.retrieval_scope else None,
+            retrieval_scope=req.retrieval_scope.model_dump(exclude_none=True) if req.retrieval_scope else None,
         )
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail="thread not found") from e

@@ -30,7 +30,13 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
-from careercrew_api.sse import done_event, error_event, stage_event, stream_agent
+from careercrew_api.sse import (
+    CancellationEvent,
+    done_event,
+    error_event,
+    stage_event,
+    stream_agent,
+)
 from careercrew_api import storage
 
 router = APIRouter()
@@ -305,26 +311,30 @@ def generate(
 ) -> StreamingResponse:
     """简历顾问以"上传简历 + 目标 JD"为输入流式优化。"""
 
-    def run_fn(cb):
-        from langchain_core.messages import HumanMessage
-
-        user_id = current_user["id"]
-        episodic = rt._get_episodic(req.thread_id, user_id)
-        agent = rt.new_resume_advisor(cb, episodic=episodic)
-        prompt = f"我的简历：\n{req.user_resume}\n\n目标 JD：\n{req.jd or '未指定'}\n\n请帮我优化简历。"
-        state = {
-            "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
-            "user_intent": prompt,
-            "messages": [HumanMessage(content=prompt)],
-            "pending_action": None, "agent_outputs": {}, "target_companies": [],
-        }
-        agent.run(state)
-
     def gen() -> Generator[str, None, None]:
+        cancel = CancellationEvent()
+
+        def run_fn(cb):
+            from langchain_core.messages import HumanMessage
+
+            user_id = current_user["id"]
+            episodic = rt._get_episodic(req.thread_id, user_id)
+            agent = rt.new_resume_advisor(cb, episodic=episodic)
+            prompt = f"我的简历：\n{req.user_resume}\n\n目标 JD：\n{req.jd or '未指定'}\n\n请帮我优化简历。"
+            state = {
+                "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
+                "user_intent": prompt,
+                "messages": [HumanMessage(content=prompt)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            }
+            cancel.check()
+            agent.run(state)
+            cancel.check()
+
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])
@@ -353,6 +363,7 @@ def chat(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": ""}
+        cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
@@ -385,14 +396,16 @@ def chat(
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
                 "pending_user_entry_id": pending_id,
             }
+            cancel.check()
             agent.run(state)
+            cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
 
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
-            for line in stream_agent(run_fn):
+            for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
                 if evt["type"] == "chunk":
                     content_parts.append(evt["text"])

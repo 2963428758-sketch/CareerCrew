@@ -357,7 +357,8 @@ class CareerCrewRuntime:
             return cycle
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
-                         cb: Callable[[str], None] | None = None) -> str:
+                         cb: Callable[[str], None] | None = None,
+                         cancel_check: Callable[[], None] | None = None) -> str:
         """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。"""
         return traced_call(
             self._run_match_stream_impl,
@@ -368,11 +369,15 @@ class CareerCrewRuntime:
             user_id=user_id,
             intent=intent,
             cb=cb,
+            cancel_check=cancel_check,
         )
 
     def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
-                               cb: Callable[[str], None] | None = None) -> str:
+                               cb: Callable[[str], None] | None = None,
+                               cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
+        if cancel_check:
+            cancel_check()
         cycle = self.get_cycle(thread_id, user_id)
         try:
             # 先落库用户消息：即使后续 agent 运行挂起/失败，问题也不丢
@@ -381,9 +386,15 @@ class CareerCrewRuntime:
             )
         except Exception:
             cycle.pending_user_entry_id = None
+        if cancel_check:
+            cancel_check()
         ep = self._get_episodic(thread_id, user_id)
         cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
+        if cancel_check:
+            cancel_check()
         result = cycle.run_match(intent)
+        if cancel_check:
+            cancel_check()
         # 超轮次兜底：agent 搜索轮次耗尽时补一段结论，避免以"我再搜一下"截断
         lr = getattr(cycle.job_matcher, "last_result", None)
         if lr is not None and getattr(lr, "stopped_reason", "") == "max_iterations":
@@ -398,10 +409,13 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        if cancel_check:
+            cancel_check()
         return result
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
-                          cb: Callable[[str], None] | None = None) -> str:
+                          cb: Callable[[str], None] | None = None,
+                          cancel_check: Callable[[], None] | None = None) -> str:
         """流式 resume：用带 callback 的 agent 替换 cycle 中的 advisor，保留对话历史。"""
         return traced_call(
             self._run_resume_stream_impl,
@@ -412,11 +426,15 @@ class CareerCrewRuntime:
             user_id=user_id,
             jd_text=jd_text,
             cb=cb,
+            cancel_check=cancel_check,
         )
 
     def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
-                                cb: Callable[[str], None] | None = None) -> str:
+                                cb: Callable[[str], None] | None = None,
+                                cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
+        if cancel_check:
+            cancel_check()
         cycle = self.get_cycle(thread_id, user_id)
         user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
         try:
@@ -425,9 +443,15 @@ class CareerCrewRuntime:
             )
         except Exception:
             cycle.pending_user_entry_id = None
+        if cancel_check:
+            cancel_check()
         ep = self._get_episodic(thread_id, user_id)
         cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
+        if cancel_check:
+            cancel_check()
         result = cycle.run_resume(jd_text)
+        if cancel_check:
+            cancel_check()
         try:
             self.record_thread_messages(
                 user_id, thread_id,
@@ -437,10 +461,13 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass
+        if cancel_check:
+            cancel_check()
         return result
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
-                                cb: Callable[[str], None] | None = None) -> str:
+                                cb: Callable[[str], None] | None = None,
+                                cancel_check: Callable[[], None] | None = None) -> str:
         """求职对话：职业规划师主理（聚焦求职规划：画像/目标公司池/阶段规划与复盘）。"""
         return traced_call(
             self._run_planner_chat_stream_impl,
@@ -451,13 +478,17 @@ class CareerCrewRuntime:
             user_id=user_id,
             intent=intent,
             cb=cb,
+            cancel_check=cancel_check,
         )
 
     def _run_planner_chat_stream_impl(self, thread_id: str, user_id: str, intent: str,
-                                      cb: Callable[[str], None] | None = None) -> str:
+                                      cb: Callable[[str], None] | None = None,
+                                      cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
         from langchain_core.messages import HumanMessage
 
+        if cancel_check:
+            cancel_check()
         ep = self._get_episodic(thread_id, user_id)
         agent = self.new_career_planner(cb, episodic=ep)
         try:
@@ -467,6 +498,8 @@ class CareerCrewRuntime:
             )
         except Exception:
             pending_id = None
+        if cancel_check:
+            cancel_check()
         state = {
             "thread_id": thread_id, "user_id": user_id, "stage": "planning",
             "user_intent": intent,
@@ -474,7 +507,11 @@ class CareerCrewRuntime:
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
             "pending_user_entry_id": pending_id,
         }
+        if cancel_check:
+            cancel_check()
         agent.run(state)
+        if cancel_check:
+            cancel_check()
         result = (agent.last_result.content or "").strip() if agent.last_result else ""
         if not result:
             result = "（本轮未产出完整规划，可补充方向/技能/城市/薪资等信息后继续对话）"
@@ -484,11 +521,14 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        if cancel_check:
+            cancel_check()
         return result
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
-                                 category: str = "") -> str:
+                                 category: str = "",
+                                 cancel_check: Callable[[], None] | None = None) -> str:
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
         返回 ``{"content": str, "sources": list[dict]}``：
@@ -506,19 +546,25 @@ class CareerCrewRuntime:
             thread_id=thread_id,
             cb=cb,
             category=category,
+            cancel_check=cancel_check,
         )
 
     def _run_knowledge_ask_stream_impl(self, question: str, user_id: str,
                                        thread_id: str = "knowledge",
                                        cb: Callable[[str], None] | None = None,
-                                       category: str = "") -> str:
+                                       category: str = "",
+                                       cancel_check: Callable[[], None] | None = None) -> str:
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         from langchain_core.messages import HumanMessage
 
+        if cancel_check:
+            cancel_check()
         sources: list[dict] = []
         seen: set[str] = set()
 
         def _sink(r) -> None:
+            if cancel_check:
+                cancel_check()
             if r.id in seen:
                 return
             seen.add(r.id)
@@ -544,6 +590,8 @@ class CareerCrewRuntime:
             )
         except Exception:
             pending_id = None
+        if cancel_check:
+            cancel_check()
         state = {
             "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
             "user_intent": question,
@@ -553,7 +601,11 @@ class CareerCrewRuntime:
             # 历史恢复时跳过刚写入的当前问题，避免上下文里重复出现
             "pending_user_entry_id": pending_id,
         }
+        if cancel_check:
+            cancel_check()
         agent.run(state)
+        if cancel_check:
+            cancel_check()
         content = (agent.last_result.content or "").strip()
         capped = _cap_sources(
             sources,
@@ -568,6 +620,8 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞问答
+        if cancel_check:
+            cancel_check()
         return {
             "content": content,
             "sources": capped,

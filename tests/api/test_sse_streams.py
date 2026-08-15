@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from careercrew_api.sse import CancellationEvent, stream_agent
+from careercrew_api.sse import CancellationEvent, StreamCancelled, stream_agent
 
 
 def _lines(gen):
@@ -103,3 +103,32 @@ def test_consult_stream_disconnect_cancels(client, fake_runtime):
         # 提前断开
     # 后端 worker 应在取消事件驱动下尽快结束（断言：服务仍可用、无挂死）
     assert client.get("/api/health").status_code == 200
+
+
+def test_chat_endpoint_passes_cancel_to_runtime(client, fake_runtime):
+    """断开后 runtime 在阶段边界停止：cancel_check 确实透传进 agent 阶段。"""
+    import time as _time
+
+    state = {"checks": 0}
+
+    def slow_match(thread_id, user_id, intent, cb=None, cancel_check=None):
+        for _ in range(1000):
+            if cancel_check is not None:
+                state["checks"] += 1
+                try:
+                    cancel_check()
+                except StreamCancelled:
+                    return ""  # 已取消：不再产出，也不启动后续阶段
+            _time.sleep(0.01)
+        if cb:
+            cb("done text")
+        return "done text"
+
+    fake_runtime.run_match_stream = slow_match
+    with client.stream("POST", "/api/chat/match", json={"intent": "x", "thread_id": "m-1"}) as resp:
+        it = resp.iter_lines()
+        next(it)  # stage
+        # 提前断开
+    n = state["checks"]
+    _time.sleep(0.2)
+    assert state["checks"] - n <= 2  # 断开后 worker 在边界停止

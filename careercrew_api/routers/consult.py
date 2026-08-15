@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 from collections.abc import Generator
 
@@ -84,22 +85,31 @@ _FIELD_MAP = {
 
 
 def _persist_form_profile(rt, user_id: str, profile: dict[str, str]) -> None:
-    """把会诊表单提交的可映射字段持久化进用户画像。
-
-    current_position 提交空值 = 显式清空（SemanticFactStore.update 的空值删除语义）。
-    """
     mapped: dict[str, object] = {}
     for k, key in _FIELD_MAP.items():
         v = profile.get(k)
-        if v is not None and str(v).strip():
-            mapped[key] = str(v)
+        if v is None or not str(v).strip():
+            continue
+        s = str(v).strip()
+        if key == "profile.skills":
+            mapped[key] = [p.strip() for p in re.split(r"[、,，/]", s) if p.strip()]
+        elif key == "preferences.city":
+            mapped[key] = [p.strip() for p in re.split(r"[、,，/]", s) if p.strip()]
+        elif key == "profile.experience_years":
+            try:
+                mapped[key] = int(s)
+            except ValueError:
+                continue  # 无法转 int：跳过该键，不写畸变值
+        else:
+            mapped[key] = s
     if "current_position" in profile and not str(profile["current_position"]).strip():
         mapped["profile.current_position"] = ""
     if mapped:
         try:
             rt.fact_store.update(user_id, mapped, source="consult_form")
         except Exception:
-            pass  # 画像持久化失败不阻塞会诊
+            import logging
+            logging.getLogger(__name__).exception("persist consult profile failed")
 
 
 @router.post("")
