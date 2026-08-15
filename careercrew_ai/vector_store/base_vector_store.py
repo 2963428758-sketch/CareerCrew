@@ -17,6 +17,23 @@ import numpy as np
 if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
 
+ACCESS_USER_KEY = "__access_user"
+
+
+def _matches(metadata: dict, filters: dict) -> bool:
+    for k, v in filters.items():
+        if k == ACCESS_USER_KEY:
+            visible = (
+                metadata.get("visibility") == "public"
+                or metadata.get("owner_user_id") == v
+            )
+            if not visible:
+                return False
+            continue
+        if metadata.get(k) != v:
+            return False
+    return True
+
 
 @dataclass
 class VectorRecord:
@@ -66,10 +83,6 @@ class BaseVectorStore(ABC):
     ) -> list[VectorRecord]: ...
 
 
-def _matches(metadata: dict, filters: dict) -> bool:
-    return all(metadata.get(k) == v for k, v in filters.items())
-
-
 class FakeVectorStore(BaseVectorStore):
     """内存版向量库（cosine 相似度），单测复用，避免真实 Qdrant。"""
 
@@ -78,7 +91,8 @@ class FakeVectorStore(BaseVectorStore):
 
     def upsert(self, records: list[VectorRecord]) -> None:
         for r in records:
-            owner = str((r.metadata or {}).get("user_id", ""))
+            owner = str((r.metadata or {}).get("owner_user_id")
+                        or (r.metadata or {}).get("user_id") or "")
             self._records[(owner, r.id)] = r
 
     def query(self, dense, top_k=10, filters=None, sparse=None):
@@ -115,21 +129,38 @@ class FakeVectorStore(BaseVectorStore):
         )
 
     def list_docs(self, limit: int = 1000, filters: dict | None = None) -> list[dict]:
-        docs: dict[str, dict] = {}
+        docs: dict[tuple, dict] = {}
         for record in self._records.values():
             if filters and not _matches(record.metadata, filters):
                 continue
             doc = str(record.metadata.get("doc") or record.id)
-            entry = docs.setdefault(doc, {
+            visibility = str(record.metadata.get("visibility", "private"))
+            key = (doc, visibility)
+            entry = docs.setdefault(key, {
                 "doc": doc,
                 "source": record.metadata.get("source", ""),
                 "points": 0,
                 "category": record.metadata.get("category", ""),
+                "visibility": visibility,
+                "owner_user_id": str(record.metadata.get("owner_user_id", "")),
             })
             entry["points"] += 1
             if len(docs) >= limit:
                 break
         return list(docs.values())
+
+    def set_payload_by_filter(self, payload: dict, filters: dict) -> int:
+        count = 0
+        for record in self._records.values():
+            if filters and not _matches(record.metadata, filters):
+                continue
+            for k, v in payload.items():
+                if v is None:
+                    record.metadata.pop(k, None)
+                else:
+                    record.metadata[k] = v
+            count += 1
+        return count
 
     def metadata_exists(self, filters: dict) -> bool:
         return any(_matches(r.metadata, filters) for r in self._records.values())

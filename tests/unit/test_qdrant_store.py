@@ -68,3 +68,76 @@ def test_filter_delete_by_metadata(valid_config_data: dict) -> None:
     ])
     assert store.delete_by_metadata({"doc": "a"}) == 1
     assert [r.id for r in store.get_by_ids(["a_p001", "b_p001"])] == ["b_p001"]
+
+
+def _record(doc: str, owner: str, visibility: str, text: str = "t"):
+    return VectorRecord(
+        id=f"{doc}-p0", dense=[0.1] * 1024,
+        text=text,
+        metadata={"doc": doc, "source": f"{doc}.pdf", "category": "knowledge",
+                  "owner_user_id": owner, "visibility": visibility},
+    )
+
+
+def test_access_filter_sees_public_and_own_private_only(valid_config_data):
+    store = _store(valid_config_data)
+    store.upsert([
+        _record("mine", "u_001", "private"),
+        _record("public-doc", "u_002", "public"),
+        _record("theirs", "u_002", "private"),
+    ])
+    hits = store.query([0.1] * 1024, top_k=10, filters={"__access_user": "u_001"})
+    docs = {h.id for h in hits}
+    assert docs == {"mine-p0", "public-doc-p0"}
+
+
+def test_access_filter_key_does_not_leak_into_must(valid_config_data):
+    store = _store(valid_config_data)
+    store.upsert([_record("cat-doc", "u_001", "private")])
+    hits = store.query(
+        [0.1] * 1024, top_k=10,
+        filters={"__access_user": "u_001", "category": "knowledge"},
+    )
+    assert {h.id for h in hits} == {"cat-doc-p0"}
+
+
+def test_list_docs_separates_same_name_by_visibility(valid_config_data):
+    store = _store(valid_config_data)
+    store.upsert([
+        _record("same", "u_001", "private"),
+        _record("same", "u_002", "public"),
+    ])
+    docs = store.list_docs(filters={"__access_user": "u_001"})
+    by_vis = {d["visibility"] for d in docs}
+    assert by_vis == {"private", "public"}
+    public = next(d for d in docs if d["visibility"] == "public")
+    assert public["owner_user_id"] == "u_002"
+
+
+def test_set_payload_by_filter_toggles_visibility(valid_config_data):
+    store = _store(valid_config_data)
+    store.upsert([_record("publish-me", "u_001", "private")])
+    n = store.set_payload_by_filter(
+        {"visibility": "public"},
+        {"owner_user_id": "u_001", "doc": "publish-me"},
+    )
+    assert n == 1
+    assert store.count(filters={"doc": "publish-me", "visibility": "public"}) == 1
+    assert store.count(filters={"doc": "publish-me", "visibility": "private"}) == 0
+    # None 值删除键
+    store.set_payload_by_filter({"visibility": None}, {"doc": "publish-me"})
+    assert store.count(filters={"doc": "publish-me"}) == 1
+
+
+def test_upsert_reads_owner_from_owner_user_id_first(valid_config_data):
+    store = _store(valid_config_data)
+    store.upsert([VectorRecord(
+        id="legacy-id", dense=[0.1] * 1024,
+        metadata={"doc": "d", "user_id": "u_001"},
+    )])
+    store.upsert([VectorRecord(
+        id="legacy-id", dense=[0.1] * 1024,
+        metadata={"doc": "d", "owner_user_id": "u_001"},
+    )])
+    # 两种键名必须映射到同一物理 ID：合计只有 1 个点
+    assert store.count(filters={"doc": "d"}) == 1

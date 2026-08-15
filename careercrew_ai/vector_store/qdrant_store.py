@@ -17,7 +17,12 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from careercrew_ai.vector_store.base_vector_store import BaseVectorStore, QueryResult, VectorRecord
+from careercrew_ai.vector_store.base_vector_store import (
+    ACCESS_USER_KEY,
+    BaseVectorStore,
+    QueryResult,
+    VectorRecord,
+)
 
 if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
@@ -75,7 +80,7 @@ class QdrantStore(BaseVectorStore):
             vectors_config=vectors_config,
             sparse_vectors_config={"text_sparse": SparseVectorParams()},
         )
-        for field in ("doc", "type", "page", "source", "category", "user_id", "image_path"):
+        for field in ("doc", "type", "page", "source", "category", "user_id", "owner_user_id", "visibility", "image_path"):
             try:
                 self._client.create_payload_index(
                     self._collection, field_name=field,
@@ -113,12 +118,19 @@ class QdrantStore(BaseVectorStore):
         if not filters:
             return None
         must = []
+        should = None
         for k, v in filters.items():
+            if k == ACCESS_USER_KEY:
+                should = [
+                    FieldCondition(key="visibility", match=MatchValue(value="public")),
+                    FieldCondition(key="owner_user_id", match=MatchValue(value=str(v))),
+                ]
+                continue
             if isinstance(v, list):
                 must.append(FieldCondition(key=k, match=MatchAny(any=list(v))))
             elif isinstance(v, (str, int, float, bool)):
                 must.append(FieldCondition(key=k, match=MatchValue(value=v)))
-        return Filter(must=must) if must else None
+        return Filter(must=must, should=should) if (must or should) else None
 
     @staticmethod
     def _to_result(hit) -> QueryResult:
@@ -155,7 +167,7 @@ class QdrantStore(BaseVectorStore):
                     payload[k] = v
                 elif v is not None:
                     payload[k] = str(v)
-            owner = str(payload.get("user_id", ""))
+            owner = str(payload.get("owner_user_id") or payload.get("user_id") or "")
             points.append(PointStruct(id=self._to_qid(r.id, owner), vector=vectors, payload=payload))
         self._client.upsert(self._collection, points)
 
@@ -226,6 +238,30 @@ class QdrantStore(BaseVectorStore):
             self._client.delete(self._collection, points_selector=PointIdsList(points=qids))
         return len(qids)
 
+    def set_payload_by_filter(self, payload: dict, filters: dict) -> int:
+        """按过滤条件更新 payload（值为 None 表示删除该键）；返回命中点数。"""
+        from qdrant_client.models import PointIdsList
+
+        flt = self._filter_expr(filters)
+        if not flt:
+            return 0
+        qids: list[str] = []
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                self._collection, scroll_filter=flt, limit=1000,
+                offset=offset, with_payload=False, with_vectors=False,
+            )
+            qids.extend(p.id for p in points)
+            if offset is None or len(qids) > 10000:
+                break
+        if qids:
+            self._client.set_payload(
+                self._collection, payload=payload,
+                points=PointIdsList(points=qids),
+            )
+        return len(qids)
+
     def get_by_ids(
         self, ids: list[str], filters: dict | None = None,
     ) -> list[VectorRecord]:
@@ -277,8 +313,8 @@ class QdrantStore(BaseVectorStore):
         ).count)
 
     def list_docs(self, limit: int = 1000, filters: dict | None = None) -> list[dict]:
-        """按 payload.doc 聚合列出已入库文档（知识库管理用）。"""
-        docs: dict[str, dict] = {}
+        """按 payload.doc 聚合列出已入库文档（知识库管理用）；同名单按 visibility 分开。"""
+        docs: dict[tuple, dict] = {}
         offset = None
         while True:
             points, offset = self._client.scroll(
@@ -289,14 +325,16 @@ class QdrantStore(BaseVectorStore):
             for p in points:
                 payload = p.payload or {}
                 doc = payload.get("doc") or payload.get("_id", "")
-                entry = docs.setdefault(
-                    doc, {
-                        "doc": doc,
-                        "source": payload.get("source", ""),
-                        "points": 0,
-                        "category": payload.get("category", ""),
-                    }
-                )
+                visibility = str(payload.get("visibility", "private"))
+                key = (doc, visibility)
+                entry = docs.setdefault(key, {
+                    "doc": doc,
+                    "source": payload.get("source", ""),
+                    "points": 0,
+                    "category": payload.get("category", ""),
+                    "visibility": visibility,
+                    "owner_user_id": str(payload.get("owner_user_id", "")),
+                })
                 entry["points"] += 1
             if offset is None or len(docs) >= limit:
                 break
