@@ -66,6 +66,7 @@ interface StreamStoreState {
   start: (threadId: string, endpoint: string, body: Record<string, unknown>) => Promise<void>
   stop: (threadId: string) => void
   reset: (threadId: string) => void
+  resetAll: () => void
 }
 
 export const useStreamStore = create<StreamStoreState>((set) => ({
@@ -213,5 +214,12 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
 
   reset: (threadId) => {
     set((s) => ({ sessions: { ...s.sessions, [threadId]: { ...IDLE_SESSION, threadId } } }))
+  },
+
+  resetAll: () => {
+    // 登出/切换用户：中止所有在途流并清空会话状态，防止跨用户数据残留
+    controllers.forEach((c) => c.abort())
+    controllers.clear()
+    set({ sessions: {} })
   },
 }))

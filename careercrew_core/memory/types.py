@@ -73,6 +73,7 @@ class UserProfile(BaseModel):
     level: str = ""  # 初级 | 中级 | 高级
     direction: str = ""  # 大模型应用 / Agent / Java 后端 等
     experience_years: int | None = None
+    current_position: str = ""  # 当前职位 / 行业（会诊资料，可显式清空）
 
 
 class UserPreferences(BaseModel):

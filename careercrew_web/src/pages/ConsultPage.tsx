@@ -29,10 +29,12 @@ interface ConsultMessage {
 export default function ConsultPage() {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<ConsultMessage[]>([])
-  // 资料填写框：一次会话里用户主动关闭后不再弹出（提交/手动发送时后端流会重置 pendingInput）
-  const [formDismissed, setFormDismissed] = useState(false)
+  // 资料填写框：关闭状态按会话（thread_id）保存——一次会话里用户主动关闭后不再弹出，
+  // 切换/新建会话回到各自状态（新会话默认未关闭，会正常弹出）。
+  const [dismissedThreads, setDismissedThreads] = useState<Record<string, boolean>>({})
   const lastAssistantIdRef = useRef<string | null>(null)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.consult)
+  const formDismissed = dismissedThreads[currentThreadId] ?? false
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
@@ -42,6 +44,16 @@ export default function ConsultPage() {
   // 流结束（done / 手动停止 / 出错）后把结果落进对话历史
   useEffect(() => {
     if (stream.status === "streaming") return
+    if (stream.status === "error") {
+      // 流出错：移除未填充的空助手占位气泡，避免残留空气泡
+      setMessages((prev) =>
+        lastAssistantIdRef.current
+          ? prev.filter((m) => m.id !== lastAssistantIdRef.current)
+          : prev
+      )
+      lastAssistantIdRef.current = null
+      return
+    }
     if (stream.status === "idle" && !stream.streamingText && !stream.doneContent) return
     setMessages((prev) =>
       prev.map((m) =>
@@ -124,7 +136,7 @@ export default function ConsultPage() {
       if (v) parts.push(`${f.label}：${v}`)
     }
     const q = parts.length ? `我补充一下我的求职信息：${parts.join("；")}` : "我补充了求职信息，请继续"
-    setFormDismissed(true)
+    setDismissedThreads((prev) => ({ ...prev, [currentThreadId]: true }))
     void sendQuestion(q, values)
   }
 
@@ -202,7 +214,7 @@ export default function ConsultPage() {
         open={!!stream.pendingInput && stream.status !== "streaming" && !formDismissed}
         message={stream.pendingInput?.message}
         fields={stream.pendingInput?.fields ?? []}
-        onClose={() => setFormDismissed(true)}
+        onClose={() => setDismissedThreads((prev) => ({ ...prev, [currentThreadId]: true }))}
         onSubmit={handleFormSubmit}
       />
     </div>
