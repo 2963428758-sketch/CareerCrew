@@ -25,7 +25,6 @@ from careercrew_core.tracing.langsmith import (
     configure_langsmith,
     traced_call,
 )
-
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
@@ -34,6 +33,87 @@ if TYPE_CHECKING:
 
 def _norm_path(p: str) -> str:
     return str(p).replace("\\", "/").lower()
+
+
+def _capture_langsmith_run_id() -> str | None:
+    """取当前 LangSmith 根 run id（tracing 关闭时为 None）。
+
+    仅在 traced 上下文内有效：traced_call 包住 impl 后，get_current_run_tree()
+    返回当前 run 树；tracing 未启用 get_current_run_tree() 仍可安全调用（返回 None）。
+    """
+    try:
+        from langsmith import get_current_run_tree
+
+        tree = get_current_run_tree()
+        return str(tree.id) if tree is not None else None
+    except Exception:  # noqa: BLE001 - 埋点失败不影响主链路
+        return None
+
+
+def _observability_from_result(result) -> dict:
+    """从 AgentResult 抽取观测字段（tokens + tool_call 明细）。
+
+    返回 {input_tokens, output_tokens, total_tokens, tool_calls}；result 为 None
+    或缺新字段时相应值为 None / []（静默降级，不阻塞收尾）。
+    """
+    if result is None:
+        return {
+            "input_tokens": None, "output_tokens": None, "total_tokens": None,
+            "tool_calls": [],
+        }
+    input_tokens = getattr(result, "input_tokens", None)
+    output_tokens = getattr(result, "output_tokens", None)
+    total_tokens = None
+    if input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    details = getattr(result, "tool_call_details", None) or []
+    tool_calls = []
+    for d in details:
+        err = d.get("error")
+        error_type = None
+        if err:
+            error_type = str(err).split(":", 1)[0] or None
+        tool_calls.append({
+            "tool_name": str(d.get("name") or ""),
+            "input_redacted": d.get("args"),
+            "output_summary": None,
+            "status": "failed" if err else "completed",
+            "duration_ms": d.get("duration_ms"),
+            "error_type": error_type,
+            "error_summary": err,
+        })
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "tool_calls": tool_calls,
+    }
+
+
+def _rag_query_retrievals(tool_call_details: list[dict], start_index: int = 0) -> list[dict]:
+    """从 tool_call_details 里 name=="rag_query" 的条目生成 retrieval 行（尽力而为）。
+
+    无法从工具结果拿到 doc/chunk id 与 score（rag_query 返回纯文本），此处只落
+    query_text_redacted（args 摘要）+ scope；document_id/chunk_id/recall_score 为空。
+    """
+    retrievals: list[dict] = []
+    idx = start_index
+    for d in tool_call_details or []:
+        if d.get("name") != "rag_query":
+            continue
+        args = d.get("args") or {}
+        q = args.get("query") if isinstance(args, dict) else None
+        retrievals.append({
+            "query_index": idx,
+            "query_text_redacted": str(q) if q else None,
+            "scope": None,
+            "document_id": None,
+            "chunk_id": None,
+            "recall_score": None,
+            "used_in_final_context": False,
+        })
+        idx += 1
+    return retrievals
 
 
 def _read_image_paths(result) -> set[str]:
@@ -248,15 +328,26 @@ class CareerCrewRuntime:
             return None
 
     def _finish_chat_turn(self, ctx, content: str, status: str = "completed",
-                          metadata: dict | None = None) -> None:
-        """收尾一轮对话（写 assistant content + 状态 + 可选 metadata 富结构 + run latency）；
-        ctx 为 None 时跳过。"""
+                          metadata: dict | None = None,
+                          input_tokens: int | None = None,
+                          output_tokens: int | None = None,
+                          total_tokens: int | None = None,
+                          langsmith_run_id: str | None = None,
+                          retrievals: list[dict] | None = None,
+                          tool_calls: list[dict] | None = None) -> None:
+        """收尾一轮对话（写 assistant content + 状态 + 可选 metadata 富结构 + run latency
+        + T1.4 观测字段）；ctx 为 None 时跳过。"""
         from careercrew_api.chat_lifecycle import finish_turn
 
         if ctx is None:
             return
         try:
-            finish_turn(self.conversation_store, ctx, content, status=status, metadata=metadata)
+            finish_turn(
+                self.conversation_store, ctx, content, status=status, metadata=metadata,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                total_tokens=total_tokens, langsmith_run_id=langsmith_run_id,
+                retrievals=retrievals, tool_calls=tool_calls,
+            )
         except Exception:
             import logging
             logging.getLogger(__name__).exception("finish_chat_turn failed")
@@ -449,6 +540,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
+        ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
             cancel_check()
         ctx = self._begin_chat_turn(
@@ -490,7 +582,14 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
-        self._finish_chat_turn(ctx, result)
+        obs = _observability_from_result(lr)
+        obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        self._finish_chat_turn(
+            ctx, result, langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
         return StreamResult(content=result, turn=ctx)
@@ -517,6 +616,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
+        ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
             cancel_check()
         user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
@@ -557,7 +657,15 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass
-        self._finish_chat_turn(ctx, result)
+        lr = getattr(cycle.resume_advisor, "last_result", None)
+        obs = _observability_from_result(lr)
+        obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        self._finish_chat_turn(
+            ctx, result, langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
         return StreamResult(content=result, turn=ctx)
@@ -584,6 +692,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
+        ls_run_id = _capture_langsmith_run_id()
         from langchain_core.messages import HumanMessage
 
         if cancel_check:
@@ -628,7 +737,15 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
-        self._finish_chat_turn(ctx, result)
+        lr = agent.last_result
+        obs = _observability_from_result(lr)
+        obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        self._finish_chat_turn(
+            ctx, result, langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
         return StreamResult(content=result, turn=ctx)
@@ -669,6 +786,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
+        ls_run_id = _capture_langsmith_run_id()
         from langchain_core.messages import HumanMessage
 
         if cancel_check:
@@ -743,7 +861,29 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞问答
-        self._finish_chat_turn(ctx, content, metadata={"sources": capped})
+        # T1.4：检索行来自 _sink 收集的 sources（doc/score 可直接取），正文不落库。
+        capped_docs = {_norm_path(s.get("image_path") or "") or s.get("source"): s for s in capped}
+        retrievals: list[dict] = []
+        for i, s in enumerate(sources):
+            key = _norm_path(s.get("image_path") or "") or s.get("source")
+            retrievals.append({
+                "query_index": i,
+                "query_text_redacted": question,
+                "scope": scope,
+                "document_id": str(s.get("doc") or "") or None,
+                "chunk_id": None,
+                "recall_score": float(s.get("score") or 0.0),
+                "used_in_final_context": key in capped_docs,
+            })
+        lr = agent.last_result
+        obs = _observability_from_result(lr)
+        self._finish_chat_turn(
+            ctx, content, metadata={"sources": capped},
+            langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=retrievals,
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
         return StreamResult(content=content, sources=capped, turn=ctx)

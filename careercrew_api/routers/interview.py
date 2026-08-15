@@ -10,7 +10,11 @@ from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
-from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.runtime import (
+    CareerCrewRuntime,
+    RuntimeInitError,
+    _observability_from_result,
+)
 from careercrew_api.schemas import (
     InterviewChatMessage,
     InterviewChatRequest,
@@ -34,6 +38,22 @@ router = APIRouter()
 _CHAT_PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "interviewer_chat.txt"
 )
+
+
+def _interview_obs(lr) -> dict:
+    """从 agent.last_result 抽观测字段，供 _finish_chat_turn 落库（含 rag_query 检索行）。"""
+    from careercrew_api.runtime import _rag_query_retrievals
+
+    obs = _observability_from_result(lr)
+    details = getattr(lr, "tool_call_details", None) if lr is not None else None
+    obs["retrievals"] = _rag_query_retrievals(details or [])
+    return {
+        "input_tokens": obs["input_tokens"],
+        "output_tokens": obs["output_tokens"],
+        "total_tokens": obs["total_tokens"],
+        "retrievals": obs["retrievals"],
+        "tool_calls": obs["tool_calls"],
+    }
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -91,6 +111,7 @@ def questions(
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
             result["turn"] = ctx
+            result["lr"] = lr  # T1.4：观测字段随收尾一起落（token / tool_call）
 
         try:
             yield stage_event("questions")
@@ -110,7 +131,7 @@ def questions(
                 )
             except Exception:
                 pass
-            rt._finish_chat_turn(result["turn"], content)
+            rt._finish_chat_turn(result["turn"], content, **_interview_obs(result.get("lr")))
             yield done_event(content, **turn_done_fields(result["turn"]))
         except RuntimeInitError as e:
             yield error_event(str(e))
@@ -187,6 +208,7 @@ def chat(
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
             result["turn"] = ctx
+            result["lr"] = lr  # T1.4：观测字段随收尾一起落（token / tool_call）
 
         try:
             yield stage_event("questions")
@@ -215,7 +237,7 @@ def chat(
                 )
             except Exception:
                 pass
-            rt._finish_chat_turn(result["turn"], content)
+            rt._finish_chat_turn(result["turn"], content, **_interview_obs(result.get("lr")))
             yield done_event(content, **extra, **turn_done_fields(result["turn"]))
         except RuntimeInitError as e:
             yield error_event(str(e))

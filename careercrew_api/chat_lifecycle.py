@@ -16,6 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from careercrew_core.conversation.store import ConversationStore
+from careercrew_core.memory.redaction import redact_secrets
+
+# 工具输出摘要 / 检索 query 脱敏文本截断上限（§2.5 红线：不落完整正文）
+_OBSERVABILITY_TEXT_LIMIT = 200
 
 
 @dataclass
@@ -44,6 +48,7 @@ class TurnContext:
     agent_version: str = "unversioned"
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     user_id: str = ""
+    langsmith_run_id: str | None = None
 
     def latency_ms(self) -> int:
         return int((datetime.now(timezone.utc) - self.started_at).total_seconds() * 1000)
@@ -116,14 +121,55 @@ def begin_turn(
 def finish_turn(
     store: ConversationStore, ctx: TurnContext, content: str, status: str = "completed",
     metadata: dict | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    total_tokens: int | None = None,
+    langsmith_run_id: str | None = None,
+    retrievals: list[dict] | None = None,
+    tool_calls: list[dict] | None = None,
 ) -> None:
-    """流结束：写 assistant message 内容 + 状态（+ 可选 metadata 富结构），并收尾 run。"""
+    """流结束：写 assistant message 内容 + 状态（+ 可选 metadata 富结构），并收尾 run。
+
+    T1.4 观测：同步写 run 的 tokens/langsmith_run_id，并批量落 retrieval / tool_call
+    行（红action 后的 input_redacted / output_summary，正文 ≤200 字符 + redact_secrets）。
+    """
     store.set_message_content(
         ctx.user_id, ctx.assistant_message_id, content, status=status, metadata=metadata
     )
     store.finish_run(
-        ctx.user_id, ctx.run_id, status=status, latency_ms=ctx.latency_ms()
+        ctx.user_id, ctx.run_id, status=status, latency_ms=ctx.latency_ms(),
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        total_tokens=total_tokens, langsmith_run_id=langsmith_run_id,
     )
+    for rc in retrievals or []:
+        store.add_retrieval(
+            user_id=ctx.user_id, run_id=ctx.run_id,
+            query_index=int(rc.get("query_index", 0)),
+            query_text_redacted=_redact_truncate(rc.get("query_text_redacted")),
+            scope=rc.get("scope"),
+            document_id=rc.get("document_id"),
+            chunk_id=rc.get("chunk_id"),
+            recall_score=rc.get("recall_score"),
+            rerank_score=rc.get("rerank_score"),
+            rank_before=rc.get("rank_before"),
+            rank_after=rc.get("rank_after"),
+            used_in_final_context=bool(rc.get("used_in_final_context", False)),
+        )
+    for tc in tool_calls or []:
+        store.add_tool_call(
+            user_id=ctx.user_id, run_id=ctx.run_id,
+            tool_name=str(tc.get("tool_name") or ""),
+            input_redacted=_redact_dict(tc.get("input_redacted")),
+            output_summary=_redact_truncate(tc.get("output_summary")),
+            status=str(tc.get("status") or "completed"),
+            duration_ms=tc.get("duration_ms"),
+            requires_hitl=bool(tc.get("requires_hitl", False)),
+            hitl_status=tc.get("hitl_status"),
+            error_type=tc.get("error_type"),
+            error_summary=_redact_truncate(tc.get("error_summary")),
+            started_at=tc.get("started_at"),
+            finished_at=tc.get("finished_at"),
+        )
 
 
 def fail_turn(store: ConversationStore, ctx: TurnContext, exc: BaseException) -> None:
@@ -147,3 +193,28 @@ def cancel_turn(store: ConversationStore, ctx: TurnContext) -> None:
 
 def _truncate(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _redact_truncate(text: str | None) -> str | None:
+    """脱敏 + 截断（观测字段正文 ≤200 字符，§2.5 红线）。None 透传。"""
+    if text is None:
+        return None
+    redacted = redact_secrets(str(text))
+    return _truncate(redacted, limit=_OBSERVABILITY_TEXT_LIMIT)
+
+
+def _redact_dict(value: dict | None) -> dict | None:
+    """递归脱敏 dict（字符串叶子脱敏 + 截断，保留结构与数值）；None 透传。"""
+    if value is None:
+        return None
+    out: dict = {}
+    for k, v in value.items():
+        if isinstance(v, str):
+            out[k] = _redact_truncate(v)
+        elif isinstance(v, dict):
+            out[k] = _redact_dict(v)
+        elif isinstance(v, list):
+            out[k] = [_redact_truncate(x) if isinstance(x, str) else x for x in v]
+        else:
+            out[k] = v
+    return out

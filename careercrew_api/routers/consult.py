@@ -141,6 +141,9 @@ def consult(
         def _worker_impl():
             user_id = current_user["id"]
             attach_run_metadata(user_id=user_id, thread_id=req.thread_id, stage="consult")
+            from careercrew_api.runtime import _capture_langsmith_run_id
+
+            ls_run_id = _capture_langsmith_run_id()
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="consult",
                 agent_id="consult_orchestrator", user_text=req.question,
@@ -273,7 +276,8 @@ def consult(
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
                 rt._finish_chat_turn(
-                    ctx, final, metadata={"opinions": opinions, "calls": calls}
+                    ctx, final, metadata={"opinions": opinions, "calls": calls},
+                    langsmith_run_id=ls_run_id,
                 )
                 _safe_emit({
                     "type": "done", "content": final, "opinions": opinions, "calls": calls,

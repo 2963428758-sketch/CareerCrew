@@ -93,6 +93,89 @@ def test_latency_monotonic(store):
     assert ctx.latency_ms() >= t0
 
 
+def test_finish_turn_writes_tokens_and_langsmith(store):
+    """finish_turn 收尾时把 tokens/langsmith_run_id 写回 run 行。"""
+    ctx = _begin(store)
+    finish_turn(
+        store, ctx, "回答",
+        input_tokens=100, output_tokens=50, total_tokens=150,
+        langsmith_run_id="ls-9",
+    )
+    run = store._db.get_run("u_1", ctx.run_id)
+    assert run["input_tokens"] == 100
+    assert run["output_tokens"] == 50
+    assert run["total_tokens"] == 150
+    assert run["langsmith_run_id"] == "ls-9"
+
+
+def test_finish_turn_batch_writes_retrievals_and_tool_calls(store):
+    """finish_turn 批量写 retrieval / tool_call 行（脱敏截断后）。"""
+    ctx = _begin(store)
+    finish_turn(
+        store, ctx, "回答",
+        retrievals=[
+            {
+                "query_index": 0, "query_text_redacted": "RAG 检索流程",
+                "scope": "resume", "document_id": "doc-1", "chunk_id": "c1",
+                "recall_score": 0.9, "used_in_final_context": True,
+            },
+        ],
+        tool_calls=[
+            {
+                "tool_name": "rag_query", "input_redacted": {"query": "检索流程"},
+                "output_summary": "命中 3 条", "status": "completed", "duration_ms": 12,
+            },
+        ],
+    )
+    run = store._db.get_run("u_1", ctx.run_id)
+    # retrieval / tool_call 行在 FakeConversationDb 的内存 dict 里
+    rets = [r for r in store._db._retrievals.values() if r["run_id"] == ctx.run_id]
+    calls = [c for c in store._db._tool_calls.values() if c["run_id"] == ctx.run_id]
+    assert len(rets) == 1
+    assert rets[0]["document_id"] == "doc-1"
+    assert rets[0]["query_index"] == 0
+    assert rets[0]["used_in_final_context"] is True
+    assert len(calls) == 1
+    assert calls[0]["tool_name"] == "rag_query"
+    assert calls[0]["duration_ms"] == 12
+
+
+def test_finish_turn_redacts_and_truncates_sensitive_inputs(store):
+    """红action：retrieval query 与 tool_call input/output 不落完整明文/秘密。"""
+    ctx = _begin(store)
+    secret = "sk-" + "A" * 40
+    long_query = "查一下" + "很长的查询内容" * 100
+    finish_turn(
+        store, ctx, "回答",
+        retrievals=[
+            {"query_index": 0, "query_text_redacted": f"问题含密码 api_key={secret} 与 {long_query}"},
+        ],
+        tool_calls=[
+            {
+                "tool_name": "rag_query",
+                "input_redacted": {"query": f"密码 {secret}，正文：{long_query}"},
+                "output_summary": f"输出含 token {secret} 后面跟着 {long_query}",
+                "status": "completed",
+            },
+        ],
+    )
+    rets = [r for r in store._db._retrievals.values() if r["run_id"] == ctx.run_id]
+    calls = [c for c in store._db._tool_calls.values() if c["run_id"] == ctx.run_id]
+    assert secret not in rets[0]["query_text_redacted"]
+    assert "[REDACTED]" in rets[0]["query_text_redacted"]
+    assert len(rets[0]["query_text_redacted"]) <= 220  # 截断 + 后缀
+    # tool_call input 逐值脱敏 + output_summary 脱敏截断
+    assert secret not in str(calls[0]["input_redacted"])
+    assert "[REDACTED]" in str(calls[0]["input_redacted"])
+    assert secret not in calls[0]["output_summary"]
+    assert len(calls[0]["output_summary"]) <= 220
+
+
+def test_turn_context_langsmith_run_id_default_none(store):
+    ctx = _begin(store)
+    assert ctx.langsmith_run_id is None
+
+
 def test_done_fields_schema(store):
     ctx = _begin(store)
     fields = ctx.done_fields()

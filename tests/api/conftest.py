@@ -104,13 +104,20 @@ class FakeRuntime:
         except Exception:
             return None
 
-    def _finish_chat_turn(self, ctx, content, status="completed", metadata=None):
+    def _finish_chat_turn(self, ctx, content, status="completed", metadata=None,
+                          input_tokens=None, output_tokens=None, total_tokens=None,
+                          langsmith_run_id=None, retrievals=None, tool_calls=None):
         from careercrew_api.chat_lifecycle import finish_turn
 
         if ctx is None:
             return
         try:
-            finish_turn(self.conversation_store, ctx, content, status=status, metadata=metadata)
+            finish_turn(
+                self.conversation_store, ctx, content, status=status, metadata=metadata,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                total_tokens=total_tokens, langsmith_run_id=langsmith_run_id,
+                retrievals=retrievals, tool_calls=tool_calls,
+            )
         except Exception:
             pass
 
@@ -233,7 +240,17 @@ class FakeRuntime:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(output)
-        self._finish_chat_turn(ctx, output, metadata={"sources": sources})
+        # T1.4：可选注入观测字段（token/tool_call/retrieval），供 API 断言
+        obs = getattr(self, "knowledge_observability", None) or {}
+        self._finish_chat_turn(
+            ctx, output, metadata={"sources": sources},
+            input_tokens=obs.get("input_tokens"),
+            output_tokens=obs.get("output_tokens"),
+            total_tokens=obs.get("total_tokens"),
+            langsmith_run_id=obs.get("langsmith_run_id"),
+            retrievals=obs.get("retrievals"),
+            tool_calls=obs.get("tool_calls"),
+        )
         return StreamResult(content=output, sources=sources, turn=ctx)
 
     def record_thread_messages(self, user_id: str, thread_id: str,
