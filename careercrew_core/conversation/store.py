@@ -196,6 +196,33 @@ class ConversationStore:
         conv = self._require_owned(thread_id, user_id)
         return self._db.list_messages(user_id, conv["id"])
 
+    # ── rename / clear / delete / list runs ──
+
+    def rename_title(self, thread_id: str, user_id: str, title: str) -> dict:
+        """更新会话标题（按 UUID 或 legacy id）；所有权不匹配/不存在抛 OwnershipError。"""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.update_title(user_id, conv["id"], title)
+
+    def clear_conversation(self, thread_id: str, user_id: str) -> int:
+        """清空会话消息（保留 conversation / title / retrieval_scope）。
+
+        删除该会话全部 turns（级联 messages）与 runs/retrievals/tool_calls；
+        返回删除的 turn 数。
+        """
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.clear_conversation(user_id, conv["id"])
+
+    def delete_conversation(self, thread_id: str, user_id: str) -> bool:
+        """删除会话行及其全部子表（turns/messages/runs/retrievals/tool_calls）。"""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.delete_conversation(user_id, conv["id"])
+
+    def list_runs(self, thread_id: str, user_id: str) -> list[dict]:
+        """按会话返回全部 agent_runs（按 created_at 升序）。"""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.list_runs(user_id, conv["id"])
+
+
     def get_message(self, user_id: str, message_id: str) -> dict | None:
         """按 user_id 取单条消息；不存在 / 所有权不匹配返回 None（跨用户视为不存在）。"""
         return self._db.get_message(user_id, message_id)

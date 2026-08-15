@@ -395,3 +395,150 @@ def test_retrieval_and_tool_call_reject_wrong_owner(store):
         store.add_retrieval(user_id="u_2", run_id=run["id"], query_index=0)
     with pytest.raises(OwnershipError):
         store.add_tool_call(user_id="u_2", run_id=run["id"], tool_name="x", status="ok")
+
+
+# ── rename title ──
+
+
+def test_rename_title_updates_conversation(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "Old")
+    updated = store.rename_title("t-1", "u_1", "New Title")
+    assert updated["title"] == "New Title"
+    assert store.get_conversation("t-1", "u_1")["title"] == "New Title"
+
+
+def test_rename_title_by_uuid(store):
+    conv = store.ensure_conversation("t-1", "u_1", "chat", "Old")
+    updated = store.rename_title(conv["id"], "u_1", "ByUUID")
+    assert updated["title"] == "ByUUID"
+
+
+def test_rename_title_rejects_wrong_owner(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "Old")
+    with pytest.raises(OwnershipError):
+        store.rename_title("t-1", "u_2", "Hijack")
+
+
+def test_rename_title_missing_raises(store):
+    with pytest.raises(OwnershipError):
+        store.rename_title("t-none", "u_1", "X")
+
+
+# ── clear (保留 conversation / 删 messages+turns) ──
+
+
+def test_clear_keeps_conversation_removes_messages_and_turns(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "Title")
+    t1 = store.next_turn("t-1", "u_1")
+    store.add_user_message(t1["id"], t1["thread_id"], "u_1", "q1", "completed")
+    store.add_assistant_message(t1["id"], t1["thread_id"], "u_1", "a1", _uuid(), None)
+    t2 = store.next_turn("t-1", "u_1")
+    store.add_user_message(t2["id"], t2["thread_id"], "u_1", "q2", "completed")
+
+    n = store.clear_conversation("t-1", "u_1")
+    assert n == 2  # 删除两个 turn（消息随之清理）
+    conv = store.get_conversation("t-1", "u_1")
+    assert conv is not None
+    assert conv["title"] == "Title"
+    assert store.list_messages("t-1", "u_1") == []
+
+
+def test_clear_removes_messages_unreachable_by_run(store):
+    # clear 后消息/run 清空，但 conversation 仍在
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+    )
+    store.clear_conversation("t-1", "u_1")
+    assert store.list_messages("t-1", "u_1") == []
+    assert store.get_conversation("t-1", "u_1") is not None
+
+
+def test_clear_rejects_wrong_owner(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    with pytest.raises(OwnershipError):
+        store.clear_conversation("t-1", "u_2")
+
+
+# ── delete conversation ──
+
+
+def test_delete_conversation_removes_row_and_children(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    store.add_user_message(turn["id"], turn["thread_id"], "u_1", "q", "completed")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    run = store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+    )
+    store.add_retrieval(user_id="u_1", run_id=run["id"], query_index=0)
+    store.add_tool_call(user_id="u_1", run_id=run["id"], tool_name="x", status="ok")
+
+    deleted = store.delete_conversation("t-1", "u_1")
+    assert deleted is True
+    assert store.get_conversation("t-1", "u_1") is None
+    with pytest.raises(OwnershipError):
+        store.list_messages("t-1", "u_1")
+
+
+def test_delete_conversation_by_uuid(store):
+    conv = store.ensure_conversation("t-1", "u_1", "chat", "T")
+    assert store.delete_conversation(conv["id"], "u_1") is True
+    assert store.get_conversation("t-1", "u_1") is None
+
+
+def test_delete_conversation_rejects_wrong_owner(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    with pytest.raises(OwnershipError):
+        store.delete_conversation("t-1", "u_2")
+
+
+def test_delete_conversation_missing_raises(store):
+    with pytest.raises(OwnershipError):
+        store.delete_conversation("t-none", "u_1")
+
+
+# ── list runs ──
+
+
+def test_list_runs_returns_thread_runs_ordered(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    r1 = store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+        prompt_version="sha256:abc", agent_version="1",
+    )
+    store.finish_run(user_id="u_1", run_id=r1["id"], status="completed", latency_ms=100)
+    r2 = store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+        prompt_version="sha256:def", agent_version="2",
+    )
+
+    runs = store.list_runs("t-1", "u_1")
+    ids = [r["id"] for r in runs]
+    assert ids == [r1["id"], r2["id"]]
+    assert {r["prompt_version"] for r in runs} == {"sha256:abc", "sha256:def"}
+
+
+def test_list_runs_empty(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    assert store.list_runs("t-1", "u_1") == []
+
+
+def test_list_runs_rejects_wrong_owner(store):
+    store.ensure_conversation("t-1", "u_1", "chat", "T")
+    turn = store.next_turn("t-1", "u_1")
+    msg = store.add_assistant_message(turn["id"], turn["thread_id"], "u_1", "a", None, None)
+    store.start_run(
+        thread_id=turn["thread_id"], turn_id=turn["id"], message_id=msg["id"],
+        user_id="u_1", module="chat", agent_id="a", model="m",
+    )
+    with pytest.raises(OwnershipError):
+        store.list_runs("t-1", "u_2")

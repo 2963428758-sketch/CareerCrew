@@ -138,6 +138,18 @@ class ConversationDb(ABC):
     @abstractmethod
     def list_messages(self, user_id: str, thread_id: str) -> list[dict]: ...
 
+    @abstractmethod
+    def update_title(self, user_id: str, conversation_id: str, title: str) -> dict: ...
+
+    @abstractmethod
+    def clear_conversation(self, user_id: str, conversation_id: str) -> int: ...
+
+    @abstractmethod
+    def delete_conversation(self, user_id: str, conversation_id: str) -> bool: ...
+
+    @abstractmethod
+    def list_runs(self, user_id: str, thread_id: str) -> list[dict]: ...
+
     # ── runs ──
 
     @abstractmethod
@@ -522,6 +534,75 @@ class PostgresConversationDb(ConversationDb):
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    @_synchronized
+    def update_title(self, user_id, conversation_id, title) -> dict:
+        with self._connect() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE conversations SET title=%s, updated_at=%s "
+                "WHERE id=%s AND user_id=%s",
+                (title, _now(), conversation_id, user_id),
+            )
+        return self.get_conversation(user_id, conversation_id) or {}
+
+    @_synchronized
+    def clear_conversation(self, user_id, conversation_id) -> int:
+        """删除该会话所有 turns（级联 messages），保留 conversation 行。
+
+        返回删除的 turn 数。message 行先按 thread_id 硬删（messages.thread_id 无 FK），
+        turns 再删。runs/retrievals/tool_calls 一并清理，避免悬挂 run 引用。
+        """
+        with self._connect() as conn, conn.transaction():
+            # runs 关联的 retrievals / tool_calls 先删（按 run_id 子查询归属该 thread）
+            conn.execute(
+                "DELETE FROM agent_run_tool_calls WHERE run_id IN "
+                "(SELECT id FROM agent_runs WHERE thread_id=%s AND user_id=%s)",
+                (conversation_id, user_id),
+            )
+            conn.execute(
+                "DELETE FROM agent_run_retrievals WHERE run_id IN "
+                "(SELECT id FROM agent_runs WHERE thread_id=%s AND user_id=%s)",
+                (conversation_id, user_id),
+            )
+            conn.execute(
+                "DELETE FROM agent_runs WHERE thread_id=%s AND user_id=%s",
+                (conversation_id, user_id),
+            )
+            conn.execute(
+                "DELETE FROM messages WHERE thread_id=%s AND user_id=%s",
+                (conversation_id, user_id),
+            )
+            cur = conn.execute(
+                "DELETE FROM conversation_turns WHERE thread_id=%s AND user_id=%s",
+                (conversation_id, user_id),
+            )
+            n = cur.rowcount
+        return n
+
+    @_synchronized
+    def delete_conversation(self, user_id, conversation_id) -> bool:
+        """硬删 conversation 及其全部子表行（turns/messages/runs/retrievals/tool_calls）。"""
+        with self._connect() as conn, conn.transaction():
+            self.clear_conversation(user_id, conversation_id)
+            cur = conn.execute(
+                "DELETE FROM conversations WHERE id=%s AND user_id=%s",
+                (conversation_id, user_id),
+            )
+        return bool(cur.rowcount)
+
+    @_synchronized
+    def list_runs(self, user_id, thread_id) -> list[dict]:
+        with self._connect() as conn, conn.transaction():
+            rows = conn.execute(
+                "SELECT id, user_id, thread_id, turn_id, message_id, module, agent_id, "
+                "model, prompt_version, agent_version, status, input_tokens, "
+                "output_tokens, total_tokens, latency_ms, langsmith_run_id, error_type, "
+                "error_code, error_summary, started_at, finished_at, created_at "
+                "FROM agent_runs WHERE thread_id=%s AND user_id=%s "
+                "ORDER BY created_at, id",
+                (thread_id, user_id),
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
     # ── runs ──
 
     @_synchronized
@@ -820,6 +901,58 @@ class FakeConversationDb(ConversationDb):
             return (turn.get("sequence_no", 0), m["created_at"], m["id"])
 
         rows.sort(key=key)
+        return [dict(r) for r in rows]
+
+    def update_title(self, user_id, conversation_id, title) -> dict:
+        row = self._conversations.get(conversation_id)
+        if row and row["user_id"] == user_id:
+            row["title"] = title
+            row["updated_at"] = _now()
+            return dict(row)
+        return {}
+
+    def clear_conversation(self, user_id, conversation_id) -> int:
+        removed = 0
+        # 删 turns（级联 messages）、runs、retrievals、tool_calls
+        turn_ids = {tid for tid, t in self._turns.items()
+                    if t["thread_id"] == conversation_id and t["user_id"] == user_id}
+        # 先删 runs 及其 children
+        run_ids = {rid for rid, r in self._runs.items()
+                   if r["thread_id"] == conversation_id and r["user_id"] == user_id}
+        for rid in run_ids:
+            self._runs.pop(rid, None)
+        for tid, r in list(self._retrievals.items()):
+            if r["run_id"] in run_ids:
+                self._retrievals.pop(tid, None)
+        for tid, r in list(self._tool_calls.items()):
+            if r["run_id"] in run_ids:
+                self._tool_calls.pop(tid, None)
+        # 删 messages（属于这些 turns / thread）
+        for mid in [mid for mid, m in self._messages.items()
+                    if m["thread_id"] == conversation_id and m["user_id"] == user_id]:
+            self._messages.pop(mid, None)
+        for tid in turn_ids:
+            self._turns.pop(tid, None)
+            removed += 1
+        return removed
+
+    def delete_conversation(self, user_id, conversation_id) -> bool:
+        row = self._conversations.get(conversation_id)
+        existed = row is not None and row["user_id"] == user_id
+        if not existed:
+            return False
+        self.clear_conversation(user_id, conversation_id)
+        self._conversations.pop(conversation_id, None)
+        # legacy 映射清理
+        for legacy, cid in list(self._legacy_map.items()):
+            if cid == conversation_id:
+                del self._legacy_map[legacy]
+        return True
+
+    def list_runs(self, user_id, thread_id) -> list[dict]:
+        rows = [r for r in self._runs.values()
+                if r["thread_id"] == thread_id and r["user_id"] == user_id]
+        rows.sort(key=lambda r: (r.get("created_at", ""), r["id"]))
         return [dict(r) for r in rows]
 
     # ── runs ──

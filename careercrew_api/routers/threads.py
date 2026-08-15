@@ -13,12 +13,13 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
+from careercrew_api.routers.data import RetrievalScopeRequest
 from careercrew_api.runtime import (
     CareerCrewRuntime,
     RegenerateConflictError,
@@ -87,6 +88,19 @@ class ThreadCreateRequest(BaseModel):
         return v
 
 
+class ThreadRenameRequest(BaseModel):
+    """PATCH /threads/{thread_id}：兼容 legacy data.py 的 title/pinned/module/retrieval_scope。
+
+    title 额外同步 conversation 表（§13.1）；其余字段仅更新 legacy thread_store
+    （侧边栏元数据），保持既有行为不变。
+    """
+
+    title: str | None = None
+    pinned: bool | None = None
+    module: str | None = None
+    retrieval_scope: "RetrievalScopeRequest | None" = None
+
+
 @router.post("/threads")
 def create_thread(req: ThreadCreateRequest, current_user: CurrentUser,
                   rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
@@ -145,6 +159,113 @@ def list_messages(thread_id: str, current_user: CurrentUser,
         }
         for m in msgs
     ]
+
+
+@router.patch("/threads/{thread_id}")
+def rename_thread(thread_id: str, req: ThreadRenameRequest, current_user: CurrentUser,
+                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """更新会话元数据（§13.1 + legacy 兼容）。
+
+    保持 legacy data.py PATCH 语义（title/pinned/module/retrieval_scope 走 thread_store）；
+    仅当 title 变化时额外同步 conversation 表（Source of Truth）。凡 body 全空或
+    跨用户/不存在 → 404（除非法范围仍按 legacy 422）。
+    """
+    user_id = current_user["id"]
+    rt._ensure_heavy()
+
+    # legacy 语义：先经由 thread_store 更新（含 pinned/module/retrieval_scope 归一化）
+    try:
+        scope = (
+            req.retrieval_scope.model_dump(exclude_none=True)
+            if req.retrieval_scope is not None
+            else None
+        )
+        legacy = rt.touch_thread(
+            thread_id, user_id,
+            title=req.title, pinned=req.pinned, module=req.module,
+            retrieval_scope=scope,
+        )
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
+
+    # §13.1：title 同步 conversation 表（有 conversation 行才更新；无则静默跳过，
+    # 保持 legacy 纯线程可正常改 title/pinned/scope）。
+    if req.title is not None and req.title.strip():
+        try:
+            rt.conversation_store.rename_title(thread_id, user_id, req.title.strip()[:50])
+        except OwnershipError:
+            pass  # 无 conversation 行（纯 legacy 线程）：只更新 thread_store，符合既有行为
+        except Exception:
+            pass
+
+    return legacy
+
+
+@router.delete("/threads/{thread_id}")
+def delete_conversation(thread_id: str, current_user: CurrentUser,
+                        rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """删除会话（§13.5）：conversation 表全删 + legacy thread_store/情景事件一并删除。"""
+    user_id = current_user["id"]
+    rt._ensure_heavy()
+    try:
+        removed = rt.conversation_store.delete_conversation(thread_id, user_id)
+    except OwnershipError as e:
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
+    # 同步 legacy thread_store（sidebar 列表 + 情景事件）；失败不阻断。
+    try:
+        rt.delete_thread(thread_id, user_id)
+    except Exception:
+        pass
+    return {"deleted": removed, "thread_id": thread_id}
+
+
+@router.post("/threads/{thread_id}/clear")
+def clear_conversation(thread_id: str, current_user: CurrentUser,
+                       rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
+    """清空会话消息（§13.4）：保留 conversation/title/retrieval_scope，删除全部消息与 turn。"""
+    user_id = current_user["id"]
+    rt._ensure_heavy()
+    try:
+        removed = rt.conversation_store.clear_conversation(thread_id, user_id)
+    except OwnershipError as e:
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
+    return {"cleared": True, "thread_id": thread_id, "removed_turns": removed}
+
+
+@router.get("/threads/{thread_id}/export")
+def export_conversation(
+    thread_id: str,
+    current_user: CurrentUser,
+    format: str = Query(default="md", alias="format"),
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+):
+    """导出会话（§13.2/§13.3）：format=md|json。
+
+    数据源为 conversation 表（messages + agent_runs）。无 conversation 行的旧线程
+    （仅 legacy thread_store 元数据）→ 404（决策：不做 episodic 回退，见报告）。
+    """
+    from careercrew_core.conversation.export import build_json_text, build_markdown
+
+    user_id = current_user["id"]
+    rt._ensure_heavy()
+    if format not in ("md", "json"):
+        raise HTTPException(status_code=400, detail="format 必须为 md 或 json")
+
+    try:
+        conv = rt.conversation_store.get_conversation(thread_id, user_id)
+    except OwnershipError as e:
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除")
+
+    msgs = rt.conversation_store.list_messages(thread_id, user_id)
+    runs = rt.conversation_store.list_runs(thread_id, user_id)
+
+    if format == "md":
+        content = build_markdown(conv, msgs)
+        return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
+    content = build_json_text(conv, msgs, runs)
+    return PlainTextResponse(content, media_type="application/json; charset=utf-8")
 
 
 @router.post("/messages/{message_id}/regenerate")
