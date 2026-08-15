@@ -63,8 +63,11 @@ class FakeRuntime:
         from careercrew_core.memory.router import MemoryRouter
         from careercrew_core.memory.semantic import SemanticFactStore
         from careercrew_core.memory.threads import ThreadStore
+        from careercrew_core.conversation.db import FakeConversationDb
+        from careercrew_core.conversation.store import ConversationStore
 
         self.memory_db = FakeMemoryDb()
+        self.conversation_store = ConversationStore(FakeConversationDb())
         self.fact_store = SemanticFactStore(self.memory_db, user_id="u_001")
         self.policy_store = MemoryPolicyStore(self.memory_db)
         self.thread_store = ThreadStore(self.memory_db)
@@ -84,6 +87,52 @@ class FakeRuntime:
 
     def _ensure_heavy(self) -> None:
         return None
+
+    def _conversation_model(self) -> str:
+        return "fake-model"
+
+    def _begin_chat_turn(self, thread_id, user_id, module, agent_id, user_text,
+                         title=None):
+        from careercrew_api.chat_lifecycle import begin_turn
+
+        try:
+            return begin_turn(
+                self.conversation_store, thread_id=thread_id, user_id=user_id,
+                module=module, agent_id=agent_id, user_text=user_text,
+                model=self._conversation_model(), title=title,
+            )
+        except Exception:
+            return None
+
+    def _finish_chat_turn(self, ctx, content, status="completed"):
+        from careercrew_api.chat_lifecycle import finish_turn
+
+        if ctx is None:
+            return
+        try:
+            finish_turn(self.conversation_store, ctx, content, status=status)
+        except Exception:
+            pass
+
+    def _fail_chat_turn(self, ctx, exc):
+        from careercrew_api.chat_lifecycle import fail_turn
+
+        if ctx is None:
+            return
+        try:
+            fail_turn(self.conversation_store, ctx, exc)
+        except Exception:
+            pass
+
+    def _cancel_chat_turn(self, ctx):
+        from careercrew_api.chat_lifecycle import cancel_turn
+
+        if ctx is None:
+            return
+        try:
+            cancel_turn(self.conversation_store, ctx)
+        except Exception:
+            pass
 
     def health_info(self) -> dict:
         return {
@@ -110,56 +159,82 @@ class FakeRuntime:
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
-                         cancel_check: Callable[[], None] | None = None) -> str:
+                         cancel_check: Callable[[], None] | None = None):
+        from careercrew_api.chat_lifecycle import StreamResult
+
         self.last_call = {
             "method": "run_match_stream", "thread_id": thread_id,
             "user_id": user_id, "intent": intent,
         }
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="matcher", agent_id="job_matcher", user_text=intent,
+        )
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(self.match_output)
-        return self.match_output
+        self._finish_chat_turn(ctx, self.match_output)
+        return StreamResult(content=self.match_output, turn=ctx)
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
-                          cancel_check: Callable[[], None] | None = None) -> str:
+                          cancel_check: Callable[[], None] | None = None):
+        from careercrew_api.chat_lifecycle import StreamResult
+
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="resume", agent_id="resume_advisor",
+            user_text=f"按这个 JD 定制简历：{jd_text[:200]}",
+        )
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(self.resume_output)
-        return self.resume_output
+        self._finish_chat_turn(ctx, self.resume_output)
+        return StreamResult(content=self.resume_output, turn=ctx)
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
-                                cancel_check: Callable[[], None] | None = None) -> str:
+                                cancel_check: Callable[[], None] | None = None):
+        from careercrew_api.chat_lifecycle import StreamResult
+
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="chat", agent_id="career_planner", user_text=intent,
+        )
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(self.planner_output)
-        return self.planner_output
+        self._finish_chat_turn(ctx, self.planner_output)
+        return StreamResult(content=self.planner_output, turn=ctx)
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "",
                                  scope: str = "all",
-                                 cancel_check: Callable[[], None] | None = None) -> str:
+                                 cancel_check: Callable[[], None] | None = None):
+        from careercrew_api.chat_lifecycle import StreamResult
+
         self.knowledge_ask_scopes.append(scope)
         output = self.knowledge_output_by_user.get(user_id, self.knowledge_output)
         sources = self.knowledge_sources_by_user.get(user_id, self.knowledge_sources)
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
+            user_text=question,
+        )
         if cb:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(output)
-        return {"content": output, "sources": sources}
+        self._finish_chat_turn(ctx, output)
+        return StreamResult(content=output, sources=sources, turn=ctx)
 
     def record_thread_messages(self, user_id: str, thread_id: str,
                                user_text: str, agent_text: str,
