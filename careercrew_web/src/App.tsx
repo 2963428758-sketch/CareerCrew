@@ -2,7 +2,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from "react"
 import {
   BookOpen, Copy, FileText, GraduationCap, MessageCircle,
-  Loader2, LogOut, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, Users,
+  Loader2, LogOut, MessageSquare, MoreHorizontal, Pencil, Pin, Settings, Target, Trash2, UserCog, Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { CHAT_MODULES, moduleOfPath, useThreadStore, type ThreadItem, type ThreadModule } from "@/store/threadStore"
@@ -19,15 +19,16 @@ const ResumePage = lazy(() => import("@/pages/ResumePage"))
 const KnowledgePage = lazy(() => import("@/pages/KnowledgePage"))
 const ConsultPage = lazy(() => import("@/pages/ConsultPage"))
 const DataPage = lazy(() => import("@/pages/DataPage"))
+const AdminUsersPage = lazy(() => import("@/pages/AdminUsersPage"))
 
-const NAV = [
-  // 按求职流程排序：规划 → 匹配 → 简历 → 面试 → 会诊 → 知识库
+const NAV: { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean; adminOnly?: boolean }[] = [
   { to: "/", label: "求职规划", icon: MessageSquare, end: true },
   { to: "/matcher", label: "职位匹配", icon: Target },
   { to: "/resume", label: "简历优化", icon: FileText },
   { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/consult", label: "会诊", icon: Users },
   { to: "/knowledge", label: "知识库问答", icon: BookOpen },
+  { to: "/admin/users", label: "用户管理", icon: UserCog, adminOnly: true },
 ]
 
 const PAGES: Record<string, ComponentType> = {
@@ -38,6 +39,7 @@ const PAGES: Record<string, ComponentType> = {
   "/knowledge": KnowledgePage,
   "/consult": ConsultPage,
   "/data": DataPage,
+  "/admin/users": AdminUsersPage,
 }
 
 export default function App() {
@@ -71,7 +73,7 @@ export default function App() {
         </div>
 
         <div className="flex flex-col gap-0.5 p-3">
-          {NAV.map((item) => (
+          {NAV.filter((item) => !item.adminOnly || auth.user?.role === "admin").map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -130,7 +132,11 @@ export default function App() {
           }
         >
           {(() => {
-            const Page = PAGES[location.pathname] ?? ChatPage
+            const requested = PAGES[location.pathname] ?? ChatPage
+            const Page =
+              location.pathname === "/admin/users" && auth.user?.role !== "admin"
+                ? ChatPage
+                : requested
             return <Page key={location.pathname} />
           })()}
         </Suspense>
