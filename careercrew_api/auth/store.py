@@ -73,6 +73,9 @@ class AccountStore(ABC):
     def update_password_hash(self, user_id: str, password_hash: str) -> None: ...
 
     @abstractmethod
+    def set_must_change_password(self, user_id: str, value: bool) -> None: ...
+
+    @abstractmethod
     def bump_token_version(self, user_id: str) -> int: ...
 
     @abstractmethod
@@ -111,7 +114,8 @@ class AccountStore(ABC):
     @staticmethod
     def _public(row: dict[str, Any]) -> dict[str, Any]:
         return {k: row[k] for k in ("id", "username", "role", "status",
-                                    "token_version", "created_at", "updated_at")
+                                    "token_version", "created_at", "updated_at",
+                                    "must_change_password")
                 if k in row and row.get(k) is not None}
 
 
@@ -131,6 +135,7 @@ class SqliteAccountStore(AccountStore):
                 ("status", "ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"),
                 ("token_version", "ALTER TABLE accounts ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"),
                 ("updated_at", "ALTER TABLE accounts ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"),
+                ("must_change_password", "ALTER TABLE accounts ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"),
             ):
                 if column not in self._columns(conn, "accounts"):
                     conn.execute(ddl)
@@ -168,6 +173,7 @@ class SqliteAccountStore(AccountStore):
         data.setdefault("status", "active")
         data.setdefault("token_version", 0)
         data.setdefault("updated_at", data.get("created_at", ""))
+        data["must_change_password"] = bool(data.get("must_change_password", 0))
         return data
 
     def has_accounts(self) -> bool:
@@ -182,23 +188,26 @@ class SqliteAccountStore(AccountStore):
                 conn.execute("ROLLBACK")
                 raise AccountExistsError("an account already exists")
             conn.execute(
-                "INSERT INTO accounts (id, username, password_hash, role, status, token_version, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'admin', 'active', 0, ?, ?)",
+                "INSERT INTO accounts (id, username, password_hash, role, status, token_version, "
+                "created_at, updated_at, must_change_password) "
+                "VALUES (?, ?, ?, 'admin', 'active', 0, ?, ?, 0)",
                 ("u_001", username, password_hash, now, now),
             )
             row = conn.execute("SELECT * FROM accounts WHERE id = 'u_001'").fetchone()
             conn.execute("COMMIT")
         return self._public(self._account_row(row))
 
-    def create_account(self, username: str, password_hash: str, role: str) -> dict[str, Any]:
+    def create_account(self, username: str, password_hash: str, role: str,
+                       must_change: bool = False) -> dict[str, Any]:
         user_id = f"u_{uuid4().hex}"
         now = _utcnow().isoformat()
         try:
             with self._connect() as conn:
                 conn.execute(
-                    "INSERT INTO accounts (id, username, password_hash, role, status, token_version, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, 'active', 0, ?, ?)",
-                    (user_id, username, password_hash, role, now, now),
+                    "INSERT INTO accounts (id, username, password_hash, role, status, token_version, "
+                    "created_at, updated_at, must_change_password) "
+                    "VALUES (?, ?, ?, ?, 'active', 0, ?, ?, ?)",
+                    (user_id, username, password_hash, role, now, now, int(must_change)),
                 )
                 row = conn.execute("SELECT * FROM accounts WHERE id = ?", (user_id,)).fetchone()
         except sqlite3.IntegrityError as err:
@@ -250,6 +259,13 @@ class SqliteAccountStore(AccountStore):
                 (password_hash, _utcnow().isoformat(), user_id),
             )
 
+    def set_must_change_password(self, user_id: str, value: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE accounts SET must_change_password = ?, updated_at = ? WHERE id = ?",
+                (int(value), _utcnow().isoformat(), user_id),
+            )
+
     def bump_token_version(self, user_id: str) -> int:
         with self._connect() as conn:
             row = conn.execute("SELECT token_version FROM accounts WHERE id = ?", (user_id,)).fetchone()
@@ -276,7 +292,7 @@ class SqliteAccountStore(AccountStore):
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT s.user_id, s.expires_at, a.id, a.username, a.role, a.status, a.token_version, "
-                "a.created_at, a.updated_at "
+                "a.created_at, a.updated_at, a.must_change_password "
                 "FROM refresh_sessions s JOIN accounts a ON a.id = s.user_id "
                 "WHERE s.token_hash = ? AND s.revoked_at IS NULL AND a.status = 'active'",
                 (old_hash,),
@@ -295,6 +311,7 @@ class SqliteAccountStore(AccountStore):
             "id": row["id"], "username": row["username"], "role": row["role"],
             "status": row["status"], "token_version": row["token_version"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "must_change_password": bool(row["must_change_password"]),
         }
         return self._public(account)
 
@@ -409,7 +426,12 @@ class PostgresAccountStore(AccountStore):
                 "role TEXT NOT NULL CHECK (role IN ('admin','user')), "
                 "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')), "
                 "token_version INTEGER NOT NULL DEFAULT 0, "
+                "must_change_password BOOLEAN NOT NULL DEFAULT false, "
                 "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+            conn.execute(
+                "ALTER TABLE auth_accounts "
+                "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false"
             )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS auth_refresh_sessions ("
@@ -457,14 +479,15 @@ class PostgresAccountStore(AccountStore):
             ).fetchone()
         return self._public(self._as_text(row))
 
-    def create_account(self, username: str, password_hash: str, role: str) -> dict[str, Any]:
+    def create_account(self, username: str, password_hash: str, role: str,
+                       must_change: bool = False) -> dict[str, Any]:
         user_id = f"u_{uuid4().hex}"
         try:
             with self._connect() as conn, conn.transaction():
                 row = conn.execute(
-                    "INSERT INTO auth_accounts (id, username, password_hash, role) "
-                    "VALUES (%s, %s, %s, %s) RETURNING *",
-                    (user_id, username, password_hash, role),
+                    "INSERT INTO auth_accounts (id, username, password_hash, role, must_change_password) "
+                    "VALUES (%s, %s, %s, %s, %s) RETURNING *",
+                    (user_id, username, password_hash, role, must_change),
                 ).fetchone()
         except Exception as err:
             if type(err).__name__ == "UniqueViolation":
@@ -520,6 +543,13 @@ class PostgresAccountStore(AccountStore):
                 (password_hash, user_id),
             )
 
+    def set_must_change_password(self, user_id: str, value: bool) -> None:
+        with self._connect() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE auth_accounts SET must_change_password = %s, updated_at = now() WHERE id = %s",
+                (value, user_id),
+            )
+
     def bump_token_version(self, user_id: str) -> int:
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
@@ -544,7 +574,7 @@ class PostgresAccountStore(AccountStore):
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
                 "SELECT s.expires_at, a.id, a.username, a.role, a.status, a.token_version, "
-                "a.created_at, a.updated_at "
+                "a.created_at, a.updated_at, a.must_change_password "
                 "FROM auth_refresh_sessions s JOIN auth_accounts a ON a.id = s.user_id "
                 "WHERE s.token_hash = %s AND s.revoked_at IS NULL AND a.status = 'active'",
                 (old_hash,),

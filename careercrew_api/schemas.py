@@ -1,9 +1,10 @@
 """pydantic 请求/响应模型（§4 API 端点）。"""
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ── 通用 ──
@@ -23,10 +24,13 @@ class HealthResponse(BaseModel):
 
 class CredentialsRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(min_length=12, max_length=256)
+    # 登录要能接受临时默认密码（如 123456），只做长度上限约束
+    password: str = Field(min_length=1, max_length=256)
 
 
-class CreateUserRequest(CredentialsRequest):
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，首次登录强制改密
     role: Literal["user", "admin"] = "user"
 
 
@@ -34,6 +38,7 @@ class PublicUser(BaseModel):
     id: str
     username: str
     role: Literal["user", "admin"]
+    must_change_password: bool = False
 
 
 class AccountListItem(BaseModel):
@@ -42,6 +47,7 @@ class AccountListItem(BaseModel):
     role: Literal["user", "admin"]
     status: Literal["active", "disabled"]
     token_version: int
+    must_change_password: bool = False
     created_at: str
     updated_at: str
 
@@ -65,12 +71,19 @@ class UserPatchRequest(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    password: str = Field(min_length=12, max_length=256)
+    password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，下次登录强制改密
 
 
 class ChangePasswordRequest(BaseModel):
-    old_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=12, max_length=256)
+    old_password: str = Field(default="", max_length=256)  # 强制改密流程可留空
+    new_password: str = Field(min_length=8, max_length=64)
+
+    @field_validator("new_password")
+    @classmethod
+    def _policy(cls, value: str) -> str:
+        if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
+            raise ValueError("密码需为 8-64 位，且同时包含字母和数字")
+        return value
 
 
 class TokenResponse(BaseModel):

@@ -67,6 +67,7 @@ def tenant_api(tmp_path, monkeypatch):
     client = TestClient(app)
 
     password = "correct-horse-battery-staple"
+    bob_password = "bob-password-123"
     admin = client.post(
         "/api/auth/bootstrap", json={"username": "alice", "password": password}
     ).json()
@@ -75,11 +76,21 @@ def tenant_api(tmp_path, monkeypatch):
     ).json()
     admin_headers = {"Authorization": f"Bearer {admin_login['access_token']}"}
     client.post(
-        "/api/auth/users", json={"username": "bob", "password": password, "role": "user"},
+        "/api/auth/users", json={"username": "bob", "password": bob_password, "role": "user"},
         headers=admin_headers,
     )
     bob_login = client.post(
-        "/api/auth/token", json={"username": "bob", "password": password}
+        "/api/auth/token", json={"username": "bob", "password": bob_password}
+    ).json()
+    # 新建用户带强制改密标记：先完成改密，业务 API 才放行
+    change = client.post(
+        "/api/auth/password",
+        json={"new_password": bob_password},
+        headers={"Authorization": f"Bearer {bob_login['access_token']}"},
+    )
+    assert change.status_code == 200
+    bob_login = client.post(
+        "/api/auth/token", json={"username": "bob", "password": bob_password}
     ).json()
     bob_headers = {"Authorization": f"Bearer {bob_login['access_token']}"}
     return client, {"alice": admin_headers, "bob": bob_headers}, {

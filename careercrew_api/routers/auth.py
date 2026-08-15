@@ -138,11 +138,13 @@ def create_user(
     actor: Annotated[dict[str, str], Depends(require_admin)],
     auth: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, str]:
-    """只有已认证管理员可开户；密码哈希与刷新令牌绝不进入响应。"""
+    """只有已认证管理员可开户；密码留空时默认 123456，首次登录强制改密。"""
     try:
         return auth.create_user(actor, request.username, request.password, request.role)
     except AccountExistsError as err:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username already exists") from err
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
 
 @router.get("/users", response_model=UserListResponse)
@@ -187,7 +189,7 @@ def reset_password(
     admin: Annotated[dict[str, str], Depends(require_admin)],
     auth: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, bool]:
-    """管理员重置密码：撤销该用户全部会话并使其 access token 立即失效。"""
+    """管理员重置密码：留空则重置为默认 123456；无论哪种，下次登录强制改密。"""
     try:
         auth.admin_reset_password(admin, user_id, request.password)
     except SelfAdminError as err:
@@ -196,6 +198,8 @@ def reset_password(
     except KeyError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="account not found") from err
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     return {"ok": True}
 
 
@@ -206,7 +210,7 @@ def change_password(
     refresh_token: Annotated[str | None, Cookie(alias=_REFRESH_COOKIE)] = None,
     auth: AuthService = Depends(get_auth_service),
 ) -> dict[str, bool]:
-    """当前用户修改自己的密码：撤销除当前会话外的其他刷新会话。"""
+    """当前用户修改自己的密码：撤销除当前会话外的其他刷新会话，并解除强制改密标记。"""
     try:
         auth.change_own_password(
             user, request.old_password, request.new_password,
@@ -215,4 +219,6 @@ def change_password(
     except AuthenticationError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="invalid password") from err
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     return {"ok": True}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import re
 from typing import Any
 
 import jwt
@@ -17,6 +18,15 @@ from careercrew_api.auth.store import (
     new_refresh_token,
 )
 from careercrew_core.state.settings import AuthSettings
+
+DEFAULT_INITIAL_PASSWORD = "123456"
+_PASSWORD_POLICY = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,64}$")
+
+
+def validate_password_policy(password: str) -> None:
+    """常用且简单的校验：8-64 位，必须同时包含字母和数字。"""
+    if not _PASSWORD_POLICY.match(password):
+        raise ValueError("密码需为 8-64 位，且同时包含字母和数字")
 
 
 class AuthenticationError(Exception):
@@ -59,9 +69,14 @@ class AuthService:
             raise PermissionError("bootstrap is only available in development")
         return self.store.create_first_admin(username, self.password_hasher.hash(password))
 
-    def create_user(self, actor: dict[str, str], username: str, password: str,
-                    role: str = "user") -> dict[str, str]:
-        created = self.store.create_account(username, self.password_hasher.hash(password), role)
+    def create_user(self, actor: dict[str, str], username: str,
+                    password: str | None = None, role: str = "user") -> dict[str, str]:
+        initial = password or DEFAULT_INITIAL_PASSWORD
+        if password:
+            validate_password_policy(password)
+        created = self.store.create_account(
+            username, self.password_hasher.hash(initial), role, must_change=True,
+        )
         self._audit(actor["id"], "user.create", created["id"], {"role": role})
         return created
 
@@ -94,7 +109,10 @@ class AuthService:
             self.store.clear_login_failures(key)
         if self.password_hasher.check_needs_rehash(account["password_hash"]):
             self.store.update_password_hash(account["id"], self.password_hasher.hash(password))
-        user = {key: account[key] for key in ("id", "username", "role")}
+        user = {
+            key: account[key] for key in ("id", "username", "role")
+        }
+        user["must_change_password"] = bool(account.get("must_change_password", False))
         return self._token_response(user)
 
     def _retry_after(self, locked_until: str | None) -> int:
@@ -145,26 +163,37 @@ class AuthService:
         self, user: dict[str, str], old_password: str, new_password: str,
         current_refresh_token: str | None = None,
     ) -> None:
+        validate_password_policy(new_password)
         account = self.store.account_by_username(user["username"])
         if not account:
             raise AuthenticationError("account not found")
-        try:
-            valid = self.password_hasher.verify(account["password_hash"], old_password)
-        except (VerificationError, InvalidHashError):
-            valid = False
-        if not valid:
-            raise AuthenticationError("invalid password")
+        must_change = bool(account.get("must_change_password", False))
+        if must_change and not old_password:
+            pass  # 强制改密流程：已通过 access token 证明身份，允许免输旧密码
+        else:
+            try:
+                valid = self.password_hasher.verify(account["password_hash"], old_password)
+            except (VerificationError, InvalidHashError):
+                valid = False
+            if not valid:
+                raise AuthenticationError("invalid password")
         self.store.update_password_hash(user["id"], self.password_hasher.hash(new_password))
+        self.store.set_must_change_password(user["id"], False)
         self.store.bump_token_version(user["id"])
         if current_refresh_token:
             self.store.revoke_other_refresh_sessions(user["id"], current_refresh_token)
         else:
             self.store.revoke_all_refresh_sessions(user["id"])
 
-    def admin_reset_password(self, actor: dict[str, str], user_id: str, new_password: str) -> None:
+    def admin_reset_password(self, actor: dict[str, str], user_id: str,
+                             new_password: str | None = None) -> None:
         if actor["id"] == user_id:
             raise SelfAdminError("administrators must use /api/auth/password for themselves")
-        self.store.update_password_hash(user_id, self.password_hasher.hash(new_password))
+        reset_to = new_password or DEFAULT_INITIAL_PASSWORD
+        if new_password:
+            validate_password_policy(new_password)
+        self.store.update_password_hash(user_id, self.password_hasher.hash(reset_to))
+        self.store.set_must_change_password(user_id, True)
         self.store.bump_token_version(user_id)
         self.store.revoke_all_refresh_sessions(user_id)
         self._audit(actor["id"], "user.reset_password", user_id, {})

@@ -5,6 +5,7 @@ import pytest
 
 
 PASSWORD = "correct-horse-battery-staple"
+USER_PASSWORD = "member-password-123"  # 满足新密码策略（字母+数字）
 
 
 @pytest.fixture
@@ -52,7 +53,7 @@ def test_bootstrap_status_only_reports_whether_first_admin_can_be_created(auth_c
 @pytest.mark.web
 def test_password_login_protects_me_and_never_returns_refresh_token(auth_client):
     user = _bootstrap(auth_client)
-    assert user == {"id": "u_001", "username": "admin", "role": "admin"}
+    assert user == {"id": "u_001", "username": "admin", "role": "admin", "must_change_password": False}
 
     unauthorized = auth_client.get("/api/auth/me")
     assert unauthorized.status_code == 401
@@ -104,7 +105,7 @@ def test_only_administrator_can_create_accounts(auth_client):
 
     created = auth_client.post(
         "/api/auth/users",
-        json={"username": "member", "password": PASSWORD, "role": "user"},
+        json={"username": "member", "password": USER_PASSWORD, "role": "user"},
         headers=admin_headers,
     )
     assert created.status_code == 201
@@ -112,11 +113,12 @@ def test_only_administrator_can_create_accounts(auth_client):
     assert member["role"] == "user"
     assert member["id"] != "u_001"
     assert "password" not in member
+    assert member["must_change_password"] is True
 
-    member_login = auth_client.post("/api/auth/token", json={"username": "member", "password": PASSWORD}).json()
+    member_login = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).json()
     member_headers = {"Authorization": f"Bearer {member_login['access_token']}"}
     forbidden = auth_client.post(
-        "/api/auth/users", json={"username": "other", "password": PASSWORD}, headers=member_headers
+        "/api/auth/users", json={"username": "other", "password": USER_PASSWORD}, headers=member_headers
     )
     assert forbidden.status_code == 403
 
@@ -146,7 +148,7 @@ def test_admin_lists_patches_and_disables_users(auth_client):
     admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
 
     created = auth_client.post(
-        "/api/auth/users", json={"username": "member", "password": PASSWORD}, headers=admin_headers
+        "/api/auth/users", json={"username": "member", "password": USER_PASSWORD}, headers=admin_headers
     )
     assert created.status_code == 201
     member_id = created.json()["id"]
@@ -157,7 +159,7 @@ def test_admin_lists_patches_and_disables_users(auth_client):
     assert body["total"] == 2
     assert {u["username"] for u in body["items"]} == {"admin", "member"}
 
-    member_token = auth_client.post("/api/auth/token", json={"username": "member", "password": PASSWORD}).json()["access_token"]
+    member_token = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).json()["access_token"]
     member_headers = {"Authorization": f"Bearer {member_token}"}
 
     patched = auth_client.patch(
@@ -167,7 +169,7 @@ def test_admin_lists_patches_and_disables_users(auth_client):
     assert patched.json()["status"] == "disabled"
     # 禁用立即生效：旧 access token 失效、登录被拒
     assert auth_client.get("/api/auth/me", headers=member_headers).status_code == 401
-    assert auth_client.post("/api/auth/token", json={"username": "member", "password": PASSWORD}).status_code == 401
+    assert auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).status_code == 401
 
     reenabled = auth_client.patch(
         f"/api/auth/users/{member_id}", json={"status": "active"}, headers=admin_headers
@@ -185,9 +187,17 @@ def test_admin_self_and_last_admin_guards(auth_client):
     assert auth_client.patch("/api/auth/users/u_001", json={"role": "user"}, headers=admin_headers).status_code == 409
     assert auth_client.patch("/api/auth/users/not-exist", json={"status": "disabled"}, headers=admin_headers).status_code == 404
     # 有第二个 admin 后，第二个 admin 自改 → 403（SelfAdmin）
-    assert auth_client.post("/api/auth/users", json={"username": "second", "password": PASSWORD, "role": "admin"}, headers=admin_headers).status_code == 201
+    assert auth_client.post("/api/auth/users", json={"username": "second", "password": USER_PASSWORD, "role": "admin"}, headers=admin_headers).status_code == 201
     second_id = auth_client.get("/api/auth/users", headers=admin_headers).json()["items"][1]["id"]
-    second_token = auth_client.post("/api/auth/token", json={"username": "second", "password": PASSWORD}).json()["access_token"]
+    # 第二个 admin 也带强制改密标记：先改密再测 SelfAdmin 语义
+    second_login = auth_client.post("/api/auth/token", json={"username": "second", "password": USER_PASSWORD}).json()
+    second_change = auth_client.post(
+        "/api/auth/password",
+        json={"new_password": "second-password-456"},
+        headers={"Authorization": f"Bearer {second_login['access_token']}"},
+    )
+    assert second_change.status_code == 200
+    second_token = auth_client.post("/api/auth/token", json={"username": "second", "password": "second-password-456"}).json()["access_token"]
     second_headers = {"Authorization": f"Bearer {second_token}"}
     assert auth_client.patch(f"/api/auth/users/{second_id}", json={"status": "disabled"}, headers=second_headers).status_code == 403
 
@@ -196,14 +206,14 @@ def test_admin_self_and_last_admin_guards(auth_client):
 def test_reset_password_and_change_own_password(auth_client):
     _bootstrap(auth_client)
     admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
-    member_id = auth_client.post("/api/auth/users", json={"username": "member", "password": PASSWORD}, headers=admin_headers).json()["id"]
+    member_id = auth_client.post("/api/auth/users", json={"username": "member", "password": USER_PASSWORD}, headers=admin_headers).json()["id"]
 
     reset = auth_client.post(
         f"/api/auth/users/{member_id}/reset-password",
         json={"password": "another-password-456"}, headers=admin_headers,
     )
     assert reset.status_code == 200 and reset.json() == {"ok": True}
-    assert auth_client.post("/api/auth/token", json={"username": "member", "password": PASSWORD}).status_code == 401
+    assert auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).status_code == 401
     member_token = auth_client.post("/api/auth/token", json={"username": "member", "password": "another-password-456"}).json()["access_token"]
     member_headers = {"Authorization": f"Bearer {member_token}"}
 
@@ -219,6 +229,28 @@ def test_reset_password_and_change_own_password(auth_client):
     fresh_headers = {"Authorization": f"Bearer {fresh_token}"}
     # 普通用户不能调用管理端点
     assert auth_client.get("/api/auth/users", headers=fresh_headers).status_code == 403
+
+
+@pytest.mark.web
+def test_new_user_default_password_forced_change_blocks_business_api(auth_client):
+    _bootstrap(auth_client)
+    admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
+    created = auth_client.post("/api/auth/users", json={"username": "newbie"}, headers=admin_headers)
+    assert created.status_code == 201
+    assert created.json()["must_change_password"] is True
+    login = auth_client.post("/api/auth/token", json={"username": "newbie", "password": "123456"})
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    # 业务 API 被 403 拦截；me/password 可用（用不依赖 runtime 的业务端点验证门禁）
+    assert auth_client.get("/api/knowledge/upload/no-such-job", headers=headers).status_code == 403
+    assert auth_client.get("/api/auth/me", headers=headers).status_code == 200
+    change = auth_client.post("/api/auth/password", json={"new_password": USER_PASSWORD}, headers=headers)
+    assert change.status_code == 200
+    fresh = auth_client.post("/api/auth/token", json={"username": "newbie", "password": USER_PASSWORD}).json()
+    assert fresh["user"]["must_change_password"] is False
+    fresh_headers = {"Authorization": f"Bearer {fresh['access_token']}"}
+    assert auth_client.get("/api/knowledge/upload/no-such-job", headers=fresh_headers).status_code == 404
 
 
 @pytest.mark.web

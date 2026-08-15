@@ -11,6 +11,7 @@ from tests.api.conftest import FakeRuntime
 
 
 PASSWORD = "correct-horse-battery-staple"
+BOB_PASSWORD = "bob-password-123"  # 满足新密码策略（字母+数字）
 
 
 @pytest.fixture
@@ -54,11 +55,21 @@ def tenant_api(tmp_path, monkeypatch):
     admin_headers = {"Authorization": f"Bearer {admin_login['access_token']}"}
     bob = client.post(
         "/api/auth/users",
-        json={"username": "bob", "password": PASSWORD, "role": "user"},
+        json={"username": "bob", "password": BOB_PASSWORD, "role": "user"},
         headers=admin_headers,
     ).json()
     bob_login = client.post(
-        "/api/auth/token", json={"username": "bob", "password": PASSWORD}
+        "/api/auth/token", json={"username": "bob", "password": BOB_PASSWORD}
+    ).json()
+    # 新建用户带强制改密标记：先完成改密，业务 API 才放行
+    change = client.post(
+        "/api/auth/password",
+        json={"new_password": BOB_PASSWORD},
+        headers={"Authorization": f"Bearer {bob_login['access_token']}"},
+    )
+    assert change.status_code == 200
+    bob_login = client.post(
+        "/api/auth/token", json={"username": "bob", "password": BOB_PASSWORD}
     ).json()
     bob_headers = {"Authorization": f"Bearer {bob_login['access_token']}"}
     return client, runtime, {"alice": admin_headers, "bob": bob_headers}, {
