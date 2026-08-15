@@ -109,6 +109,7 @@ class CareerCrewRuntime:
         self.memory_router = None     # LLM 记忆路由
         self.memory_injector = None   # 自动注入
         self._episodic_vector_store = None
+        self.conversation_store = None  # 对话核心存储（Phase 1 Source of Truth）
 
     # ── 重组件初始化 ──
 
@@ -199,6 +200,11 @@ class CareerCrewRuntime:
             self.reranker = rr
             self.multimodal_search = hs
             self.memory_db = memory_db
+            # 对话核心存储（conversation 表 Source of Truth，Postgres/Fake）
+            from careercrew_core.conversation.db import create_conversation_db
+            from careercrew_core.conversation.store import ConversationStore
+
+            self.conversation_store = ConversationStore(create_conversation_db(settings))
             self.episodic = episodic
             self.fact_store = fact_store
             self.policy_store = policy_store
@@ -214,6 +220,66 @@ class CareerCrewRuntime:
         from careercrew_core.memory.episodic import EpisodicMemory
 
         return EpisodicMemory(self.memory_db, user_id=user_id, thread_id=thread_id)
+
+    # ── 对话 run 生命周期（Phase 1：conversation 表 Source of Truth）──
+
+    def _conversation_model(self) -> str:
+        """当前 run 的 model（settings.llm.model；未初始化时退化空串）。"""
+        if self.settings is None:
+            return ""
+        return getattr(self.settings.llm, "model", "") or ""
+
+    def _begin_chat_turn(self, thread_id: str, user_id: str, module: str,
+                         agent_id: str, user_text: str, title: str | None = None):
+        """开启一轮对话（conversation 表四件套），失败不阻断主流程（返回 None）。"""
+        from careercrew_api.chat_lifecycle import begin_turn
+
+        self._ensure_heavy()
+        try:
+            return begin_turn(
+                self.conversation_store,
+                thread_id=thread_id, user_id=user_id, module=module,
+                agent_id=agent_id, user_text=user_text,
+                model=self._conversation_model(), title=title,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("begin_chat_turn failed")
+            return None
+
+    def _finish_chat_turn(self, ctx, content: str, status: str = "completed") -> None:
+        """收尾一轮对话（写 assistant content + 状态 + run latency）；ctx 为 None 时跳过。"""
+        from careercrew_api.chat_lifecycle import finish_turn
+
+        if ctx is None:
+            return
+        try:
+            finish_turn(self.conversation_store, ctx, content, status=status)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("finish_chat_turn failed")
+
+    def _fail_chat_turn(self, ctx, exc: BaseException) -> None:
+        from careercrew_api.chat_lifecycle import fail_turn
+
+        if ctx is None:
+            return
+        try:
+            fail_turn(self.conversation_store, ctx, exc)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("fail_chat_turn failed")
+
+    def _cancel_chat_turn(self, ctx) -> None:
+        from careercrew_api.chat_lifecycle import cancel_turn
+
+        if ctx is None:
+            return
+        try:
+            cancel_turn(self.conversation_store, ctx)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("cancel_chat_turn failed")
 
     def _ensure_thread(self, thread_id: str, user_id: str, module: str = "chat",
                        title: str = "") -> None:
@@ -359,7 +425,10 @@ class CareerCrewRuntime:
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
                          cancel_check: Callable[[], None] | None = None) -> str:
-        """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。"""
+        """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。
+
+        返回 StreamResult（content + turn 上下文）；转交 traced_call 透传。
+        """
         return traced_call(
             self._run_match_stream_impl,
             name="careercrew.match",
@@ -374,10 +443,16 @@ class CareerCrewRuntime:
 
     def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                cb: Callable[[str], None] | None = None,
-                               cancel_check: Callable[[], None] | None = None) -> str:
+                               cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="matcher", agent_id="job_matcher",
+            user_text=intent,
+        )
         cycle = self.get_cycle(thread_id, user_id)
         try:
             # 先落库用户消息：即使后续 agent 运行挂起/失败，问题也不丢
@@ -392,7 +467,11 @@ class CareerCrewRuntime:
         cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
         if cancel_check:
             cancel_check()
-        result = cycle.run_match(intent)
+        try:
+            result = cycle.run_match(intent)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         # 超轮次兜底：agent 搜索轮次耗尽时补一段结论，避免以"我再搜一下"截断
@@ -409,9 +488,10 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        self._finish_chat_turn(ctx, result)
         if cancel_check:
             cancel_check()
-        return result
+        return StreamResult(content=result, turn=ctx)
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
@@ -431,12 +511,18 @@ class CareerCrewRuntime:
 
     def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
                                 cb: Callable[[str], None] | None = None,
-                                cancel_check: Callable[[], None] | None = None) -> str:
+                                cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
         if cancel_check:
             cancel_check()
-        cycle = self.get_cycle(thread_id, user_id)
         user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="resume", agent_id="resume_advisor",
+            user_text=user_text,
+        )
+        cycle = self.get_cycle(thread_id, user_id)
         try:
             cycle.pending_user_entry_id = self.record_user_message(
                 user_id, thread_id, user_text, module="matcher"
@@ -449,7 +535,11 @@ class CareerCrewRuntime:
         cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
         if cancel_check:
             cancel_check()
-        result = cycle.run_resume(jd_text)
+        try:
+            result = cycle.run_resume(jd_text)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         try:
@@ -461,9 +551,10 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass
+        self._finish_chat_turn(ctx, result)
         if cancel_check:
             cancel_check()
-        return result
+        return StreamResult(content=result, turn=ctx)
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
@@ -483,12 +574,18 @@ class CareerCrewRuntime:
 
     def _run_planner_chat_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                       cb: Callable[[str], None] | None = None,
-                                      cancel_check: Callable[[], None] | None = None) -> str:
+                                      cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
         from langchain_core.messages import HumanMessage
 
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="chat", agent_id="career_planner",
+            user_text=intent,
+        )
         ep = self._get_episodic(thread_id, user_id)
         agent = self.new_career_planner(cb, episodic=ep)
         try:
@@ -509,7 +606,11 @@ class CareerCrewRuntime:
         }
         if cancel_check:
             cancel_check()
-        agent.run(state)
+        try:
+            agent.run(state)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         result = (agent.last_result.content or "").strip() if agent.last_result else ""
@@ -521,9 +622,10 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        self._finish_chat_turn(ctx, result)
         if cancel_check:
             cancel_check()
-        return result
+        return StreamResult(content=result, turn=ctx)
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
@@ -557,12 +659,18 @@ class CareerCrewRuntime:
                                        cb: Callable[[str], None] | None = None,
                                        category: str = "",
                                        scope: str = "all",
-                                       cancel_check: Callable[[], None] | None = None) -> str:
+                                       cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         from langchain_core.messages import HumanMessage
 
         if cancel_check:
             cancel_check()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
+            user_text=question,
+        )
         sources: list[dict] = []
         seen: set[str] = set()
 
@@ -608,7 +716,11 @@ class CareerCrewRuntime:
         }
         if cancel_check:
             cancel_check()
-        agent.run(state)
+        try:
+            agent.run(state)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         content = (agent.last_result.content or "").strip()
@@ -625,12 +737,10 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞问答
+        self._finish_chat_turn(ctx, content)
         if cancel_check:
             cancel_check()
-        return {
-            "content": content,
-            "sources": capped,
-        }
+        return StreamResult(content=content, sources=capped, turn=ctx)
 
     def _thread_history_messages(self, user_id: str, thread_id: str,
                                  max_rounds: int = 10,

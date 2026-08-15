@@ -23,6 +23,7 @@ from careercrew_api.sse import (
     CancellationEvent,
     StreamCancelled,
     put_guaranteed,
+    turn_done_fields,
 )
 from careercrew_core.tracing.langsmith import attach_run_metadata, traced_call
 
@@ -140,6 +141,10 @@ def consult(
         def _worker_impl():
             user_id = current_user["id"]
             attach_run_metadata(user_id=user_id, thread_id=req.thread_id, stage="consult")
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="consult",
+                agent_id="consult_orchestrator", user_text=req.question,
+            )
             try:
                 from careercrew_core.supervisor.consult_orchestrator import (
                     USER_INPUT_FIELDS,
@@ -267,10 +272,16 @@ def consult(
                     )
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
-                _safe_emit({"type": "done", "content": final, "opinions": opinions, "calls": calls})
+                rt._finish_chat_turn(ctx, final)
+                _safe_emit({
+                    "type": "done", "content": final, "opinions": opinions, "calls": calls,
+                    **turn_done_fields(ctx),
+                })
             except StreamCancelled:
+                rt._cancel_chat_turn(ctx)
                 pass  # 客户端断开/停止生成：不再投递任何事件
             except Exception as e:
+                rt._fail_chat_turn(ctx, e)
                 err["exc"] = e
             finally:
                 put_guaranteed(q, _SENTINEL, cancel)

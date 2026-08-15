@@ -26,6 +26,7 @@ from careercrew_api.sse import (
     error_event,
     stage_event,
     stream_agent,
+    turn_done_fields,
 )
 
 router = APIRouter()
@@ -52,7 +53,7 @@ def questions(
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
@@ -63,6 +64,10 @@ def questions(
             episodic = rt._get_episodic(req.thread_id, user_id)
             agent = rt.new_interviewer(cb, episodic=episodic)
             prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="interview", agent_id="interviewer",
+                user_text=prompt,
+            )
             try:
                 pending_id = rt.record_user_message(
                     user_id, req.thread_id, prompt, module="interview"
@@ -77,10 +82,15 @@ def questions(
                 "pending_user_entry_id": pending_id,
             }
             cancel.check()
-            agent.run(state)
+            try:
+                agent.run(state)
+            except Exception as e:
+                rt._fail_chat_turn(ctx, e)
+                raise
             cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+            result["turn"] = ctx
 
         try:
             yield stage_event("questions")
@@ -100,7 +110,8 @@ def questions(
                 )
             except Exception:
                 pass
-            yield done_event(content)
+            rt._finish_chat_turn(result["turn"], content)
+            yield done_event(content, **turn_done_fields(result["turn"]))
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:
@@ -127,7 +138,7 @@ def chat(
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
@@ -143,6 +154,10 @@ def chat(
             last_user = next(
                 (m.content for m in reversed(req.messages) if m.role == "user"),
                 "",
+            )
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="interview", agent_id="interviewer",
+                user_text=last_user or (req.topic or "请开始模拟面试"),
             )
             try:
                 pending_id = rt.record_user_message(
@@ -163,10 +178,15 @@ def chat(
                 "pending_user_entry_id": pending_id,
             }
             cancel.check()
-            agent.run(state)
+            try:
+                agent.run(state)
+            except Exception as e:
+                rt._fail_chat_turn(ctx, e)
+                raise
             cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+            result["turn"] = ctx
 
         try:
             yield stage_event("questions")
@@ -195,7 +215,8 @@ def chat(
                 )
             except Exception:
                 pass
-            yield done_event(content, **extra)
+            rt._finish_chat_turn(result["turn"], content)
+            yield done_event(content, **extra, **turn_done_fields(result["turn"]))
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:

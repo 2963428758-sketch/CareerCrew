@@ -21,9 +21,14 @@ from careercrew_api.sse import (
     error_event,
     stage_event,
     stream_agent,
+    turn_done_fields,
 )
 
 router = APIRouter()
+
+
+def _turn_done_fields(turn) -> dict:
+    return turn_done_fields(turn)
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -44,15 +49,17 @@ def match(
     """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
-            result["content"] = rt.run_match_stream(
+            res = rt.run_match_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
                 cancel_check=cancel.check,
-            ) or ""
+            )
+            result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["turn"] = getattr(res, "turn", None)
 
         try:
             yield stage_event("match")
@@ -63,7 +70,10 @@ def match(
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(result["content"] or "".join(content_parts))
+            yield done_event(
+                result["content"] or "".join(content_parts),
+                **_turn_done_fields(result["turn"]),
+            )
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:
@@ -81,15 +91,17 @@ def resume(
     """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
-            result["content"] = rt.run_resume_stream(
+            res = rt.run_resume_stream(
                 req.thread_id, current_user["id"], req.jd_text, cb,
                 cancel_check=cancel.check,
-            ) or ""
+            )
+            result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["turn"] = getattr(res, "turn", None)
 
         try:
             yield stage_event("resume")
@@ -100,7 +112,10 @@ def resume(
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准
-            yield done_event(result["content"] or "".join(content_parts))
+            yield done_event(
+                result["content"] or "".join(content_parts),
+                **_turn_done_fields(result["turn"]),
+            )
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:
@@ -118,15 +133,17 @@ def plan(
     """求职对话：职业规划师主理（一站式画像/规划/匹配/简历/薪资），流式输出。"""
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
-            result["content"] = rt.run_planner_chat_stream(
+            res = rt.run_planner_chat_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
                 cancel_check=cancel.check,
-            ) or ""
+            )
+            result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["turn"] = getattr(res, "turn", None)
 
         try:
             yield stage_event("planning")
@@ -137,7 +154,10 @@ def plan(
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(result["content"] or "".join(content_parts))
+            yield done_event(
+                result["content"] or "".join(content_parts),
+                **_turn_done_fields(result["turn"]),
+            )
         except RuntimeInitError as e:
             yield error_event(str(e))
         except Exception as e:

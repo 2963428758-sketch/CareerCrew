@@ -156,3 +156,18 @@ def done_event(content: str, **extra: Any) -> str:
 def error_event(message: str) -> str:
     """构造 error 事件 NDJSON 行。"""
     return json.dumps({"type": "error", "message": message}, ensure_ascii=False) + "\n"
+
+
+def turn_done_fields(turn) -> dict:
+    """把 TurnContext（或有 done_fields 方法的对象）转为 §9 done 事件附加字段。
+
+    turn 为 None（生命周期未接线 / 存储降级）时返回空 dict，done 事件退化为仅 content，
+    兼容 FakeRuntime 无对话存储的场景。
+    """
+    if turn is None:
+        return {}
+    if hasattr(turn, "done_fields"):
+        return turn.done_fields()
+    if isinstance(turn, dict):
+        return dict(turn)
+    return {}

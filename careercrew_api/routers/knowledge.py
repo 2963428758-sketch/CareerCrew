@@ -21,6 +21,7 @@ from careercrew_api.sse import (
     error_event,
     stage_event,
     stream_agent,
+    turn_done_fields,
 )
 from careercrew_api import storage
 
@@ -238,15 +239,27 @@ def ask_knowledge(
     """
 
     def gen():
-        result: dict = {"content": "", "sources": []}
+        result: dict = {"content": "", "sources": [], "turn": None}
         cancel = CancellationEvent()
 
         def _run(cb):
             nonlocal result
-            result = rt.run_knowledge_ask_stream(
+            res = rt.run_knowledge_ask_stream(
                 req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
                 category=req.category, scope=req.scope, cancel_check=cancel.check,
             )
+            if hasattr(res, "content"):
+                result = {
+                    "content": res.content,
+                    "sources": getattr(res, "sources", []),
+                    "turn": getattr(res, "turn", None),
+                }
+            else:
+                result = {
+                    "content": res.get("content", ""),
+                    "sources": res.get("sources", []),
+                    "turn": None,
+                }
 
         try:
             yield stage_event("knowledge")
@@ -261,6 +274,7 @@ def ask_knowledge(
             yield done_event(
                 result.get("content") or "".join(content_parts),
                 sources=result.get("sources", []),
+                **turn_done_fields(result.get("turn")),
             )
         except RuntimeInitError as e:
             yield error_event(str(e))

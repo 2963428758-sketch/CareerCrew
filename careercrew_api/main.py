@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from careercrew_api.auth.middleware import TrustedOriginMiddleware
-from careercrew_api.routers import auth, chat, consult, data, interview, knowledge, resume
+from careercrew_api.routers import auth, chat, consult, data, interview, knowledge, resume, threads
 from careercrew_core.state.settings import load_auth_settings
 
 DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
@@ -60,6 +60,9 @@ def create_app() -> FastAPI:
 
     # /api 路由
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+    # threads（conversation Source of Truth）先于 data 注册：POST /api/threads 归 conversation；
+    # data.py 仍提供 GET/PATCH/DELETE /api/threads（memory 线程列表与元数据）。
+    app.include_router(threads.router, prefix="/api", tags=["threads"])
     app.include_router(data.router, prefix="/api", tags=["data"])
     app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
     app.include_router(interview.router, prefix="/api/interview", tags=["interview"])

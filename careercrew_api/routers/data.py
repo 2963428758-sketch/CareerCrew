@@ -43,13 +43,6 @@ class RetrievalScopeRequest(BaseModel):
         return self
 
 
-class ThreadCreateRequest(BaseModel):
-    thread_id: str
-    module: str = "chat"
-    title: str = ""
-    retrieval_scope: RetrievalScopeRequest | None = None
-
-
 class ThreadPatchRequest(BaseModel):
     title: str | None = None
     pinned: bool | None = None
@@ -125,16 +118,6 @@ def threads(current_user: CurrentUser, module: str | None = Query(None),
             rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> list[dict]:
     """列出用户的所有对话线程（Postgres threads 表）。"""
     return rt.get_threads(current_user["id"], module=module)
-
-
-@router.post("/threads")
-def create_thread(req: ThreadCreateRequest, current_user: CurrentUser,
-                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
-    """登记新会话线程。"""
-    return rt.register_thread(
-        req.thread_id, current_user["id"], module=req.module, title=req.title,
-        retrieval_scope=req.retrieval_scope.model_dump(exclude_none=True) if req.retrieval_scope else None,
-    )
 
 
 @router.patch("/threads/{thread_id}")
