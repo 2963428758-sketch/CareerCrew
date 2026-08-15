@@ -42,6 +42,9 @@ const PAGES: Record<string, ComponentType> = {
   "/admin/users": AdminUsersPage,
 }
 
+/** zustand v5 + React 19：selector 返回新数组会触发 useSyncExternalStore 无限循环，用模块级常量兜底。 */
+const EMPTY_THREADS: ThreadItem[] = []
+
 export default function App() {
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
   const location = useLocation()
@@ -165,7 +168,7 @@ function ThreadList() {
 
   if (!module) return null
 
-  const threads = threadsByModule[module] ?? []
+  const threads = threadsByModule[module] ?? EMPTY_THREADS
   const currentId = currentThreadByModule[module]
   const moduleMeta = CHAT_MODULES.find((m) => m.key === module)!
 

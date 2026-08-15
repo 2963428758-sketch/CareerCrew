@@ -9,7 +9,7 @@ import { MarkdownContent } from "@/components/MarkdownContent"
 import KnowledgePanel from "@/components/KnowledgePanel"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useChatScroll } from "@/hooks/useChatScroll"
-import { useThreadStore } from "@/store/threadStore"
+import { useThreadStore, type ThreadItem } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, type KnowledgeSource } from "@/types"
 import { cn } from "@/lib/utils"
@@ -25,6 +25,9 @@ interface KnowledgeMessage {
 
 let msgId = 0
 const nextId = () => `kb-msg-${++msgId}`
+
+/** zustand v5 + React 19：selector 返回新数组会触发 useSyncExternalStore 无限循环，用模块级常量兜底。 */
+const EMPTY_THREADS: ThreadItem[] = []
 
 type AuthenticatedImage = { status: "loading" | "ready" | "error"; url?: string }
 
@@ -98,7 +101,7 @@ export default function KnowledgePage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.knowledge)
   // 检索范围：存于会话元数据（retrieval_scope），切换会话自动恢复，修改即时 PATCH 持久化
-  const threads = useThreadStore((s) => s.threadsByModule.knowledge ?? [])
+  const threads = useThreadStore((s) => s.threadsByModule.knowledge ?? EMPTY_THREADS)
   const setThreadScope = useThreadStore((s) => s.setThreadScope)
   const savedScope = threads.find((t) => t.thread_id === currentThreadId)?.retrieval_scope
   const category = savedScope?.type === "category" ? savedScope.category_id : ""
