@@ -192,8 +192,19 @@ class PostgresMemoryDb(MemoryDb):
                            "module TEXT NOT NULL DEFAULT 'chat', pinned BOOLEAN NOT NULL DEFAULT false, "
                            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
                            "PRIMARY KEY (user_id, thread_id))")
-        # 会话检索范围（知识库分类等）元数据；历史行回退 NULL（前端视为"全部"）
-        self._conn.execute("ALTER TABLE threads ADD COLUMN IF NOT EXISTS retrieval_scope JSONB")
+        # 会话检索范围（知识库分类等）元数据；历史行回退 NULL（前端视为"全部"）。
+        # 目录守卫 + 短锁超时：避免在并发连接持有 threads 事务时被 ALTER 永久阻塞。
+        self._conn.execute("SET lock_timeout = '5s'")
+        try:
+            self._conn.execute(
+                "DO $$ BEGIN "
+                "IF NOT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'threads' AND column_name = 'retrieval_scope') THEN "
+                "ALTER TABLE threads ADD COLUMN retrieval_scope JSONB; "
+                "END IF; END $$"
+            )
+        finally:
+            self._conn.execute("SET lock_timeout = '0'")
         self._conn.commit()
         return self._conn
 

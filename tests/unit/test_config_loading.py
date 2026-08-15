@@ -119,19 +119,26 @@ def test_rerank_none_backend_skips_api_key(tmp_path: Path, valid_config_data: di
     assert settings.rerank.backend == "none"
 
 
-def test_relative_paths_resolved_to_project_root() -> None:
-    """相对路径字段解析为基于项目根的绝对路径（任意 CWD 都能跑）。"""
+def test_relative_paths_resolved_to_project_root(tmp_path: Path, valid_config_data: dict) -> None:
+    """相对路径字段解析为基于项目根的绝对路径（任意 CWD 都能跑）。
+
+    用 fixture 配置（不依赖仓库 config/settings.yaml 与本机环境变量），
+    保证在 CI（无 .env / 无 MinerU、LangSmith key）也能通过。
+    """
     import os
 
     from careercrew_core.state.settings import PROJECT_ROOT
 
-    settings = load_settings()  # 读 config/settings.yaml（相对路径）
+    valid_config_data["embedding"]["model_path"] = "./models/bge"
+    valid_config_data["rag"]["loaders"]["output_dir"] = "./data/parsed"
+    valid_config_data["supervisor"]["checkpointer"]["path"] = "./data/db/checkpointer.db"
+    settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert os.path.isabs(settings.embedding.model_path)
-    assert settings.embedding.model_path == str(
-        Path("F:/AI_models/BAAI--bge-m3/snapshots/master")
+    assert settings.embedding.model_path == str(PROJECT_ROOT / "models" / "bge")
+    assert settings.rag.loaders.output_dir == str(PROJECT_ROOT / "data" / "parsed")
+    assert settings.supervisor.checkpointer.path == str(
+        PROJECT_ROOT / "data" / "db" / "checkpointer.db"
     )
-    assert os.path.isabs(settings.rag.loaders.output_dir)
-    assert os.path.isabs(settings.supervisor.checkpointer.path)
 
 def test_invalid_loader_backend(tmp_path: Path, valid_config_data: dict) -> None:
     valid_config_data["rag"]["loaders"] = {"backend": "weird"}
