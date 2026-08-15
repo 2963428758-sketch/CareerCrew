@@ -18,9 +18,9 @@ function mountAnchors(ids: string[]) {
 
 const originIntersectionObserver = globalThis.IntersectionObserver
 
-/** 捕获 IntersectionObserver 实例，便于测试断言 disconnect、手动触发回调 */
+/** 捕获 IntersectionObserver 实例（含构造回调），便于测试断言 disconnect、手动触发回调 */
 function mockIntersectionObserver() {
-  const instances: IntersectionObserver[] = []
+  const instances: Array<IntersectionObserver & { trigger: () => void }> = []
   const MockIO = class {
     readonly root = null
     readonly rootMargin = ""
@@ -29,8 +29,10 @@ function mockIntersectionObserver() {
     unobserve = vi.fn()
     disconnect = vi.fn()
     takeRecords = vi.fn(() => [])
-    constructor() {
-      instances.push(this as unknown as IntersectionObserver)
+    constructor(callback: IntersectionObserverCallback) {
+      const instance = this as unknown as IntersectionObserver & { trigger: () => void }
+      instance.trigger = () => callback([], instance)
+      instances.push(instance)
     }
   }
   globalThis.IntersectionObserver = MockIO as unknown as typeof IntersectionObserver
@@ -61,7 +63,7 @@ describe("useActiveTurn", () => {
   })
 
   describe("IntersectionObserver（几何规则）", () => {
-    let instances: IntersectionObserver[]
+    let instances: Array<IntersectionObserver & { trigger: () => void }>
     beforeEach(() => {
       instances = mockIntersectionObserver().instances
     })
@@ -118,6 +120,53 @@ describe("useActiveTurn", () => {
 
       unmount()
       expect(instances[0].disconnect).toHaveBeenCalled()
+    })
+
+    it("参考线穿越触发重算：激活 top 最接近且不超过 root.top+108 的 turn", () => {
+      const root = mountAnchors(["a", "b"])
+      // 参考线 lineTop = root.top(0) + 108 = 108
+      const elA = root.querySelector('[data-turn-anchor="a"]') as HTMLElement
+      const elB = root.querySelector('[data-turn-anchor="b"]') as HTMLElement
+      // a 在参考线之上（top 200 > 108），b 在参考线之下（top 90 ≤ 108）
+      vi.spyOn(elA, "getBoundingClientRect").mockReturnValue({
+        x: 0, y: 0, top: 200, bottom: 220, left: 0, right: 100,
+        width: 100, height: 20, toJSON: () => ({}),
+      } as DOMRect)
+      vi.spyOn(elB, "getBoundingClientRect").mockReturnValue({
+        x: 0, y: 0, top: 90, bottom: 110, left: 0, right: 100,
+        width: 100, height: 20, toJSON: () => ({}),
+      } as DOMRect)
+      const ref: RefObject<HTMLElement | null> = { current: root }
+      const { result } = renderHook(() => useActiveTurn(["a", "b"], ref))
+
+      // 初始强制重算：b 是唯一「top ≤ 108」的 turn
+      expect(result.current.activeId).toBe("b")
+
+      // 穿越回调触发：几何规则保持不变（b 仍最接近参考线且在下）
+      act(() => instances[0].trigger())
+      expect(result.current.activeId).toBe("b")
+    })
+
+    it("所有 top 都在参考线之上时回退到第一个 turn（first）", () => {
+      const root = mountAnchors(["a", "b"])
+      const elA = root.querySelector('[data-turn-anchor="a"]') as HTMLElement
+      const elB = root.querySelector('[data-turn-anchor="b"]') as HTMLElement
+      // lineTop = 108；两个 turn 的 top 都大于 108 → 无 above，回退 first（top 最小即 a）
+      vi.spyOn(elA, "getBoundingClientRect").mockReturnValue({
+        x: 0, y: 0, top: 300, bottom: 320, left: 0, right: 100,
+        width: 100, height: 20, toJSON: () => ({}),
+      } as DOMRect)
+      vi.spyOn(elB, "getBoundingClientRect").mockReturnValue({
+        x: 0, y: 0, top: 400, bottom: 420, left: 0, right: 100,
+        width: 100, height: 20, toJSON: () => ({}),
+      } as DOMRect)
+      const ref: RefObject<HTMLElement | null> = { current: root }
+      const { result } = renderHook(() => useActiveTurn(["a", "b"], ref))
+
+      expect(result.current.activeId).toBe("a")
+
+      act(() => instances[0].trigger())
+      expect(result.current.activeId).toBe("a")
     })
   })
 })

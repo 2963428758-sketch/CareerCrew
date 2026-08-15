@@ -110,7 +110,23 @@ describe("ConversationRail", () => {
 
       fireEvent.click(later)
       expect(onSelect).toHaveBeenCalledTimes(1)
-      expect(onSelect.mock.calls[0][0]).toMatch(/^q/)
+      // avail=400, cap=min(48, floor(400/9)=44)=44；activeTurnId="q0"→start=0,end=44
+      expect(onSelect.mock.calls[0][0]).toBe("q44")
+    })
+
+    it("滑窗且存在更早段：点击「更早的对话」→ onSelect 收到窗口前第一轮 id", () => {
+      window.innerHeight = 800
+      const turns = many(160)
+      const onSelect = vi.fn()
+      // activeTurnId 为较晚轮次使 start > 0：start=160-44=116，更早段点击取 turns[115]
+      render(<ConversationRail turns={turns} activeTurnId="q159" onSelect={onSelect} />)
+
+      const earlier = screen.getByRole("button", { name: "更早的对话" })
+      expect(earlier).toBeTruthy()
+
+      fireEvent.click(earlier)
+      expect(onSelect).toHaveBeenCalledTimes(1)
+      expect(onSelect.mock.calls[0][0]).toBe("q115")
     })
   })
 })
