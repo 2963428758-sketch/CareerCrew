@@ -38,6 +38,10 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid access token") from err
     if user.get("must_change_password") and request.url.path not in _PASSWORD_CHANGE_ALLOWLIST:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="password change required")
+    if user["role"] == "quality_reviewer" and not (
+        request.url.path.startswith("/api/quality/") or request.url.path in _PASSWORD_CHANGE_ALLOWLIST
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="质检员只能访问质量审查接口")
     return user
 
 

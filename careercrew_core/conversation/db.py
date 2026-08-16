@@ -24,6 +24,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _snapshot_active(snapshot: dict) -> bool:
+    """Return whether a privacy snapshot is still within its retention window."""
+    expires_at = snapshot.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if not isinstance(expires_at, datetime):
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at > datetime.now(timezone.utc)
+
+
 class SequenceCollision(Exception):
     """turn 插入时 UNIQUE(thread_id, sequence_no) 冲突归一化信号。
 
@@ -228,6 +240,20 @@ class ConversationDb(ABC):
     @abstractmethod
     def delete_feedback_with_audit(self, user_id: str, message_id: str,
                                    metadata: dict) -> bool: ...
+
+    # ── quality reviewer read models ──
+
+    @abstractmethod
+    def list_quality_feedback(self) -> list[dict]: ...
+
+    @abstractmethod
+    def get_quality_feedback(self, feedback_id: str) -> dict | None: ...
+
+    @abstractmethod
+    def get_quality_snapshot(self, feedback_id: str) -> dict | None: ...
+
+    @abstractmethod
+    def get_quality_diagnostics(self, feedback_id: str) -> dict | None: ...
 
 
 class PostgresConversationDb(ConversationDb):
@@ -1016,6 +1042,79 @@ class PostgresConversationDb(ConversationDb):
             )
         return deleted
 
+    # ── quality reviewer read models ──
+
+    @staticmethod
+    def _quality_feedback_sql(where: str = "") -> str:
+        return (
+            "SELECT f.id AS feedback_id, f.run_id, f.reason, f.share_context, f.created_at, f.updated_at, "
+            "r.module, r.agent_id, r.model, r.prompt_version, r.agent_version, r.status, "
+            "r.input_tokens, r.output_tokens, r.total_tokens, r.latency_ms, r.error_type, r.error_code, "
+            "(s.id IS NOT NULL AND s.expires_at > now()) AS snapshot_available "
+            "FROM message_feedback f JOIN agent_runs r ON r.id=f.run_id AND r.user_id=f.user_id "
+            "LEFT JOIN feedback_snapshots s ON s.feedback_id=f.id AND s.user_id=f.user_id "
+            "WHERE f.rating='negative' " + where
+        )
+
+    @_synchronized
+    def list_quality_feedback(self) -> list[dict]:
+        with self._connect() as conn, conn.transaction():
+            rows = conn.execute(
+                self._quality_feedback_sql() + "ORDER BY f.updated_at DESC, f.id"
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    @_synchronized
+    def get_quality_feedback(self, feedback_id) -> dict | None:
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                self._quality_feedback_sql("AND f.id=%s "), (feedback_id,)
+            ).fetchone()
+        return _row_to_dict(row) if row else None
+
+    @_synchronized
+    def get_quality_snapshot(self, feedback_id) -> dict | None:
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "SELECT s.id AS snapshot_id, s.snapshot_json, s.redaction_version, s.redaction_count, "
+                "s.expires_at, s.created_at FROM message_feedback f "
+                "JOIN feedback_snapshots s ON s.feedback_id=f.id AND s.user_id=f.user_id "
+                "WHERE f.id=%s AND f.rating='negative' AND s.expires_at > now()",
+                (feedback_id,),
+            ).fetchone()
+        return _row_to_dict(row) if row else None
+
+    @_synchronized
+    def get_quality_diagnostics(self, feedback_id) -> dict | None:
+        with self._connect() as conn, conn.transaction():
+            run = conn.execute(
+                "SELECT r.id AS run_id, r.module, r.agent_id, r.model, r.prompt_version, r.agent_version, "
+                "r.status, r.input_tokens, r.output_tokens, r.total_tokens, r.latency_ms, r.error_type, "
+                "r.error_code, r.effective_tools, r.started_at, r.finished_at, r.created_at "
+                "FROM message_feedback f JOIN agent_runs r ON r.id=f.run_id AND r.user_id=f.user_id "
+                "WHERE f.id=%s AND f.rating='negative'",
+                (feedback_id,),
+            ).fetchone()
+            if run is None:
+                return None
+            run_row = _row_to_dict(run)
+            retrievals = conn.execute(
+                "SELECT document_id, chunk_id, recall_score, rerank_score, rank_before, rank_after, "
+                "used_in_final_context, retrieval_source FROM agent_run_retrievals WHERE run_id=%s "
+                "ORDER BY query_index, id",
+                (run_row["run_id"],),
+            ).fetchall()
+            tool_calls = conn.execute(
+                "SELECT tool_name, status, duration_ms, requires_hitl, hitl_status, error_type "
+                "FROM agent_run_tool_calls WHERE run_id=%s ORDER BY created_at, id",
+                (run_row["run_id"],),
+            ).fetchall()
+        return {
+            "run": run_row,
+            "retrievals": [_row_to_dict(row) for row in retrievals],
+            "tool_calls": [_row_to_dict(row) for row in tool_calls],
+        }
+
 
 class FakeConversationDb(ConversationDb):
     """内存实现（单测用），接口与 PostgresConversationDb 一致。"""
@@ -1408,6 +1507,85 @@ class FakeConversationDb(ConversationDb):
                 self._snapshots.pop(row["id"], None)
             self._audit.append(audit)
             return row is not None
+
+    # ── quality reviewer read models ──
+
+    @staticmethod
+    def _quality_feedback_row(feedback: dict, snapshot: dict | None) -> dict:
+        run = feedback["run"]
+        return {
+            "feedback_id": feedback["id"], "run_id": feedback["run_id"], "reason": feedback.get("reason"),
+            "share_context": feedback["share_context"], "created_at": feedback["created_at"],
+            "updated_at": feedback["updated_at"], "module": run["module"], "agent_id": run["agent_id"],
+            "model": run["model"], "prompt_version": run["prompt_version"], "agent_version": run["agent_version"],
+            "status": run["status"], "input_tokens": run.get("input_tokens"),
+            "output_tokens": run.get("output_tokens"), "total_tokens": run.get("total_tokens"),
+            "latency_ms": run.get("latency_ms"), "error_type": run.get("error_type"),
+            "error_code": run.get("error_code"), "snapshot_available": bool(snapshot and _snapshot_active(snapshot)),
+        }
+
+    def list_quality_feedback(self) -> list[dict]:
+        rows = []
+        for feedback in self._feedback.values():
+            if feedback["rating"] != "negative":
+                continue
+            run = self._runs.get(feedback["run_id"])
+            if run is None or run.get("user_id") != feedback["user_id"]:
+                continue
+            row = dict(feedback)
+            row["run"] = run
+            rows.append(self._quality_feedback_row(row, self._snapshots.get(feedback["id"])))
+        return sorted(rows, key=lambda row: (row["updated_at"], row["feedback_id"]), reverse=True)
+
+    def get_quality_feedback(self, feedback_id) -> dict | None:
+        for feedback in self._feedback.values():
+            if feedback["id"] != feedback_id or feedback["rating"] != "negative":
+                continue
+            run = self._runs.get(feedback["run_id"])
+            if run is None or run.get("user_id") != feedback["user_id"]:
+                return None
+            row = dict(feedback)
+            row["run"] = run
+            return self._quality_feedback_row(row, self._snapshots.get(feedback["id"]))
+        return None
+
+    def get_quality_snapshot(self, feedback_id) -> dict | None:
+        for feedback in self._feedback.values():
+            if feedback["id"] == feedback_id and feedback["rating"] == "negative":
+                snapshot = self._snapshots.get(feedback_id)
+                if snapshot and _snapshot_active(snapshot):
+                    return {
+                        "snapshot_id": snapshot["id"], "snapshot_json": snapshot["snapshot_json"],
+                        "redaction_version": snapshot["redaction_version"], "redaction_count": snapshot["redaction_count"],
+                        "expires_at": snapshot["expires_at"], "created_at": snapshot["created_at"],
+                    }
+        return None
+
+    def get_quality_diagnostics(self, feedback_id) -> dict | None:
+        feedback = next((row for row in self._feedback.values()
+                         if row["id"] == feedback_id and row["rating"] == "negative"), None)
+        if feedback is None:
+            return None
+        run = self._runs.get(feedback["run_id"])
+        if run is None or run.get("user_id") != feedback["user_id"]:
+            return None
+        run_fields = (
+            "id", "module", "agent_id", "model", "prompt_version", "agent_version", "status", "input_tokens",
+            "output_tokens", "total_tokens", "latency_ms", "error_type", "error_code", "effective_tools",
+            "started_at", "finished_at", "created_at",
+        )
+        retrieval_fields = (
+            "document_id", "chunk_id", "recall_score", "rerank_score", "rank_before", "rank_after",
+            "used_in_final_context", "retrieval_source",
+        )
+        tool_fields = ("tool_name", "status", "duration_ms", "requires_hitl", "hitl_status", "error_type")
+        return {
+            "run": {("run_id" if key == "id" else key): run.get(key) for key in run_fields},
+            "retrievals": [{key: row.get(key) for key in retrieval_fields}
+                           for row in self._retrievals.values() if row["run_id"] == run["id"]],
+            "tool_calls": [{key: row.get(key) for key in tool_fields}
+                           for row in self._tool_calls.values() if row["run_id"] == run["id"]],
+        }
 
 
 def create_conversation_db(settings) -> ConversationDb:

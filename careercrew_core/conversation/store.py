@@ -365,6 +365,41 @@ class ConversationStore:
         message = self._feedback_target(user_id, message_id)
         return self._db.delete_feedback_with_audit(user_id, message["id"], {"deleted": None})
 
+    # ── quality reviewer read models ──
+
+    @staticmethod
+    def _quality_feedback_id(feedback_id: str) -> str | None:
+        try:
+            return str(UUID(feedback_id))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def list_quality_feedback(self) -> list[dict]:
+        """Return only the reviewer-safe metadata view for negative feedback."""
+        return self._db.list_quality_feedback()
+
+    def get_quality_feedback(self, feedback_id: str) -> dict | None:
+        normalized = self._quality_feedback_id(feedback_id)
+        return self._db.get_quality_feedback(normalized) if normalized else None
+
+    def get_quality_snapshot(self, feedback_id: str, reviewer_id: str) -> dict | None:
+        """Read one still-authorized redacted snapshot and append a content-free audit event."""
+        normalized = self._quality_feedback_id(feedback_id)
+        if not normalized:
+            return None
+        snapshot = self._db.get_quality_snapshot(normalized)
+        if snapshot is None:
+            return None
+        self._db.insert_audit(
+            reviewer_id, "quality.snapshot.viewed", "feedback_snapshot", str(snapshot["snapshot_id"]),
+            {"feedback_id": normalized, "redaction_version": snapshot["redaction_version"]},
+        )
+        return snapshot
+
+    def get_quality_diagnostics(self, feedback_id: str) -> dict | None:
+        normalized = self._quality_feedback_id(feedback_id)
+        return self._db.get_quality_diagnostics(normalized) if normalized else None
+
     # ── regeneration idempotency ──
 
     def get_regeneration(self, user_id: str, key: str) -> str | None:

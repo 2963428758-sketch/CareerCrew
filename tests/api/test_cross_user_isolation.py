@@ -254,6 +254,6 @@ def test_quality_reviewer_cannot_manage_accounts(tenant_api):
         "/api/auth/users/any-id", json={"status": "disabled"}, headers=reviewer
     ).status_code == 403
 
-    # 但 reviewer 仍可访问普通业务端点与自身信息（不为全禁）
+    # Reviewer 只能访问质量审查 API；身份与改密端点保留以支持账号生命周期。
     assert client.get("/api/auth/me", headers=reviewer).status_code == 200
-    assert client.get("/api/knowledge", headers=reviewer).status_code == 200
+    assert client.get("/api/knowledge", headers=reviewer).status_code == 403

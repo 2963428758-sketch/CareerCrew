@@ -381,3 +381,38 @@ def test_feedback_delete_postgres_audit_failure_rolls_back(store_and_db):
         ).fetchone()
     assert str(row[0]) == feedback["id"]
     assert str(row[1]) == feedback["id"]
+
+
+def test_quality_views_postgres_are_metadata_only_and_audited(store_and_db):
+    """Reviewer read models work on PostgreSQL without reading messages directly."""
+    import psycopg
+
+    store, db = store_and_db
+    uid = "u_quality_pg"
+    _conv, _turn, _user, assistant, run = _begin_chat_turn(store, uid)
+    assistant = store.set_message_content(uid, assistant["id"], "mail a@b.com")
+    store.add_retrieval(uid, run["id"], 0, query_text_redacted="private query", document_id="doc-1")
+    store.add_tool_call(uid, run["id"], "search", output_summary="private output")
+    feedback = store.put_feedback(
+        uid, assistant["id"], rating="negative", reason="tool_failure",
+        comment="private comment", share_context=True,
+    )
+
+    rows = store.list_quality_feedback()
+    row = next(item for item in rows if str(item["feedback_id"]) == feedback["id"])
+    assert row["snapshot_available"] is True
+    assert "comment" not in row and "message_id" not in row and "thread_id" not in row
+    snapshot = store.get_quality_snapshot(feedback["id"], "reviewer-1")
+    assert snapshot is not None and "a@b.com" not in str(snapshot["snapshot_json"])
+    diagnostic = store.get_quality_diagnostics(feedback["id"])
+    assert diagnostic is not None
+    assert "private query" not in str(diagnostic) and "private output" not in str(diagnostic)
+    assert diagnostic["retrievals"][0]["document_id"] == "doc-1"
+    assert diagnostic["tool_calls"][0]["tool_name"] == "search"
+    with psycopg.connect(DSN) as conn:
+        audit = conn.execute(
+            "SELECT action, metadata FROM feedback_audit_log WHERE actor_user_id=%s ORDER BY created_at DESC LIMIT 1",
+            ("reviewer-1",),
+        ).fetchone()
+    assert audit[0] == "quality.snapshot.viewed"
+    assert "a@b.com" not in str(audit[1]) and "private comment" not in str(audit[1])
