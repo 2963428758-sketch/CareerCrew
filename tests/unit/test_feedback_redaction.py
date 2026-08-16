@@ -24,7 +24,8 @@ def test_feedback_redaction_is_recursive():
 
 @pytest.mark.parametrize("path", [
     r"C:\Users\sam\secret", "/home/sam/secret", "/Users/sam/secret",
-    "/opt/service/secret", "/srv/app/secret", "/mnt/volume/secret", "~/.ssh/id",
+    "/usr/local/secret", "/root/.ssh/id", "/opt/service/secret", "/srv/app/secret",
+    "/mnt/volume/secret", "~/.ssh/id",
 ])
 def test_feedback_redaction_covers_all_local_path_forms_at_boundaries(path):
     result = redact(f"before {path}; after")
@@ -54,3 +55,17 @@ def test_snapshot_redacts_full_source_before_applying_length_limit():
     snapshot, count, _ = build_snapshot([user, rated], rated)
     assert snapshot["messages"][0]["content"] == "safe [REDACTED]"
     assert count == 1
+
+
+def test_snapshot_without_same_turn_user_keeps_prior_context_separate_from_rated_answer():
+    prior_user = {"id": "u1", "turn_id": "t1", "role": "user", "content": "prior question"}
+    prior_assistant = {"id": "a1", "turn_id": "t1", "role": "assistant", "content": "prior answer"}
+    rated_content = "rated answer " * 600
+    rated = {"id": "a2", "turn_id": "t2", "role": "assistant", "content": rated_content}
+
+    snapshot, _, _ = build_snapshot([prior_user, prior_assistant, rated], rated)
+
+    assert [(message["message_id"], message["turn_id"]) for message in snapshot["messages"]] == [
+        ("a2", "t2"), ("u1", "t1"), ("a1", "t1"),
+    ]
+    assert snapshot["messages"][0]["content"] == rated_content

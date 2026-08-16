@@ -18,7 +18,7 @@ _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("credential", re.compile(r"(?i)\b(?:access[_-]?key|secret|password|passwd|token|api[_-]?key)\s*[:=]\s*\S+")),
     ("database_url", re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s]+")),
     ("windows_path", re.compile(r"(?i)(?<![A-Za-z0-9_])[A-Z]:\\(?:[^\s<>:\"|?*\\;]+\\?)*[^\s<>:\"|?*\\;]*")),
-    ("unix_path", re.compile(r"(?<!\w)/(?:home|Users|opt|srv|mnt|tmp|var|etc)(?=$|[/\s'\"<>;])(?:/[^\s'\"<>;]*)?")),
+    ("unix_path", re.compile(r"(?<!\w)/(?:usr|root|home|Users|opt|srv|mnt|tmp|var|etc)(?=$|[/\s'\"<>;])(?:/[^\s'\"<>;]*)?")),
     ("user_home", re.compile(r"(?i)(?:~[\\/]|%USERPROFILE%[\\/]|\$HOME[\\/])[^\s'\"<>;]*")),
 )
 

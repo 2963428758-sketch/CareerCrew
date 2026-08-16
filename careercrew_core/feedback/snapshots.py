@@ -22,7 +22,8 @@ def build_snapshot(messages: list[dict[str, Any]], rated: dict[str, Any]) -> tup
     rated_turn = rated["turn_id"]
     prior_turns = turn_order[:turn_order.index(rated_turn)][-2:]
     current_user = [m for m in by_turn[rated_turn] if m["role"] == "user"][-1:]
-    selected = current_user + [rated]
+    current_messages = current_user + [rated]
+    selected = current_messages[:]
     for turn_id in reversed(prior_turns):
         selected.extend(by_turn[turn_id])
 
@@ -34,9 +35,10 @@ def build_snapshot(messages: list[dict[str, Any]], rated: dict[str, Any]) -> tup
         count += result.count
 
     captured: list[dict] = []
-    current_pair = redacted[:2]
-    half_budget = MAX_SNAPSHOT_CHARS // 2
-    current_lengths = [min(len(content), half_budget) for _message, content in current_pair]
+    current_count = len(current_messages)
+    current_pair = redacted[:current_count]
+    per_message_budget = MAX_SNAPSHOT_CHARS // current_count
+    current_lengths = [min(len(content), per_message_budget) for _message, content in current_pair]
     remaining = MAX_SNAPSHOT_CHARS - sum(current_lengths)
     for index, (_message, content) in enumerate(current_pair):
         additional = min(len(content) - current_lengths[index], remaining)
@@ -47,7 +49,7 @@ def build_snapshot(messages: list[dict[str, Any]], rated: dict[str, Any]) -> tup
             "role": message["role"], "content": content[:length],
             "turn_id": message["turn_id"], "message_id": message["id"],
         })
-    for message, content in redacted[2:]:
+    for message, content in redacted[current_count:]:
         if remaining <= 0:
             break
         captured.append({

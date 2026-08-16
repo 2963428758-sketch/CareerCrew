@@ -77,3 +77,24 @@ Result: `28 passed, 14 skipped`. The skipped tests are the real-Postgres module,
 including replacement and deletion rollback assertions, because
 `POSTGRES_TEST_DSN` is not configured in this checkout. `compileall` and
 `git diff --check` also passed.
+
+## Final Important-fix round
+
+- The shared Unix-path redaction rule now also covers `/usr` and `/root`, so
+  paths such as `/usr/local/secret` and `/root/.ssh/id` cannot be retained in a
+  feedback snapshot. Exact boundary regression cases cover both forms alongside
+  the existing Windows and user-home forms.
+- Snapshot construction now tracks the current rated-turn entries separately
+  from preceding context. When an assistant rated for feedback has no same-turn
+  user message, it is the only current entry; preceding-turn messages follow as
+  context and cannot receive the current-question position or reservation.
+
+### Final fix verification
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path
+& 'F:\Python_develop\miniconda3\envs\careercrew\python.exe' -m pytest tests/unit/test_feedback_redaction.py tests/unit/test_feedback_persistence.py tests/api/test_feedback_api.py tests/api/test_thread_scope_api.py tests/integration/test_conversation_pg.py -q
+```
+
+Result: `31 passed, 14 skipped`. The 14 skipped tests remain the guarded
+real-Postgres integration module because `POSTGRES_TEST_DSN` is not configured.
