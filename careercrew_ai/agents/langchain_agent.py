@@ -72,6 +72,8 @@ class AgentResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     tool_call_details: list[dict] = field(default_factory=list)
+    # T3.5 HITL：被拦截（awaiting_confirmation）的工具调用明细
+    blocked_tool_calls: list[dict] = field(default_factory=list)
 
 
 class MaxIterationsMiddleware(AgentMiddleware):
@@ -105,6 +107,40 @@ class MaxIterationsMiddleware(AgentMiddleware):
                 tool_call_id=request.tool_call["id"],
                 name=request.tool_call.get("name"),
             )
+
+
+class HitlMiddleware(AgentMiddleware):
+    """HITL 拦截（T3.5 §16.4 MVP）：requires_hitl 工具不执行，改为回喂 ToolMessage。
+
+    wrap_tool_call 最先短路命中：对 ``requires_hitl`` 集合内的工具调用**不执行**，
+    回喂 ToolMessage（内容说明"需要用户确认，本轮未执行"），并在观测层记为
+    status=awaiting_confirmation + hitl_status=pending。
+
+    MVP 边界（见 brief §16.4 + report）：本任务只做 block-and-record，不做交互式
+    approve/reject 恢复执行。恢复需流中暂停协议（LangGraph interrupt 接入聊天流），
+    属后续阶段；此处只保证有副作用工具未经授权绝不执行。
+    """
+
+    def __init__(self, requires_hitl: set[str] | None = None) -> None:
+        super().__init__()
+        self.requires_hitl = set(requires_hitl or [])
+        # 供 run_agent 落库：被拦截的工具调用明细（status=awaiting_confirmation）。
+        self.blocked_tool_calls: list[dict] = []
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        tc = getattr(request, "tool_call", {}) or {}
+        name = tc.get("name", "") if isinstance(tc, dict) else ""
+        if name in self.requires_hitl:
+            self.blocked_tool_calls.append({
+                "name": name,
+                "args": (tc.get("args", {}) if isinstance(tc, dict) else {}),
+            })
+            return ToolMessage(
+                content=f"工具 {name} 需要用户确认，本轮未执行（HITL）",
+                tool_call_id=request.tool_call["id"],
+                name=name,
+            )
+        return handler(request)
 
 
 class UsageAccumulatorMiddleware(AgentMiddleware):
@@ -307,11 +343,13 @@ def build_agent(
     system_prompt: str,
     max_iterations: int = 10,
     extra_middleware: list[AgentMiddleware] | None = None,
+    hitl_requires: set[str] | None = None,
 ):
     """编译 create_agent 图（tools=None 时等效单模型节点）。
 
     观测中间件（UsageAccumulator / Observability）总是装配，并把实例挂在
     返回图的 ``_observability`` 属性上供 run_agent 读取（不污染 AgentResult 契约）。
+    hitl_requires 非空时装配 HitlMiddleware（T3.5 HITL 拦截），实例挂 ``_hitl``。
     """
     usage_mw = UsageAccumulatorMiddleware()
     obs_mw = ObservabilityMiddleware()
@@ -320,6 +358,11 @@ def build_agent(
         usage_mw,
         obs_mw,
     ]
+    hitl_mw = HitlMiddleware(hitl_requires) if hitl_requires else None
+    if hitl_mw is not None:
+        # HITL 拦截须先于 Observability（先短路，Observability 记录被拦截的调用；
+        # 顺序：Hitl -> Obs -> ...），放在 Obs 之前以便被拦截调用也被计时/记录。
+        middleware.insert(len(middleware) - 1, hitl_mw)
     if extra_middleware:
         middleware.extend(extra_middleware)
     agent = create_agent(
@@ -330,6 +373,7 @@ def build_agent(
         middleware=middleware,
     )
     agent._observability = (usage_mw, obs_mw)  # type: ignore[attr-defined]
+    agent._hitl = hitl_mw  # type: ignore[attr-defined]
     return agent
 
 
@@ -426,12 +470,16 @@ def run_agent(
     input_tokens: int | None = None
     output_tokens: int | None = None
     tool_call_details: list[dict] = []
+    blocked_tool_calls: list[dict] = []
     if usage_mw is not None:
         in_tok, out_tok = usage_mw.snapshot()
         input_tokens = in_tok
         output_tokens = out_tok
     if obs_mw is not None:
         tool_call_details = list(obs_mw.tool_call_details)
+    hitl_mw = getattr(agent, "_hitl", None)
+    if hitl_mw is not None:
+        blocked_tool_calls = list(hitl_mw.blocked_tool_calls)
 
     return AgentResult(
         content=content,
@@ -441,4 +489,5 @@ def run_agent(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         tool_call_details=tool_call_details,
+        blocked_tool_calls=blocked_tool_calls,
     )

@@ -269,3 +269,27 @@ def test_run_failure_persisted(store_and_db):
     assert persisted["finished_at"] is not None
     with pytest.raises(OwnershipError):
         store.finish_run(user_id="u_other", run_id=run["id"], status="completed")
+
+
+def test_effective_tools_roundtrip(store_and_db):
+    """T3.5：effective_tools JSONB 列——非空 + NULL（默认）往返持久化。"""
+    store, db = store_and_db
+    uid = "u_eff"
+    # 带 effective_tools
+    _, _, _, _, run = _begin_chat_turn(store, uid)
+    store.start_run(
+        thread_id=run["thread_id"], turn_id=run["turn_id"], message_id=run["message_id"],
+        user_id=uid, module="chat", agent_id="a", model="m", status="streaming",
+        effective_tools=["rag_query", "profile_update"],
+    )
+    # 不带 effective_tools（默认 NULL）
+    run2 = store.start_run(
+        thread_id=run["thread_id"], turn_id=run["turn_id"], message_id=run["message_id"],
+        user_id=uid, module="chat", agent_id="a", model="m", status="streaming",
+    )
+    persisted = db.get_run(uid, run2["id"])
+    # effective_tools 缺省为 NULL；上面那条带了列表的应能读回（用 list_runs 定位）
+    assert persisted["effective_tools"] is None
+    runs = db.list_runs(uid, run["thread_id"])
+    with_eff = [r for r in runs if r["effective_tools"] is not None]
+    assert any(r["effective_tools"] == ["rag_query", "profile_update"] for r in with_eff)

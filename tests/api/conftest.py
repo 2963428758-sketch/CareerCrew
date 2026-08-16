@@ -86,7 +86,42 @@ class FakeRuntime:
                 "consolidation": type("C", (), {"min_interval_hours": 24, "min_sessions": 5}),
                 "episodic": type("E", (), {"vectorize": False}),
             }),
+            "tools": type("T", (), {
+                "registry": type("RG", (), {
+                    "internal": ["rag_query", "memory_search", "memory_write", "profile_update"],
+                    "mcp": ["mcp_jobs"],
+                }),
+                "hitl": type("H", (), {
+                    "requires_confirmation": ["submit_application", "accept_offer"],
+                }),
+            }),
         })()
+
+    def _hitl_requires(self) -> set:
+        tools = getattr(self.settings, "tools", None)
+        hitl = getattr(tools, "hitl", None) if tools is not None else None
+        return set(getattr(hitl, "requires_confirmation", None) or [])
+
+    def _server_allowlist(self, module: str) -> list:
+        from careercrew_core.tools.capabilities import MODULE_TOOLS
+
+        reg = getattr(getattr(self.settings, "tools", None), "registry", None)
+        if reg is None:
+            return []
+        registry = []
+        for n in list(getattr(reg, "internal", None) or []) + list(getattr(reg, "mcp", None) or []):
+            if n not in registry:
+                registry.append(n)
+        module_allow = MODULE_TOOLS.get(module)
+        if module_allow is None:
+            return registry
+        allow = set(module_allow)
+        return [n for n in registry if n in allow]
+
+    def compute_effective_tools(self, module: str, client_requested):
+        from careercrew_core.tools.effective import compute_effective_tools
+
+        return compute_effective_tools(client_requested, self._server_allowlist(module))
 
     def _ensure_heavy(self) -> None:
         return None
@@ -95,7 +130,7 @@ class FakeRuntime:
         return "fake-model"
 
     def _begin_chat_turn(self, thread_id, user_id, module, agent_id, user_text,
-                         title=None, user_metadata=None):
+                         title=None, user_metadata=None, effective_tools=None):
         from careercrew_api.chat_lifecycle import begin_turn
         from careercrew_core.versioning import agent_version, prompt_version_for_agent
 
@@ -107,6 +142,7 @@ class FakeRuntime:
                 prompt_version=prompt_version_for_agent(agent_id),
                 agent_version=agent_version(),
                 user_metadata=user_metadata,
+                effective_tools=effective_tools,
             )
         except Exception:
             return None
@@ -174,18 +210,21 @@ class FakeRuntime:
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
                          mentions: list[dict] | None = None,
-                         cancel_check: Callable[[], None] | None = None):
+                         cancel_check: Callable[[], None] | None = None,
+                         tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         self.last_call = {
             "method": "run_match_stream", "thread_id": thread_id,
-            "user_id": user_id, "intent": intent, "mentions": mentions,
+            "user_id": user_id, "intent": intent, "mentions": mentions, "tools": tools,
         }
         if cancel_check:
             cancel_check()
+        effective = self.compute_effective_tools("matcher", tools)
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="matcher", agent_id="job_matcher", user_text=intent,
             user_metadata={"mentions": mentions} if mentions else None,
+            effective_tools=effective,
         )
         if cb:
             if self.stream_preamble:
@@ -197,7 +236,8 @@ class FakeRuntime:
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
                           mentions: list[dict] | None = None,
-                          cancel_check: Callable[[], None] | None = None):
+                          cancel_check: Callable[[], None] | None = None,
+                          tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         if cancel_check:
@@ -205,10 +245,11 @@ class FakeRuntime:
         meta: dict = {"jd_text": jd_text[:5000]}
         if mentions:
             meta["mentions"] = mentions
+        effective = self.compute_effective_tools("resume", tools)
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="resume", agent_id="resume_advisor",
             user_text=f"按这个 JD 定制简历：{jd_text[:200]}",
-            user_metadata=meta,
+            user_metadata=meta, effective_tools=effective,
         )
         if cb:
             if self.stream_preamble:
@@ -220,14 +261,17 @@ class FakeRuntime:
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
                                 mentions: list[dict] | None = None,
-                                cancel_check: Callable[[], None] | None = None):
+                                cancel_check: Callable[[], None] | None = None,
+                                tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         if cancel_check:
             cancel_check()
+        effective = self.compute_effective_tools("chat", tools)
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="chat", agent_id="career_planner", user_text=intent,
             user_metadata={"mentions": mentions} if mentions else None,
+            effective_tools=effective,
         )
         if cb:
             if self.stream_preamble:
@@ -241,7 +285,8 @@ class FakeRuntime:
                                  category: str = "",
                                  scope: str = "all",
                                  mentions: list[dict] | None = None,
-                                 cancel_check: Callable[[], None] | None = None):
+                                 cancel_check: Callable[[], None] | None = None,
+                                 tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         self.knowledge_ask_scopes.append(scope)
@@ -252,9 +297,10 @@ class FakeRuntime:
         meta: dict = {"sources": sources}
         if mentions:
             meta["mentions"] = mentions
+        effective = self.compute_effective_tools("knowledge", tools)
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
-            user_text=question, user_metadata=meta,
+            user_text=question, user_metadata=meta, effective_tools=effective,
         )
         if cb:
             if self.stream_preamble:

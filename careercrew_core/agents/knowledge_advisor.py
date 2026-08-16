@@ -44,6 +44,7 @@ class KnowledgeAdvisor(BaseAgent):
         memory_injector=None,
         history_loader=None,
         compaction=None,
+        hitl_requires=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
@@ -58,4 +59,5 @@ class KnowledgeAdvisor(BaseAgent):
             memory_injector=memory_injector,
             history_loader=history_loader,
             compaction=compaction,
+            hitl_requires=hitl_requires,
         )

@@ -110,12 +110,16 @@ class MatchRequest(BaseModel):
     intent: str
     thread_id: str = "m1"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 class ResumeRequest(BaseModel):
     jd_text: str
     thread_id: str = "m1"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 # ── Interview ──
@@ -201,3 +205,5 @@ class KnowledgeAskRequest(BaseModel):
     category: str = ""  # resume / knowledge / interview，空串=全部
     scope: str = "all"  # all（公共+本人私有）| public | private
     mentions: list[Mention] = Field(default_factory=list)  # 强制上下文（§15）
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None

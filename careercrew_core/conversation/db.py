@@ -155,7 +155,8 @@ class ConversationDb(ABC):
     @abstractmethod
     def insert_run(self, run_id: str, user_id: str, thread_id: str, turn_id: str,
                    message_id: str, module: str, agent_id: str, model: str,
-                   prompt_version: str, agent_version: str, status: str) -> dict: ...
+                   prompt_version: str, agent_version: str, status: str,
+                   effective_tools: list[str] | None = None) -> dict: ...
 
     @abstractmethod
     def get_run(self, user_id: str, run_id: str) -> dict | None: ...
@@ -277,6 +278,19 @@ class PostgresConversationDb(ConversationDb):
                 "started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ, "
                 "created_at TIMESTAMPTZ NOT NULL)"
             )
+            # T3.5：effective_tools JSONB（本轮最终允许的工具 id 列表，可诊断）。
+            # 幂等迁移；历史行回退 NULL（见 t35 brief §16.3）。
+            conn.execute("SET lock_timeout = '5s'")
+            try:
+                conn.execute(
+                    "DO $$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'agent_runs' AND column_name = 'effective_tools') THEN "
+                    "ALTER TABLE agent_runs ADD COLUMN effective_tools JSONB; "
+                    "END IF; END $$"
+                )
+            finally:
+                conn.execute("SET lock_timeout = '0'")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS agent_run_retrievals ("
                 "id UUID PRIMARY KEY, run_id UUID NOT NULL, query_index INTEGER NOT NULL, "
@@ -616,7 +630,7 @@ class PostgresConversationDb(ConversationDb):
                 "SELECT id, user_id, thread_id, turn_id, message_id, module, agent_id, "
                 "model, prompt_version, agent_version, status, input_tokens, "
                 "output_tokens, total_tokens, latency_ms, langsmith_run_id, error_type, "
-                "error_code, error_summary, started_at, finished_at, created_at "
+                "error_code, error_summary, effective_tools, started_at, finished_at, created_at "
                 "FROM agent_runs WHERE thread_id=%s AND user_id=%s "
                 "ORDER BY created_at, id",
                 (thread_id, user_id),
@@ -627,15 +641,18 @@ class PostgresConversationDb(ConversationDb):
 
     @_synchronized
     def insert_run(self, run_id, user_id, thread_id, turn_id, message_id, module,
-                   agent_id, model, prompt_version, agent_version, status) -> dict:
+                   agent_id, model, prompt_version, agent_version, status,
+                   effective_tools=None) -> dict:
         with self._connect() as conn, conn.transaction():
             conn.execute(
                 "INSERT INTO agent_runs (id, user_id, thread_id, turn_id, message_id, "
                 "module, agent_id, model, prompt_version, agent_version, status, "
-                "started_at, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "effective_tools, started_at, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
                 (run_id, user_id, thread_id, turn_id, message_id, module, agent_id,
-                 model, prompt_version, agent_version, status, _now(), _now()),
+                 model, prompt_version, agent_version, status,
+                 _json_dumps(effective_tools) if effective_tools is not None else None,
+                 _now(), _now()),
             )
         return self.get_run(user_id, run_id) or {}
 
@@ -646,7 +663,7 @@ class PostgresConversationDb(ConversationDb):
                 "SELECT id, user_id, thread_id, turn_id, message_id, module, agent_id, "
                 "model, prompt_version, agent_version, status, input_tokens, "
                 "output_tokens, total_tokens, latency_ms, langsmith_run_id, error_type, "
-                "error_code, error_summary, started_at, finished_at, created_at "
+                "error_code, error_summary, effective_tools, started_at, finished_at, created_at "
                 "FROM agent_runs WHERE id=%s AND user_id=%s",
                 (run_id, user_id),
             ).fetchone()
@@ -986,7 +1003,8 @@ class FakeConversationDb(ConversationDb):
     # ── runs ──
 
     def insert_run(self, run_id, user_id, thread_id, turn_id, message_id, module,
-                   agent_id, model, prompt_version, agent_version, status) -> dict:
+                   agent_id, model, prompt_version, agent_version, status,
+                   effective_tools=None) -> dict:
         now = _now()
         row = {
             "id": run_id, "user_id": user_id, "thread_id": thread_id, "turn_id": turn_id,
@@ -995,6 +1013,7 @@ class FakeConversationDb(ConversationDb):
             "status": status, "input_tokens": None, "output_tokens": None,
             "total_tokens": None, "latency_ms": None, "langsmith_run_id": None,
             "error_type": None, "error_code": None, "error_summary": None,
+            "effective_tools": list(effective_tools) if effective_tools is not None else None,
             "started_at": now, "finished_at": None, "created_at": now,
         }
         self._runs[run_id] = row

@@ -111,7 +111,7 @@ def test_chat_endpoint_passes_cancel_to_runtime(client, fake_runtime):
 
     state = {"checks": 0}
 
-    def slow_match(thread_id, user_id, intent, cb=None, cancel_check=None):
+    def slow_match(thread_id, user_id, intent, cb=None, cancel_check=None, **kwargs):
         for _ in range(1000):
             if cancel_check is not None:
                 state["checks"] += 1

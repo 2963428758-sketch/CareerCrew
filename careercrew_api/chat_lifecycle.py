@@ -83,6 +83,7 @@ def begin_turn(
     prompt_version: str = "unversioned",
     agent_version: str = "unversioned",
     user_metadata: dict | None = None,
+    effective_tools: list[str] | None = None,
 ) -> TurnContext:
     """开启一轮对话：ensure_conversation → next_turn → user message(completed)
     → assistant message(streaming) → start_run(streaming)，返回稳定 ID 上下文。
@@ -108,7 +109,7 @@ def begin_turn(
         thread_id=conv["id"], turn_id=turn["id"], message_id=asst_msg["id"],
         user_id=user_id, module=module, agent_id=agent_id, model=model,
         prompt_version=prompt_version, agent_version=agent_version,
-        status="streaming",
+        status="streaming", effective_tools=effective_tools,
     )
     store.set_message_run_id(user_id, asst_msg["id"], run["id"])
 

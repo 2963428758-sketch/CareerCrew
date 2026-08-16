@@ -37,6 +37,7 @@ class BaseAgent:
         memory_injector=None,  # 可选: Callable[[str, str], str | None]（user_id, query）-> preamble
         history_loader=None,   # 可选: Callable[[str, str], list]（user_id, thread_id）-> 历史消息
         compaction=None,       # 可选: dict(token_threshold_ratio/retention_tokens/max_summary_chunk_tokens)
+        hitl_requires: set[str] | None = None,  # T3.5：本轮需 HITL 确认的工具名集合
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
@@ -57,6 +58,7 @@ class BaseAgent:
             system_prompt=system_prompt,
             max_iterations=max_iterations,
             extra_middleware=extra_middleware or None,
+            hitl_requires=hitl_requires or None,
         )
         self.last_result: AgentResult | None = None  # 供 trace/调试取完整迭代记录
 

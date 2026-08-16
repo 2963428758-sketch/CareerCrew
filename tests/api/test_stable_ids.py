@@ -259,7 +259,7 @@ def test_stream_error_marks_assistant_failed(client, fake_runtime):
     """run 抛异常 → assistant message status=failed。"""
     original = fake_runtime.run_match_stream
 
-    def boom(thread_id, user_id, intent, cb=None, cancel_check=None):
+    def boom(thread_id, user_id, intent, cb=None, cancel_check=None, **kwargs):
         from careercrew_api.chat_lifecycle import StreamResult
 
         ctx = fake_runtime._begin_chat_turn(

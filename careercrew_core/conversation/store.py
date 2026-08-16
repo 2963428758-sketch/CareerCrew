@@ -263,12 +263,14 @@ class ConversationStore:
         prompt_version: str = "unversioned",
         agent_version: str = "unversioned",
         status: str = "pending",
+        effective_tools: list[str] | None = None,
     ) -> dict:
         conv = self._require_owned(thread_id, user_id)
         run_id = str(uuid7())
         return self._db.insert_run(
             run_id, user_id, conv["id"], turn_id, message_id, module, agent_id,
             model, prompt_version, agent_version, status,
+            effective_tools=effective_tools,
         )
 
     def finish_run(

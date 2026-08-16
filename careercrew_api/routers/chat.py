@@ -69,6 +69,7 @@ def match(
                 req.thread_id, current_user["id"], req.intent, cb,
                 **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
+                tools=req.tools,
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)
@@ -114,6 +115,7 @@ def resume(
                 req.thread_id, current_user["id"], req.jd_text, cb,
                 **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
+                tools=req.tools,
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)
@@ -159,6 +161,7 @@ def plan(
                 req.thread_id, current_user["id"], req.intent, cb,
                 **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
+                tools=req.tools,
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from careercrew_api.auth.middleware import TrustedOriginMiddleware
-from careercrew_api.routers import auth, chat, consult, context, data, interview, knowledge, resume, threads, attachments
+from careercrew_api.routers import auth, chat, consult, context, data, interview, knowledge, resume, threads, attachments, agent
 from careercrew_core.state.settings import load_auth_settings
 
 DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
     app.include_router(context.router, prefix="/api/context", tags=["context"])
     app.include_router(attachments.router, prefix="/api/chat/attachments", tags=["attachments"])
+    app.include_router(agent.router, prefix="/api", tags=["agent"])
 
     # 生产模式：托管 careercrew_web/dist（SPA fallback）
     if DIST.exists():
