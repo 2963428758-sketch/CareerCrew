@@ -234,3 +234,43 @@ def test_begin_turn_passes_versions_to_run_and_turncontext(store):
     done = ctx.done_fields()
     assert done["prompt_version"] == "sha256:" + "a" * 64
     assert done["agent_version"] == "fc4a5f187e5471da41987d2d1a45016047ac92b2"
+
+
+def test_rag_query_retrievals_labels_non_sink_rows_auto():
+    """非 sink 观测路径的 rag_query 检索行显式标 'auto'（T3.4 审查项 2）。
+
+    _rag_query_retrievals 从 agent tool_call_details 里挑出 rag_query 调用生成
+    retrieval 行；这些行没有强制上下文，必须显式 retrieval_source='auto'，
+    不能依赖 finish_turn 的兜底默认值。
+    """
+    from careercrew_api.runtime import _rag_query_retrievals
+
+    rows = _rag_query_retrievals([
+        {"name": "rag_query", "args": {"query": "检索流程", "top_k": 5}},
+        {"name": "read_image", "args": {"image_path": "F:/x/p.png"}},
+    ])
+    assert len(rows) == 1
+    assert rows[0]["retrieval_source"] == "auto"
+    assert rows[0]["query_text_redacted"] == "检索流程"
+    assert rows[0]["query_index"] == 0
+
+
+def test_finish_turn_defaults_missing_retrieval_source_to_auto(store):
+    """未显式给 retrieval_source 的检索行，finish_turn 兜底为 'auto'。"""
+    ctx = _begin(store)
+    finish_turn(
+        store, ctx, "回答",
+        retrievals=[
+            # mention 行（显式）
+            {"query_index": 0, "query_text_redacted": "q0", "retrieval_source": "mention"},
+            # sink/auto 行（显式）
+            {"query_index": 1, "query_text_redacted": "q1", "retrieval_source": "auto"},
+            # 非 sink 行（缺失，依赖兜底）
+            {"query_index": 2, "query_text_redacted": "q2"},
+        ],
+    )
+    rets = sorted(
+        [r for r in store._db._retrievals.values() if r["run_id"] == ctx.run_id],
+        key=lambda r: r["query_index"],
+    )
+    assert [r["retrieval_source"] for r in rets] == ["mention", "auto", "auto"]

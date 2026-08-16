@@ -101,6 +101,58 @@ def test_access_filter_key_does_not_leak_into_must(valid_config_data):
     assert {h.id for h in hits} == {"cat-doc-p0"}
 
 
+def test_access_filter_forced_doc_whitelist_keeps_access_in_must(valid_config_data):
+    """强制上下文（doc 白名单 + 访问条件）时，访问约束必须进入 must 而非 should。
+
+    回归 T3.4 审查项：qdr的 should（无 min_should）是 optional OR，会被 doc
+    must 短路——他人 private 文档仅靠上游 resolve_mentions 兜底。此处断言序列化的
+    Filter 把「public OR owner==user」作为嵌套 Filter 并入 must，与 doc 白名单做 AND。
+    """
+    store = _store(valid_config_data)
+    flt = QdrantStore._filter_expr({"__access_user": "u_001", "doc": ["forced-other"]})
+    assert flt is not None
+    # 顶层无 should（访问条件不在 optional 位置）
+    assert flt.should is None
+    assert flt.must is not None
+    # doc 白名单 + 访问条件两者都必须成立
+    assert len(flt.must) == 2
+    # 其中一个 must 项是嵌套 Filter（访问 OR，min_should=1）
+    nested = [m for m in flt.must if hasattr(m, "should")]
+    assert len(nested) == 1
+    access = nested[0]
+    assert access.should is not None
+    keys = {fc.key for fc in access.should}
+    assert keys == {"visibility", "owner_user_id"}
+    assert access.min_should is not None
+    assert access.min_should.min_count == 1
+
+
+def test_access_filter_alone_still_uses_should(valid_config_data):
+    """无其它 must 条件时（纯访问过滤），保持原有 should 形态不变。"""
+    flt = QdrantStore._filter_expr({"__access_user": "u_001"})
+    assert flt is not None
+    assert (flt.must is None or flt.must == [])
+    assert flt.should is not None
+    assert {fc.key for fc in flt.should} == {"visibility", "owner_user_id"}
+
+
+def test_forced_doc_from_other_user_is_excluded(valid_config_data):
+    """端到端：强制上下文 doc 属于他人 private，即便 doc id 在白名单内也不返回。"""
+    store = _store(valid_config_data)
+    store.upsert([
+        _record("forced-theirs", "u_002", "private"),
+        _record("forced-mine", "u_001", "private"),
+        _record("forced-public", "u_002", "public"),
+    ])
+    hits = store.query(
+        [0.1] * 1024, top_k=10,
+        filters={"__access_user": "u_001", "doc": ["forced-theirs", "forced-mine", "forced-public"]},
+    )
+    docs = {h.id for h in hits}
+    # 他人 private 被访问约束挡住；本人 private + 公共可见照常返回
+    assert docs == {"forced-mine-p0", "forced-public-p0"}
+
+
 def test_list_docs_separates_same_name_by_visibility(valid_config_data):
     store = _store(valid_config_data)
     store.upsert([

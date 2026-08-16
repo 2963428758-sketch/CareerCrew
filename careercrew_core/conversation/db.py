@@ -287,7 +287,7 @@ class PostgresConversationDb(ConversationDb):
                 "created_at TIMESTAMPTZ NOT NULL)"
             )
             # T3.4：retrieval_source 区分 mention（强制上下文）与 auto（Agent 自动检索）。
-            # 幂等迁移：存量行回退 NULL，读侧按 NULL 视作 'auto'（见 store.add_retrieval 默认）。
+            # 幂等迁移：存量行被回填为 'auto'（ADD COLUMN ... DEFAULT 'auto'）；读侧对缺失/None 仍按 'auto' 兜底（见 store.add_retrieval 默认）。
             conn.execute("SET lock_timeout = '5s'")
             try:
                 conn.execute(

@@ -111,6 +111,9 @@ def _rag_query_retrievals(tool_call_details: list[dict], start_index: int = 0) -
             "chunk_id": None,
             "recall_score": None,
             "used_in_final_context": False,
+            # 非 sink 观测路径的 rag_query 均为 Agent 自动检索（无强制上下文），
+            # 显式标 'auto'，不依赖 finish_turn 的默认值兜底。
+            "retrieval_source": "auto",
         })
         idx += 1
     return retrievals
@@ -1236,6 +1239,8 @@ class CareerCrewRuntime:
                     "chunk_id": None,
                     "recall_score": float(s.get("score") or 0.0),
                     "used_in_final_context": key in capped_docs,
+                    # 重跑无强制上下文（mentions 未透传），检索均为自动 'auto'。
+                    "retrieval_source": "auto",
                 })
             obs = _observability_from_result(lr)
             obs["retrievals"] = retrievals
