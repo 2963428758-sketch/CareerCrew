@@ -57,6 +57,9 @@ function parseFeedback(row: unknown): PersistedFeedback | null {
 }
 
 function toBody(request: FeedbackRequest) {
+  if (request.rating !== "positive" && request.rating !== "negative") throw new Error("反馈评分无效")
+  if (request.reason !== undefined && !isReason(request.reason)) throw new Error("反馈原因无效")
+  if (typeof request.shareContext !== "boolean") throw new Error("反馈授权状态无效")
   if (request.rating === "negative" && !request.reason) throw new Error("负面反馈必须选择有效原因")
   if (request.rating === "positive" && request.reason) throw new Error("正面反馈不能包含负面原因")
   return {
@@ -97,7 +100,10 @@ export async function getThreadFeedback(threadId: string): Promise<PersistedFeed
     const response = await apiFetch(`/api/threads/${encodeURIComponent(threadId)}/feedback`)
     if (!response.ok) throw new Error(await apiErrorText(response, "加载反馈失败，请重试"))
     const rows: unknown = await response.json()
-    return Array.isArray(rows) ? rows.map(parseFeedback).filter((row): row is PersistedFeedback => row !== null) : []
+    if (!Array.isArray(rows)) throw new Error("反馈响应格式无效，请刷新后重试")
+    const feedback = rows.map(parseFeedback)
+    if (feedback.some((row) => row === null)) throw new Error("反馈响应格式无效，请刷新后重试")
+    return feedback.map((row) => row!)
   } catch (error) {
     throw new Error(networkErrorText(error, "加载反馈失败，请检查网络后重试"))
   }

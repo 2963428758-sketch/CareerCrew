@@ -5,6 +5,7 @@ type ThreadFeedbackState = Record<string, PersistedFeedback>
 
 const feedbackByThread = new Map<string, ThreadFeedbackState>()
 const inFlight = new Map<string, Promise<void>>()
+const mutationGenerationByThread = new Map<string, number>()
 const listeners = new Set<() => void>()
 
 const notify = () => listeners.forEach((listener) => listener())
@@ -13,8 +14,11 @@ const notify = () => listeners.forEach((listener) => listener())
 export function hydrateThreadFeedback(threadId: string): Promise<void> {
   const running = inFlight.get(threadId)
   if (running) return running
+  const generationAtStart = mutationGenerationByThread.get(threadId) ?? 0
   const request = getThreadFeedback(threadId)
     .then((rows) => {
+      // GET 是历史快照：不能以较早的快照覆盖请求期间已确认的 PUT/DELETE。
+      if ((mutationGenerationByThread.get(threadId) ?? 0) !== generationAtStart) return
       feedbackByThread.set(threadId, Object.fromEntries(rows.map((row) => [row.messageId, row])))
       notify()
     })
@@ -24,11 +28,13 @@ export function hydrateThreadFeedback(threadId: string): Promise<void> {
 }
 
 export function setPersistedFeedback(threadId: string, feedback: PersistedFeedback): void {
+  mutationGenerationByThread.set(threadId, (mutationGenerationByThread.get(threadId) ?? 0) + 1)
   feedbackByThread.set(threadId, { ...(feedbackByThread.get(threadId) ?? {}), [feedback.messageId]: feedback })
   notify()
 }
 
 export function removePersistedFeedback(threadId: string, messageId: string): void {
+  mutationGenerationByThread.set(threadId, (mutationGenerationByThread.get(threadId) ?? 0) + 1)
   const current = feedbackByThread.get(threadId) ?? {}
   if (!(messageId in current)) return
   const { [messageId]: _removed, ...rest } = current
@@ -51,5 +57,6 @@ export function usePersistedFeedback(threadId: string, messageId: string): Persi
 export function resetFeedbackStateForTest(): void {
   feedbackByThread.clear()
   inFlight.clear()
+  mutationGenerationByThread.clear()
   notify()
 }

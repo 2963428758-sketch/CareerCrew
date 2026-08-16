@@ -37,17 +37,29 @@ describe("feedback API client", () => {
     })
   })
 
+  it("PUT 在运行时拒绝不在 allowlist 中的原因", async () => {
+    await expect(putMessageFeedback("message-1", {
+      rating: "negative", reason: "made_up" as never, shareContext: false,
+    })).rejects.toThrow("反馈原因无效")
+    expect(apiFetch).not.toHaveBeenCalled()
+  })
+
   it("非成功响应转换为现有错误文本", async () => {
     apiFetch.mockResolvedValue(response({ detail: "x" }, false, 422))
     await expect(deleteMessageFeedback("message-1")).rejects.toThrow("后端错误")
   })
 
-  it("GET 仅保留完整、后端允许的反馈记录", async () => {
-    apiFetch.mockResolvedValue(response([feedback, { message_id: "bad", rating: "positive" }]))
+  it("GET 解析完整、后端允许的反馈记录", async () => {
+    apiFetch.mockResolvedValue(response([feedback]))
     await expect(getThreadFeedback("thread/1")).resolves.toEqual([{
       id: "feedback-1", messageId: "message-1", rating: "negative", reason: "incomplete",
       comment: "缺少步骤", shareContext: true, updatedAt: "2026-08-16T00:00:00Z",
     }])
     expect(apiFetch).toHaveBeenCalledWith("/api/threads/thread%2F1/feedback")
+  })
+
+  it("GET 响应不是完整反馈列表时明确报错", async () => {
+    apiFetch.mockResolvedValue(response([{ message_id: "bad", rating: "positive" }]))
+    await expect(getThreadFeedback("thread-1")).rejects.toThrow("反馈响应格式无效")
   })
 })

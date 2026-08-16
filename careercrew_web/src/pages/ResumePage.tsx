@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/workspace/EmptyState"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import ResumePanel from "@/components/ResumePanel"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
+import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
@@ -52,6 +53,7 @@ export default function ResumePage() {
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
+  const regenerateStream = useStreamStore((s) => s.regenerate)
   const stopStream = useStreamStore((s) => s.stop)
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
@@ -61,6 +63,7 @@ export default function ResumePage() {
   const turnIds = useMemo(() => turns.map((t) => t.user.id), [turns])
   const { activeId, selectTurn, highlightId } = useConversationNavigation(turnIds, scrollRef)
   const { toast, showToast } = useToast()
+  const [versionSelections, setVersionSelections] = useState<Record<string, number>>({})
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   // 流结束：把最终内容写回最后一条 assistant 气泡
@@ -91,6 +94,7 @@ export default function ResumePage() {
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
+    setVersionSelections({})
     pendingResumeRef.current = null
     setActiveResume(null)
     setMessages([])
@@ -181,19 +185,16 @@ export default function ResumePage() {
     await startStream(currentThreadId, "/resume/chat", { question: trimmed, resume_text: resumeText, thread_id: currentThreadId })
   }
 
-  /** 重新生成：移除该回答后重发同一问题（简历已随首轮落库，不重复携带） */
-  const handleRegenerate = async (turnId: string) => {
+  /** 重新生成保留旧版本；稳定 ID 走后端 regenerate，遗留无 ID 消息保留兼容重发。 */
+  const handleRegenerate = async (turnId: string, messageId?: string) => {
     if (stream.status === "streaming") return
     const turn = groupTurns(messages).find((t) => t.id === turnId)
     if (!turn?.assistant || !turn.user.content) return
-    const removedId = turn.assistant.id
-    setMessages((prev) => prev.filter((m) => m.id !== removedId))
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     jumpToLatest()
-    await startStream(currentThreadId, "/resume/chat", {
-      question: turn.user.content,
-      resume_text: "",
-      thread_id: currentThreadId,
+    if (messageId) await regenerateStream(currentThreadId, messageId)
+    else await startStream(currentThreadId, "/resume/chat", {
+      question: turn.user.content, resume_text: "", thread_id: currentThreadId,
     })
   }
 
@@ -259,7 +260,10 @@ export default function ResumePage() {
               <div className="flex flex-col gap-10">
                 {turns.map((turn, i) => {
                   const isLast = i === turns.length - 1
-                  const asst = turn.assistant
+                  const versions = turn.versions ?? (turn.assistant ? [turn.assistant] : [])
+                  const selectedVersion = Math.min(versionSelections[turn.id] ?? versions.length - 1, versions.length - 1)
+                  const asst = versions[selectedVersion]
+                  const isNewestVersion = selectedVersion === versions.length - 1
                   const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isLast
                   const content = asstStreaming ? stream.streamingText : (asst?.content ?? "")
                   return (
@@ -280,14 +284,20 @@ export default function ResumePage() {
                           label={RESUME_ADVISOR.label}
                           color={RESUME_ADVISOR.color}
                           streaming={asstStreaming}
-                          completed={!asstStreaming && Boolean(asst.messageId)}
+                          completed={!asstStreaming}
                           thinking={stream.thinking}
                           initializing={asstStreaming && initializing}
                           initText="简历顾问正在分析"
                           workingText="正在优化简历…"
+                          versionSwitcher={<VersionSwitcher
+                            index={selectedVersion + 1}
+                            total={versions.length}
+                            onPrev={() => setVersionSelections((prev) => ({ ...prev, [turn.id]: Math.max(0, selectedVersion - 1) }))}
+                            onNext={() => setVersionSelections((prev) => ({ ...prev, [turn.id]: Math.min(versions.length - 1, selectedVersion + 1) }))}
+                          />}
                           onRegenerate={
-                            isLast && !asstStreaming && Boolean(asst.content) && Boolean(turn.user.content)
-                              ? () => handleRegenerate(turn.id)
+                            isLast && isNewestVersion && !asstStreaming && Boolean(asst.content) && Boolean(turn.user.content)
+                              ? () => handleRegenerate(turn.id, asst.messageId)
                               : undefined
                           }
                           onFeedback={() => showToast("感谢你的反馈")}

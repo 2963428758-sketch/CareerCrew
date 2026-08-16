@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { MessageFeedback } from "@/types"
+
+type FeedbackReason = NonNullable<MessageFeedback["reason"]>
 
 const FEEDBACK_REASONS: { id: NonNullable<MessageFeedback["reason"]>; label: string }[] = [
   { id: "incorrect", label: "回答不正确" },
@@ -32,18 +34,34 @@ export function FeedbackPopover({
   pending?: boolean
   className?: string
 }) {
-  const [reason, setReason] = useState<NonNullable<MessageFeedback["reason"]>>("incorrect")
+  const [reason, setReason] = useState<FeedbackReason | null>(null)
   const [comment, setComment] = useState("")
   const [shareContext, setShareContext] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => { onCloseRef.current = onClose }, [onClose])
+
+  const reset = useCallback(() => {
+    setReason(null)
+    setComment("")
+    setShareContext(false)
+  }, [])
+
+  const close = useCallback(() => {
+    reset()
+    onCloseRef.current()
+  }, [reset])
 
   useEffect(() => {
+    // 每次打开（以及关闭）都是一次新的反馈意图，绝不复用上次的原因、说明或授权。
+    reset()
     if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      if (ref.current && !ref.current.contains(e.target as Node)) close()
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") close()
     }
     document.addEventListener("mousedown", onDown)
     document.addEventListener("keydown", onKey)
@@ -51,7 +69,7 @@ export function FeedbackPopover({
       document.removeEventListener("mousedown", onDown)
       document.removeEventListener("keydown", onKey)
     }
-  }, [open, onClose])
+  }, [open, reset, close])
 
   if (!open) return null
 
@@ -97,15 +115,15 @@ export function FeedbackPopover({
         <button
           type="button"
           disabled={pending}
-          onClick={onClose}
+          onClick={close}
           className="h-7 rounded-[7px] px-2 text-[12px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
         >
           取消
         </button>
         <button
           type="button"
-          disabled={pending}
-          onClick={() => onSubmit(reason, comment.trim(), shareContext)}
+          disabled={pending || !reason}
+          onClick={() => { if (reason) onSubmit(reason, comment.trim(), shareContext) }}
           className="h-7 rounded-[7px] bg-button-ink px-2.5 text-[12px] font-medium text-button-onink transition-opacity duration-100 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {pending ? "提交中…" : "提交"}

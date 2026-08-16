@@ -6,6 +6,7 @@ import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { UserMessage } from "@/components/conversation/UserMessage"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
+import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
 import { Tooltip } from "@/components/ui/tooltip"
 import { groupTurns, turnAnchorId } from "@/components/conversation/turn"
@@ -37,6 +38,7 @@ export default function ChatPage() {
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
+  const regenerateStream = useStreamStore((s) => s.regenerate)
   const stopStream = useStreamStore((s) => s.stop)
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
@@ -47,6 +49,7 @@ export default function ChatPage() {
   const { activeId, select: selectTurn } = useActiveTurn(turnIds, scrollRef)
 
   const [highlightId, setHighlightId] = useState<string | null>(null)
+  const [versionSelections, setVersionSelections] = useState<Record<string, number>>({})
   const [toast, setToast] = useState<string | null>(null)
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -82,6 +85,7 @@ export default function ChatPage() {
   // 当前会话变化（侧边栏选中历史 / 新建会话）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
+    setVersionSelections({})
     useChatStore.setState({ messages: [], threadId: tid })
     void restoreHistory(tid).then((restored) => {
       const msgs: ChatMessage[] = restored.map((r) => ({
@@ -145,17 +149,16 @@ export default function ChatPage() {
     requestAnimationFrame(() => composerRef.current?.focus())
   }
 
-  /** 重新生成当前回答：移除该 assistant 消息后重发同一问题（不新建用户消息） */
-  const handleRegenerate = async (turnId: string) => {
+  /** 重新生成保留旧版本；稳定 ID 走后端 regenerate，遗留无 ID 消息保留兼容重发。 */
+  const handleRegenerate = async (turnId: string, messageId?: string) => {
     if (stream.status === "streaming") return
     const st = useChatStore.getState()
     const turn = groupTurns(st.messages).find((t) => t.id === turnId)
     if (!turn?.assistant) return
-    const remaining = st.messages.filter((m) => m.id !== turn.assistant!.id)
-    useChatStore.setState({ messages: remaining })
     addMessage({ id: nextId(), role: "assistant", content: "", agent: "career_planner", streaming: true })
     jumpToLatest()
-    await startStream(currentThreadId, "/chat/plan", { intent: turn.user.content, thread_id: currentThreadId })
+    if (messageId) await regenerateStream(currentThreadId, messageId)
+    else await startStream(currentThreadId, "/chat/plan", { intent: turn.user.content, thread_id: currentThreadId })
   }
 
   const lastIsStreaming = stream.status === "streaming"
@@ -220,7 +223,10 @@ export default function ChatPage() {
               <div className="flex flex-col gap-10">
                 {turns.map((turn, i) => {
                   const isLast = i === turns.length - 1
-                  const asst = turn.assistant
+                  const versions = turn.versions ?? (turn.assistant ? [turn.assistant] : [])
+                  const selectedVersion = Math.min(versionSelections[turn.id] ?? versions.length - 1, versions.length - 1)
+                  const asst = versions[selectedVersion]
+                  const isNewestVersion = selectedVersion === versions.length - 1
                   const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isLast
                   const content = asstStreaming ? stream.streamingText : (asst?.content ?? "")
                   const meta = asst?.agent ? AGENT_META[asst.agent] : undefined
@@ -244,12 +250,18 @@ export default function ChatPage() {
                             label={meta?.label ?? "顾问"}
                             color={meta?.color}
                             streaming={asstStreaming}
-                            completed={!asstStreaming && Boolean(asst.messageId)}
+                            completed={!asstStreaming}
                             thinking={stream.thinking}
                             initializing={asstStreaming && initializing}
+                            versionSwitcher={<VersionSwitcher
+                              index={selectedVersion + 1}
+                              total={versions.length}
+                              onPrev={() => setVersionSelections((prev) => ({ ...prev, [turn.id]: Math.max(0, selectedVersion - 1) }))}
+                              onNext={() => setVersionSelections((prev) => ({ ...prev, [turn.id]: Math.min(versions.length - 1, selectedVersion + 1) }))}
+                            />}
                             onRegenerate={
-                              isLast && !asstStreaming && Boolean(asst.content) && Boolean(turn.user.content)
-                                ? () => handleRegenerate(turn.id)
+                              isLast && isNewestVersion && !asstStreaming && Boolean(asst.content) && Boolean(turn.user.content)
+                              ? () => handleRegenerate(turn.id, asst.messageId)
                                 : undefined
                             }
                             onFeedback={() => showToast("感谢你的反馈")}
