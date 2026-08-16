@@ -66,3 +66,32 @@ def test_plan_tools_none_defaults_full_allowlist(client, fake_runtime):
     eff = run.get("effective_tools")
     assert "rag_query" in eff
     assert "profile_update" in eff  # chat 模块声明范围内
+
+
+@pytest.mark.web
+def test_capabilities_exposes_bound_special_tools(client, fake_runtime):
+    """Critical 1：registry 登记 search_jobs/salary_query/read_image 后，capabilities
+    端点须在对应 module 列出这些真正 bound 的工具（不再被默认路径静默禁用）。"""
+    resp = client.get("/api/agent/capabilities?module=matcher")
+    ids = [t["id"] for t in resp.json()["tools"]]
+    assert "search_jobs" in ids
+
+    resp = client.get("/api/agent/capabilities?module=salary")
+    ids = [t["id"] for t in resp.json()["tools"]]
+    assert "salary_query" in ids
+
+    resp = client.get("/api/agent/capabilities?module=knowledge")
+    ids = [t["id"] for t in resp.json()["tools"]]
+    assert "read_image" in ids
+
+
+@pytest.mark.web
+def test_match_default_effective_tools_include_search_jobs(client, fake_runtime):
+    """Critical 1：matcher 未传 tools 时 effective_tools 应含真正 bound 的 search_jobs。"""
+    resp = client.post("/api/chat/match", json={"intent": "找 Java 岗位"})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    run_id = events[-1]["run_id"]
+    run = fake_runtime.conversation_store._db.get_run("u_001", run_id)
+    eff = run.get("effective_tools")
+    assert "search_jobs" in eff

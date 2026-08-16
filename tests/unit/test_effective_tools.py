@@ -116,3 +116,41 @@ def test_capabilities_requires_hitl_flag_set() -> None:
     by_id = {t["id"]: t for t in tools}
     assert by_id["profile_update"]["requires_hitl"] is True
     assert by_id["rag_query"]["requires_hitl"] is False
+
+
+# ── Critical 1 / Important 3：MODULE_TOOLS 与 _make_tools(kind) 1:1 对齐 ──
+
+
+def test_module_tools_align_with_make_tools_branches() -> None:
+    """MODULE_TOOLS 声明的每 module 工具集必须严格等于 `_make_tools(kind)` 实际构造集。
+
+    防止默认路径（未传 tools）时 `_server_allowlist`（registry ∩ MODULE_TOOLS）与真正
+    bound 的工具集漂移：search_jobs/salary_query/read_image 须在对应 module 中存在，
+    且 chat（planner）不得多报未构造的 memory_write/read_image。
+    """
+    from careercrew_core.tools.capabilities import MODULE_TOOLS
+
+    # `_make_tools` 各 branch 实际 register 的工具名（与 runtime.py 一一对应）
+    constructed = {
+        "matcher": {"search_jobs", "rag_query", "memory_write", "memory_search",
+                    "profile_update"},
+        "resume": {"rag_query", "profile_update"},
+        "interview": {"rag_query", "memory_write", "memory_search"},
+        "salary": {"rag_query", "profile_update", "memory_search", "salary_query"},
+        "chat": {"rag_query", "profile_update", "memory_search", "salary_query"},
+        "knowledge": {"rag_query", "read_image", "memory_search"},
+    }
+    for module, names in constructed.items():
+        assert set(MODULE_TOOLS[module]) == names, (
+            f"MODULE_TOOLS[{module}] 漂移：声明 {set(MODULE_TOOLS[module])}，"
+            f"实际构造 {names}"
+        )
+
+    # 真正 bound 的特殊工具确实落在声明里（review Critical 1 功能回归点）
+    assert "search_jobs" in MODULE_TOOLS["matcher"]
+    assert "salary_query" in MODULE_TOOLS["chat"]
+    assert "salary_query" in MODULE_TOOLS["salary"]
+    assert "read_image" in MODULE_TOOLS["knowledge"]
+    # chat=planner 不构造 memory_write/read_image，声明里不得保留（review Important 3）
+    assert "memory_write" not in MODULE_TOOLS["chat"]
+    assert "read_image" not in MODULE_TOOLS["chat"]

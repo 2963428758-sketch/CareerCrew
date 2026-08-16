@@ -201,3 +201,38 @@ def test_consult_skips_known_profile_fields(client, fake_runtime):
     # 画像已有的 skills / experience_years / target_direction / city 不再询问
     assert set(ids) == {"current_position", "salary", "target_companies"}
     assert seen_prompts
+
+
+@pytest.mark.web
+def test_consult_tools_outside_allowlist_clipped(client, fake_runtime):
+    """Important 2：consult 请求 tools 含 server 不允许的 id → effective_tools 不含它。"""
+    resp = client.post("/api/consult", json={
+        "question": "30K 字节跳动 offer 要不要接？",
+        "tools": ["rag_query", "evil_tool", "salary_query"],
+    })
+    assert resp.status_code == 200
+    events = _events(resp)
+    assert events[-1]["type"] == "done"
+    run_id = events[-1]["run_id"]
+    run = fake_runtime.conversation_store._db.get_run("u_001", run_id)
+    eff = run.get("effective_tools")
+    assert "evil_tool" not in eff
+    assert "rag_query" in eff
+    assert "salary_query" in eff
+
+
+@pytest.mark.web
+def test_consult_hitl_tool_records_awaiting_confirmation(client, fake_runtime):
+    """Important 2：consult 中 HITL 工具被拦截 → 落 awaiting_confirmation 行（block-and-record）。"""
+    resp = client.post("/api/consult", json={"question": "帮我投递字节跳动"})
+    assert resp.status_code == 200
+    events = _events(resp)
+    assert events[-1]["type"] == "done"
+    run_id = events[-1]["run_id"]
+    store = fake_runtime.conversation_store
+    calls = [c for c in store._db._tool_calls.values() if c["run_id"] == run_id]
+    awaiting = [c for c in calls if c.get("status") == "awaiting_confirmation"]
+    assert awaiting, "应存在 awaiting_confirmation 的工具调用行"
+    assert awaiting[0]["tool_name"] in ("submit_application", "accept_offer")
+    assert awaiting[0].get("hitl_status") == "pending"
+    assert awaiting[0].get("requires_hitl") is True

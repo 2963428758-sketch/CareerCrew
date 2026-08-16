@@ -1600,26 +1600,33 @@ class CareerCrewRuntime:
             hitl_requires=hitl_requires,
         )
 
-    def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
-        """按名字建会诊 agent。"""
+    def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None,
+                          allowed: list[str] | None = None,
+                          hitl_requires: set[str] | None = None):
+        """按名字建会诊 agent（T3.5：透传 effective allowed + hitl_requires）。"""
         self._ensure_heavy()
         if name == "salary_negotiator":
             from careercrew_core.agents.salary_negotiator import SalaryNegotiator
 
             return SalaryNegotiator(
-                llm=self.llm, tools=self._make_tools("salary", episodic=episodic),
+                llm=self.llm, tools=self._make_tools("salary", episodic=episodic, allowed=allowed),
                 max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
                 history_loader=self._history_loader,
                 compaction=self._compaction_kwargs() or None,
+                hitl_requires=hitl_requires,
             )
         if name == "career_planner":
-            return self.new_career_planner(cb, episodic=episodic)
+            return self.new_career_planner(cb, episodic=episodic, allowed=allowed,
+                                           hitl_requires=hitl_requires)
         if name == "job_matcher":
-            return self.new_job_matcher(cb, episodic=episodic)
+            return self.new_job_matcher(cb, episodic=episodic, allowed=allowed,
+                                        hitl_requires=hitl_requires)
         if name == "resume_advisor":
-            return self.new_resume_advisor(cb, episodic=episodic)
+            return self.new_resume_advisor(cb, episodic=episodic, allowed=allowed,
+                                           hitl_requires=hitl_requires)
         if name == "interviewer":
-            return self.new_interviewer(cb, episodic=episodic)
+            return self.new_interviewer(cb, episodic=episodic, allowed=allowed,
+                                        hitl_requires=hitl_requires)
         raise ValueError(f"未知会诊 agent: {name}")
 
     # ── 直通方法 ──

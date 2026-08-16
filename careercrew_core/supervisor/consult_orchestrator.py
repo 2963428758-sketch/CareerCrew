@@ -389,7 +389,14 @@ def _build_agent_node(name: str, agent_factory: Callable, emit: Callable[[dict],
             emit({"type": "agent_end", "agent": name, "round": round_no})
 
         update["consult_calls"] = [
-            {"round": round_no, "agent": name, "task": task, "content": content}
+            {
+                "round": round_no,
+                "agent": name,
+                "task": task,
+                "content": content,
+                # T3.5：被 HITL 拦截的调用随会诊结果透出，供路由落 awaiting_confirmation 行。
+                "blocked_tool_calls": getattr(result, "blocked_tool_calls", None) or [],
+            }
         ]
         return update
 

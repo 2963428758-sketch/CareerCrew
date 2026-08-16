@@ -15,8 +15,6 @@ from careercrew_core.tools.capabilities import build_capabilities
 
 router = APIRouter()
 
-_KNOWN_MODULES = ("matcher", "resume", "chat", "knowledge", "interview", "salary")
-
 
 @router.get("/agent/capabilities")
 def capabilities(

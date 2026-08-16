@@ -86,6 +86,8 @@ def questions(
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    effective = rt.compute_effective_tools("interview", req.tools)
+    hitl = rt._hitl_requires()
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
@@ -97,11 +99,14 @@ def questions(
 
             user_id = current_user["id"]
             episodic = rt._get_episodic(req.thread_id, user_id)
-            agent = rt.new_interviewer(cb, episodic=episodic)
+            agent = rt.new_interviewer(
+                cb, episodic=episodic, allowed=effective, hitl_requires=hitl,
+            )
             prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="interview", agent_id="interviewer",
                 user_text=prompt, user_metadata={"mentions": mentions} if mentions else None,
+                effective_tools=effective,
             )
             try:
                 pending_id = rt.record_user_message(
@@ -174,6 +179,8 @@ def chat(
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    effective = rt.compute_effective_tools("interview", req.tools)
+    hitl = rt._hitl_requires()
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
@@ -187,6 +194,7 @@ def chat(
             episodic = rt._get_episodic(req.thread_id, user_id)
             agent = rt.new_interviewer(
                 cb, episodic=episodic, prompt_path=_CHAT_PROMPT_PATH,
+                allowed=effective, hitl_requires=hitl,
             )
             # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
             last_user = next(
@@ -197,6 +205,7 @@ def chat(
                 req.thread_id, user_id, module="interview", agent_id="interviewer_chat",
                 user_text=last_user or (req.topic or "请开始模拟面试"),
                 user_metadata={"mentions": mentions} if mentions else None,
+                effective_tools=effective,
             )
             try:
                 pending_id = rt.record_user_message(

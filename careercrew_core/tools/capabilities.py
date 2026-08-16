@@ -16,16 +16,24 @@ from __future__ import annotations
 
 # 模块显示名 -> 允许的工具 id 集合。用于 capabilities 的服务端 allowlist 分层：
 # module_allowlist 更进一步；未列入的 module 视为「不约束」（展示全部注册工具）。
-# 与 `_make_tools(kind)` 的 per-kind 构造不同：这里只做「可见性声明」，不构造工具，
-# 因此无需重组件（episodic/向量库）初始化，可在只读状态下汇总服务端事实。
+# 这里只做「可见性声明」，不构造工具，因此无需重组件（episodic/向量库）初始化，
+# 可在只读状态下汇总服务端事实。
+#
+# 与 `_make_tools(kind)` 的 per-kind 构造保持 1:1 对齐（kind↔module 映射见下方注释）：
+#   matcher→matcher, resume→resume, knowledge→knowledge,
+#   interviewer→interview, salary→salary, planner→chat
+# 任一 module 声明的集合必须严格等于 `_make_tools` 实际 register 的 tool 名集合，
+# 否则 `_server_allowlist`（registry ∩ module）会在默认路径漏裁/多裁，导致
+# recorded effective_tools 与真正 bound 的工具集合漂移（review Important 3）。
 MODULE_TOOLS: dict[str, list[str]] = {
-    "chat": ["rag_query", "memory_search", "memory_write", "profile_update",
-             "salary_query", "read_image"],
-    "matcher": ["rag_query", "memory_search", "memory_write", "profile_update", "search_jobs"],
+    # chat=planner：实际构造 rag_query/profile_update/memory_search/salary_query，
+    # 不构造 memory_write/read_image——已从声明中移除，避免记录多报。
+    "chat": ["rag_query", "memory_search", "profile_update", "salary_query"],
+    "matcher": ["search_jobs", "rag_query", "memory_write", "memory_search", "profile_update"],
     "resume": ["rag_query", "profile_update"],
     "knowledge": ["rag_query", "read_image", "memory_search"],
-    "interview": ["rag_query", "memory_search", "memory_write"],
-    "salary": ["rag_query", "memory_search", "profile_update", "salary_query"],
+    "interview": ["rag_query", "memory_write", "memory_search"],
+    "salary": ["rag_query", "profile_update", "memory_search", "salary_query"],
 }
 
 # 工具 id -> 人类可读显示名（未登记回退 id 本身）。

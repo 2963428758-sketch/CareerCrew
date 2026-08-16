@@ -88,7 +88,9 @@ class FakeRuntime:
             }),
             "tools": type("T", (), {
                 "registry": type("RG", (), {
-                    "internal": ["rag_query", "memory_search", "memory_write", "profile_update"],
+                    "internal": ["rag_query", "memory_search", "memory_write",
+                                 "profile_update", "search_jobs", "salary_query",
+                                 "read_image"],
                     "mcp": ["mcp_jobs"],
                 }),
                 "hitl": type("H", (), {
@@ -474,10 +476,15 @@ class FakeRuntime:
                     cb(self.resume_output)
         return FakeAgent()
 
-    def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None, prompt_path=None):
+    def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None,
+                        prompt_path=None, allowed: list[str] | None = None,
+                        hitl_requires: set[str] | None = None):
         class FakeAgent:
             def __init__(self_inner):
-                self_inner.last_result = type("R", (), {"content": self.interview_output})()
+                self_inner.last_result = type("R", (), {
+                    "content": self.interview_output,
+                    "blocked_tool_calls": [],
+                })()
 
             def run(self_inner, state):
                 if cb:
@@ -486,12 +493,22 @@ class FakeRuntime:
                     cb(self.interview_output)
         return FakeAgent()
 
-    def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
+    def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None,
+                          episodic=None, allowed: list[str] | None = None,
+                          hitl_requires: set[str] | None = None):
         output = self.consult_opinions.get(name, "无意见")
 
         class FakeAgent:
             def __init__(self_inner):
-                self_inner.last_result = type("R", (), {"content": output})()
+                # T3.5：模拟 HITL 拦截——若有 hitl_requires 且本轮请求了对应工具，
+                # 记录 blocked_tool_calls，供路由落 awaiting_confirmation 行。
+                blocked = []
+                if hitl_requires:
+                    blocked = [{"name": sorted(hitl_requires)[0], "args": {}}]
+                self_inner.last_result = type("R", (), {
+                    "content": output,
+                    "blocked_tool_calls": blocked,
+                })()
 
             def run(self_inner, state):
                 if cb:

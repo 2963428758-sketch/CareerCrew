@@ -129,6 +129,8 @@ class QuestionRequest(BaseModel):
     topic: str = ""
     thread_id: str = "interview"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 class InterviewChatMessage(BaseModel):
@@ -141,6 +143,8 @@ class InterviewChatRequest(BaseModel):
     messages: list[InterviewChatMessage] = []
     thread_id: str = "interview"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 class ScoreRequest(BaseModel):
@@ -194,6 +198,8 @@ class ConsultRequest(BaseModel):
     # skills / target_direction / city / salary / target_companies），后端并入会诊上下文。
     profile: dict[str, str] = Field(default_factory=dict)
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 # ── Knowledge（知识库问答）──

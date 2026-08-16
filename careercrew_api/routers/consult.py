@@ -157,10 +157,16 @@ def consult(
             from careercrew_api.runtime import _capture_langsmith_run_id
 
             ls_run_id = _capture_langsmith_run_id()
+            # T3.5：会诊各顾问按各自 kind 构造工具；effective 由 consult 模块 allowlist
+            # 计算后下发给 new_consult_agent，逐顾问再由 `_make_tools(kind, allowed=…)`
+            # 裁剪到其实际注册集合。
+            effective = rt.compute_effective_tools("consult", req.tools)
+            hitl = rt._hitl_requires()
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="consult",
                 agent_id="consult_orchestrator", user_text=req.question,
                 user_metadata={"mentions": mentions} if mentions else None,
+                effective_tools=effective,
             )
             try:
                 from careercrew_core.supervisor.consult_orchestrator import (
@@ -238,6 +244,7 @@ def consult(
                     rt.llm,
                     lambda name, cb: rt.new_consult_agent(
                         name, cb, episodic=rt._get_episodic(req.thread_id, user_id),
+                        allowed=effective, hitl_requires=hitl,
                     ),
                     emit=_safe_emit,
                 )
@@ -289,9 +296,24 @@ def consult(
                     )
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
+                # T3.5：会诊顾问被 HITL 拦截的调用（blocked_tool_calls）汇总后落
+                # awaiting_confirmation 行，与会诊调度过程一并可视化（block-and-record）。
+                from careercrew_api.runtime import _observability_from_result
+
+                obs_tool_calls: list[dict] = []
+                for call in calls:
+                    blocked = call.get("blocked_tool_calls") or []
+                    if blocked:
+                        synth = type("R", (), {
+                            "input_tokens": None, "output_tokens": None,
+                            "tool_call_details": [],
+                            "blocked_tool_calls": blocked,
+                        })()
+                        obs_tool_calls.extend(_observability_from_result(synth)["tool_calls"])
                 rt._finish_chat_turn(
                     ctx, final, metadata={"opinions": opinions, "calls": calls},
                     langsmith_run_id=ls_run_id,
+                    tool_calls=obs_tool_calls or None,
                 )
                 _safe_emit({
                     "type": "done", "content": final, "opinions": opinions, "calls": calls,

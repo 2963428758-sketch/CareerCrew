@@ -98,7 +98,10 @@ memory:
 # ── 工具层 ──
 tools:
   registry:
-    internal: [rag_query, memory_search, memory_write, profile_update]
+    # internal 须与 `_make_tools(kind)` 实际构造的工具集对齐：search_jobs(matcher) /
+    # salary_query(planner+salary) / read_image(knowledge) 均真实落入 bound tools，
+    # 必须登记在此，否则默认路径（未传 tools）会把它们从 bound 集合裁剪掉以致功能回归。
+    internal: [rag_query, memory_search, memory_write, profile_update, search_jobs, salary_query, read_image]
     mcp: [mcp_jobs, google_mcp]
   hitl:
     requires_confirmation:
