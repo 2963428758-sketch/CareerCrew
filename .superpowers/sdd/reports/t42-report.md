@@ -32,3 +32,9 @@
 - `npm run test -- src/lib/feedback.test.ts src/components/conversation/FeedbackArea.test.tsx src/components/conversation/MessageActions.test.tsx src/store/streamStore.test.ts` — PASS (24 tests).
 - `npm run build` — PASS.
 - `npm run lint` — PASS with the existing two Fast Refresh warnings in `components/ui/button.tsx` and `components/ui/badge.tsx`.
+
+## Final KnowledgePage parity fix
+
+- KnowledgePage now sends stable assistant `messageId` regeneration through `streamStore.regenerate`, preserves prior answer versions for switching, and binds each displayed version to its own stable-ID feedback state.
+- Legacy answers without a stable ID keep copy and compatibility regeneration controls, while feedback remains hidden.
+- Focused KnowledgePage coverage verifies stable-ID regeneration/version feedback separation and the legacy fallback; `npm run test -- src/pages/KnowledgePage.test.tsx src/components/conversation/FeedbackArea.test.tsx src/components/conversation/VersionSwitcher.test.tsx` passed (18 tests), and `npm run build` passed.
