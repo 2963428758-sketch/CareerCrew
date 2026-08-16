@@ -10,12 +10,14 @@ function ActionButton({
   active = false,
   hoverReveal = false,
   onClick,
+  disabled = false,
   children,
 }: {
   title: string
   active?: boolean
   hoverReveal?: boolean
   onClick: () => void
+  disabled?: boolean
   children: ReactNode
 }) {
   return (
@@ -25,11 +27,13 @@ function ActionButton({
         aria-label={title}
         aria-pressed={active || undefined}
         onClick={onClick}
+        disabled={disabled}
         className={cn(
           "flex h-7 w-7 items-center justify-center rounded-[6px] transition-colors duration-100",
           "text-ink-faint hover:bg-[var(--hover)] hover:text-ink",
           active && "bg-[var(--active)] text-ink",
-          hoverReveal && "opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
+          hoverReveal && "opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100",
+          disabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-ink-faint"
         )}
       >
         {children}
@@ -53,6 +57,8 @@ export function MessageActions({
   onToggleLike,
   onToggleDislike,
   onRegenerate,
+  disabled = false,
+  feedbackAvailable = true,
 }: {
   content: string
   feedback: MessageFeedback | null
@@ -64,6 +70,9 @@ export function MessageActions({
   onToggleLike: () => void
   onToggleDislike: () => void
   onRegenerate?: () => void
+  disabled?: boolean
+  /** 只有后端稳定 message_id 可用时才允许展示/提交反馈。 */
+  feedbackAvailable?: boolean
 }) {
   const [copied, setCopied] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -94,12 +103,13 @@ export function MessageActions({
       <ActionButton title="复制回答" onClick={handleCopy}>
         {copied ? <Check className="h-[15px] w-[15px]" strokeWidth={1.8} /> : <Copy className="h-[15px] w-[15px]" strokeWidth={1.8} />}
       </ActionButton>
-      {completed && (
+      {completed && feedbackAvailable && (
         <>
           <ActionButton
             title={feedback?.rating === "positive" ? "取消反馈" : "有帮助"}
             active={feedback?.rating === "positive"}
             onClick={onToggleLike}
+            disabled={disabled}
           >
             <ThumbsUp className="h-[15px] w-[15px]" strokeWidth={1.8} />
           </ActionButton>
@@ -107,6 +117,7 @@ export function MessageActions({
             title={feedback?.rating === "negative" ? "取消反馈" : "不满意"}
             active={feedback?.rating === "negative"}
             onClick={onToggleDislike}
+            disabled={disabled}
           >
             <ThumbsDown className="h-[15px] w-[15px]" strokeWidth={1.8} />
           </ActionButton>

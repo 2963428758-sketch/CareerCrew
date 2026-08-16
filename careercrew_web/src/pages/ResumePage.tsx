@@ -274,10 +274,13 @@ export default function ResumePage() {
                       {asst && (
                         <AssistantMessage
                           messageId={asst.id}
+                          stableMessageId={asst.messageId}
+                          threadId={currentThreadId}
                           content={content}
                           label={RESUME_ADVISOR.label}
                           color={RESUME_ADVISOR.color}
                           streaming={asstStreaming}
+                          completed={!asstStreaming && Boolean(asst.messageId)}
                           thinking={stream.thinking}
                           initializing={asstStreaming && initializing}
                           initText="简历顾问正在分析"

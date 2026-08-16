@@ -13,13 +13,14 @@ import type { KnowledgeSource, MessageFeedback } from "@/types"
  * （如知识库来源列表、会诊调度面板）。
  */
 export function AssistantMessage({
-  messageId,
+  messageId: _messageId,
   content,
   label,
   color,
   streaming = false,
   completed = true,
   stableMessageId,
+  threadId,
   thinking = false,
   initializing = false,
   workingText = "正在生成回答…",
@@ -41,6 +42,8 @@ export function AssistantMessage({
   completed?: boolean
   /** 后端稳定 message_id：More 菜单「复制消息 ID」与 Feedback 绑定（区别于 UI messageId）。 */
   stableMessageId?: string
+  /** 当前所属线程；仅和 stableMessageId 同时存在时允许持久化反馈。 */
+  threadId?: string
   thinking?: boolean
   initializing?: boolean
   workingText?: string
@@ -94,7 +97,8 @@ export function AssistantMessage({
       {versionSwitcher}
 
       <FeedbackArea
-        messageId={stableMessageId ?? messageId}
+        messageId={stableMessageId}
+        threadId={threadId ?? ""}
         content={content}
         completed={completed}
         onRegenerate={onRegenerate}

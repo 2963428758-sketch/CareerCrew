@@ -44,12 +44,16 @@ export interface MessageFeedback {
   rating: "positive" | "negative"
   reason?:
     | "incorrect"
-    | "not_helpful"
-    | "did_not_answer"
+    | "not_relevant"
+    | "incomplete"
     | "too_verbose"
-    | "hard_to_understand"
+    | "unclear"
+    | "instruction_failure"
+    | "tool_failure"
+    | "citation_failure"
     | "other"
   comment?: string
+  shareContext?: boolean
 }
 
 /** 面试 QA。 */

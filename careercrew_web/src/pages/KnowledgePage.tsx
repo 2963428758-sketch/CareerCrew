@@ -303,6 +303,7 @@ export default function KnowledgePage() {
                       {asst && (
                         <KnowledgeAssistant
                           msg={asst}
+                          threadId={currentThreadId}
                           isStreaming={asstStreaming}
                           streamingText={stream.streamingText}
                           thinking={stream.thinking}
@@ -398,8 +399,9 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   )
 }
 
-function KnowledgeAssistant({ msg, isStreaming, streamingText, thinking, initializing, onPreview, onRegenerate, onFeedback }: {
+function KnowledgeAssistant({ msg, threadId, isStreaming, streamingText, thinking, initializing, onPreview, onRegenerate, onFeedback }: {
   msg: KnowledgeMessage
+  threadId: string
   isStreaming: boolean
   streamingText: string
   thinking: boolean
@@ -416,10 +418,13 @@ function KnowledgeAssistant({ msg, isStreaming, streamingText, thinking, initial
   return (
     <AssistantMessage
       messageId={msg.id}
+      stableMessageId={msg.messageId}
+      threadId={threadId}
       content={content}
       label={meta.label}
       color={meta.color}
       streaming={isStreaming}
+      completed={!isStreaming && Boolean(msg.messageId)}
       thinking={thinking}
       initializing={isStreaming && !content && initializing}
       initText="正在检索知识库"

@@ -10,7 +10,7 @@ interface ChatState {
   profileNonce: number
   threadNonce: number
   addMessage: (msg: ChatMessage) => void
-  updateLastAssistant: (content: string) => void
+  updateLastAssistant: (content: string, ids?: Pick<ChatMessage, "messageId" | "turnId" | "runId">) => void
   removeLastEmptyAssistant: () => void
   setThreadId: (id: string) => void
   setSelectedJd: (jd: string) => void
@@ -33,12 +33,12 @@ export const useChatStore = create<ChatState>((set) => ({
 
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
 
-  updateLastAssistant: (content) =>
+  updateLastAssistant: (content, ids) =>
     set((s) => {
       const msgs = [...s.messages]
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === "assistant") {
-          msgs[i] = { ...msgs[i], content, streaming: false }
+          msgs[i] = { ...msgs[i], content, streaming: false, ...ids }
           break
         }
       }

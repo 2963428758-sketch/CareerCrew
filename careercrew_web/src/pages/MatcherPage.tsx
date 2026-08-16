@@ -187,10 +187,13 @@ export default function MatcherPage() {
                       {asst && (
                         <AssistantMessage
                           messageId={asst.id}
+                          stableMessageId={asst.messageId}
+                          threadId={currentThreadId}
                           content={content}
                           label={meta.label}
                           color={meta.color}
                           streaming={asstStreaming}
+                          completed={!asstStreaming && Boolean(asst.messageId)}
                           thinking={stream.thinking}
                           initializing={asstStreaming && initializing}
                           initText="匹配官正在检索岗位"

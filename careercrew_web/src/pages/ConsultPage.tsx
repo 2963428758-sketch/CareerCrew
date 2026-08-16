@@ -217,7 +217,7 @@ export default function ConsultPage() {
                       {asst && (isLive(asst) ? (
                         <LiveAssistant stream={stream} />
                       ) : (
-                        <HistoryAssistant msg={asst} onFeedback={() => showToast("感谢你的反馈")} />
+                        <HistoryAssistant msg={asst} threadId={currentThreadId} onFeedback={() => showToast("感谢你的反馈")} />
                       ))}
                     </TurnSection>
                   )
@@ -313,7 +313,7 @@ function LiveAssistant({ stream }: { stream: StreamSession }) {
   )
 }
 
-function HistoryAssistant({ msg, onFeedback }: { msg: ConsultMessage; onFeedback?: (fb: MessageFeedback) => void }) {
+function HistoryAssistant({ msg, threadId, onFeedback }: { msg: ConsultMessage; threadId: string; onFeedback?: (fb: MessageFeedback) => void }) {
   const opinions = msg.opinions ?? {}
   const calls = msg.calls ?? []
   const ids = Object.keys(opinions)
@@ -381,7 +381,7 @@ function HistoryAssistant({ msg, onFeedback }: { msg: ConsultMessage; onFeedback
         </div>
         <MarkdownContent>{msg.content || ""}</MarkdownContent>
       </AgentPanel>
-      <FeedbackArea messageId={msg.id} content={msg.content || ""} onFeedback={onFeedback} />
+      <FeedbackArea messageId={msg.messageId} threadId={threadId} content={msg.content || ""} onFeedback={onFeedback} />
     </div>
   )
 }

@@ -73,11 +73,11 @@ export default function ChatPage() {
       return
     }
     if (stream.status === "done" && stream.doneContent) {
-      updateLastAssistant(stream.doneContent)
+      updateLastAssistant(stream.doneContent, stream.doneIds ?? undefined)
       if (stream.stage === "match") useChatStore.getState().setLastMatchResult(stream.doneContent)
       bumpProfileNonce()
     }
-  }, [stream.status, stream.doneContent, updateLastAssistant, removeLastEmptyAssistant, stream.stage, bumpProfileNonce])
+  }, [stream.status, stream.doneContent, stream.doneIds, updateLastAssistant, removeLastEmptyAssistant, stream.stage, bumpProfileNonce])
 
   // 当前会话变化（侧边栏选中历史 / 新建会话）时加载该 thread 的消息
   useEffect(() => {
@@ -238,10 +238,13 @@ export default function ChatPage() {
                         <div className="mt-4">
                           <AssistantMessage
                             messageId={asst.id}
+                            stableMessageId={asst.messageId}
+                            threadId={currentThreadId}
                             content={content}
                             label={meta?.label ?? "顾问"}
                             color={meta?.color}
                             streaming={asstStreaming}
+                            completed={!asstStreaming && Boolean(asst.messageId)}
                             thinking={stream.thinking}
                             initializing={asstStreaming && initializing}
                             onRegenerate={

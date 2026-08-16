@@ -235,10 +235,13 @@ export default function InterviewPage() {
                       {asst && (
                         <AssistantMessage
                           messageId={asst.id}
+                          stableMessageId={asst.messageId}
+                          threadId={currentThreadId}
                           content={content}
                           label={INTERVIEWER.label}
                           color={INTERVIEWER.color}
                           streaming={asstStreaming}
+                          completed={!asstStreaming && Boolean(asst.messageId)}
                           thinking={stream.thinking}
                           initializing={asstStreaming && initializing}
                           initText="面试官正在思考题目"
