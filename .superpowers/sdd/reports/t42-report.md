@@ -38,3 +38,9 @@
 - KnowledgePage now sends stable assistant `messageId` regeneration through `streamStore.regenerate`, preserves prior answer versions for switching, and binds each displayed version to its own stable-ID feedback state.
 - Legacy answers without a stable ID keep copy and compatibility regeneration controls, while feedback remains hidden.
 - Focused KnowledgePage coverage verifies stable-ID regeneration/version feedback separation and the legacy fallback; `npm run test -- src/pages/KnowledgePage.test.tsx src/components/conversation/FeedbackArea.test.tsx src/components/conversation/VersionSwitcher.test.tsx` passed (18 tests), and `npm run build` passed.
+
+## Packaging prerequisite fix
+
+- Added the minimal shared error formatter and toast notification path required by the already committed feedback API client and feedback failure UI: `errors.ts`, `toastBus.ts`, `ToastHost.tsx`, and the App-root host mount.
+- This intentionally excludes concurrent display-name, user-management, and app-shell changes. `toastBus.test.ts` covers publish type/text and listener cleanup.
+- In a detached clean worktree at this commit, `npm run test -- src/lib/toastBus.test.ts src/lib/feedback.test.ts src/components/conversation/FeedbackArea.test.tsx src/components/conversation/MessageActions.test.tsx` passed (4 files, 20 tests). `npm run build` and `npm run lint` still stop on unrelated baseline packaging defects: missing `ConversationHeader` plus stale `KnowledgePanel`/`ResumePanel`/`ChatPage` code, and a conditional hook in `AppSidebar`; none are part of this fix.

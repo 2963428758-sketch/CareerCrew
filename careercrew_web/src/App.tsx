@@ -9,6 +9,7 @@ import { SettingsSidebar } from "@/components/app-shell/SettingsSidebar"
 import { Tooltip } from "@/components/ui/tooltip"
 import { AuthLoading, AuthScreen } from "@/components/AuthScreen"
 import PasswordChangeScreen from "@/components/PasswordChangeScreen"
+import { ToastHost } from "@/components/ToastHost"
 import { getAuthSnapshot, restoreSession, subscribeAuth } from "@/lib/auth"
 
 // 路由懒加载：按页拆 chunk，消除首屏大 bundle（Chat/Consult/Knowledge 等重页面按需加载）
@@ -143,6 +144,9 @@ export default function App() {
           )}
         </Suspense>
       </main>
+
+      {/* 全局错误/信息 toast（底部居中）：所有页面的静默失败点统一从这里提示 */}
+      <ToastHost />
     </div>
   )
 }
