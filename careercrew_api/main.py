@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from careercrew_api.auth.middleware import TrustedOriginMiddleware
-from careercrew_api.routers import auth, chat, consult, context, data, interview, knowledge, resume, threads, attachments, agent
+from careercrew_api.routers import agent, attachments, auth, chat, consult, context, data, feedback, interview, knowledge, resume, threads
 from careercrew_core.state.settings import load_auth_settings
 
 DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
@@ -65,6 +65,7 @@ def create_app() -> FastAPI:
     # 均由 threads.py 接管；data.py 仍定义 GET /api/threads（memory 列表）与其
     # PATCH/DELETE 旧路由，但后者已被 threads.py 的同路径路由遮蔽（保留供兼容引用）。
     app.include_router(threads.router, prefix="/api", tags=["threads"])
+    app.include_router(feedback.router, prefix="/api", tags=["feedback"])
     app.include_router(data.router, prefix="/api", tags=["data"])
     app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
     app.include_router(interview.router, prefix="/api/interview", tags=["interview"])

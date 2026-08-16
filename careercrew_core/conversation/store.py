@@ -9,6 +9,7 @@ UUIDv7 生成 id；legacy `t-${Date.now()}` 线程 ID 通过 conversations.legac
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from typing import Any
 
@@ -18,6 +19,7 @@ from careercrew_core.conversation.db import (
     _now,
 )
 from careercrew_core.conversation.uuid7 import uuid7
+from careercrew_core.feedback.snapshots import build_snapshot
 
 
 class OwnershipError(Exception):
@@ -314,6 +316,56 @@ class ConversationStore:
     def get_run(self, user_id: str, run_id: str) -> dict | None:
         """按 user_id 取 run 行；不存在 / 所有权不匹配返回 None（跨用户视为不存在）。"""
         return self._db.get_run(user_id, run_id)
+
+    # ── feedback / privacy snapshots ──
+
+    def _feedback_target(self, user_id: str, message_id: str) -> dict:
+        """Resolve an eligible assistant result without revealing foreign messages."""
+        message = self._db.get_message(user_id, message_id)
+        if (message is None or message.get("role") != "assistant"
+                or message.get("status") != "completed" or not message.get("run_id")):
+            raise OwnershipError("feedback target is not available")
+        run = self._db.get_run(user_id, message["run_id"])
+        if (run is None or run.get("thread_id") != message["thread_id"]
+                or run.get("turn_id") != message["turn_id"]
+                or run.get("message_id") != message["id"]):
+            raise OwnershipError("feedback target is not available")
+        return message
+
+    def put_feedback(self, user_id: str, message_id: str, *, rating: str,
+                     reason: str | None, comment: str | None, share_context: bool) -> dict:
+        """Upsert feedback, deriving every relationship from the owned assistant message."""
+        message = self._feedback_target(user_id, message_id)
+        feedback = self._db.upsert_feedback(user_id, {
+            "id": str(uuid7()), "thread_id": message["thread_id"], "turn_id": message["turn_id"],
+            "message_id": message["id"], "run_id": message["run_id"], "rating": rating,
+            "reason": reason, "comment": comment, "share_context": share_context,
+        })
+        if rating == "negative" and share_context:
+            messages = self._db.list_messages(user_id, message["thread_id"])
+            snapshot, count, version = build_snapshot(messages, message)
+            expiry = (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
+            self._db.upsert_feedback_snapshot(feedback["id"], user_id, {
+                "id": str(uuid7()), "snapshot_json": snapshot, "redaction_version": version,
+                "redaction_count": count, "expires_at": expiry,
+            })
+        else:
+            self._db.delete_feedback_snapshot(feedback["id"], user_id)
+        return feedback
+
+    def list_feedback(self, user_id: str, thread_id: str) -> list[dict]:
+        """List the current user's metadata-only feedback for an owned conversation."""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.list_feedback(user_id, conv["id"])
+
+    def delete_feedback(self, user_id: str, message_id: str) -> bool:
+        """Hard-delete feedback/snapshot and record content-free deletion metadata."""
+        self._feedback_target(user_id, message_id)
+        deleted = self._db.delete_feedback(user_id, message_id)
+        self._db.insert_audit(user_id, "feedback.deleted", "message_feedback", message_id, {
+            "deleted": deleted,
+        })
+        return deleted
 
     # ── regeneration idempotency ──
 

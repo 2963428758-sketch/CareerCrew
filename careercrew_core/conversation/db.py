@@ -200,6 +200,27 @@ class ConversationDb(ABC):
     def insert_tool_call(self, tool_call_id: str, run_id: str, tool_name: str,
                          fields: dict) -> dict: ...
 
+    # ── feedback / privacy snapshots ──
+
+    @abstractmethod
+    def upsert_feedback(self, user_id: str, fields: dict) -> dict: ...
+
+    @abstractmethod
+    def list_feedback(self, user_id: str, thread_id: str) -> list[dict]: ...
+
+    @abstractmethod
+    def upsert_feedback_snapshot(self, feedback_id: str, user_id: str, fields: dict) -> dict: ...
+
+    @abstractmethod
+    def delete_feedback_snapshot(self, feedback_id: str, user_id: str) -> bool: ...
+
+    @abstractmethod
+    def delete_feedback(self, user_id: str, message_id: str) -> bool: ...
+
+    @abstractmethod
+    def insert_audit(self, actor_user_id: str, action: str, resource_type: str,
+                     resource_id: str, metadata: dict) -> dict: ...
+
 
 class PostgresConversationDb(ConversationDb):
     """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
@@ -328,6 +349,33 @@ class PostgresConversationDb(ConversationDb):
                 "user_id VARCHAR(64) NOT NULL, key VARCHAR(200) NOT NULL, "
                 "message_id UUID, created_at TIMESTAMPTZ NOT NULL, "
                 "UNIQUE(user_id, key))"
+            )
+            # Feedback domain: kept separate from conversation data so Phase 5 can
+            # grant narrowly-scoped reviewer access without exposing messages.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS message_feedback ("
+                "id UUID PRIMARY KEY, user_id VARCHAR(64) NOT NULL, thread_id UUID NOT NULL, "
+                "turn_id UUID NOT NULL, message_id UUID NOT NULL, run_id UUID NOT NULL, "
+                "rating VARCHAR(16) NOT NULL, reason VARCHAR(50), comment TEXT, "
+                "share_context BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL, "
+                "updated_at TIMESTAMPTZ NOT NULL, UNIQUE(user_id, message_id))"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS feedback_snapshots ("
+                "id UUID PRIMARY KEY, feedback_id UUID NOT NULL UNIQUE REFERENCES message_feedback(id) ON DELETE CASCADE, "
+                "user_id VARCHAR(64) NOT NULL, snapshot_json JSONB NOT NULL, "
+                "redaction_version VARCHAR(80) NOT NULL, redaction_count INTEGER NOT NULL, "
+                "expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS feedback_audit_log ("
+                "id UUID PRIMARY KEY, actor_user_id VARCHAR(64) NOT NULL, action VARCHAR(80) NOT NULL, "
+                "resource_type VARCHAR(80) NOT NULL, resource_id VARCHAR(128) NOT NULL, "
+                "metadata JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_feedback_user_thread "
+                "ON message_feedback(user_id, thread_id, updated_at DESC)"
             )
             # T1.6 上游预留：message_id 允许 NULL（预留时尚未生成最终 message），
             # 完成后回填。存量表迁移 DROP NOT NULL。
@@ -586,6 +634,18 @@ class PostgresConversationDb(ConversationDb):
                 "(SELECT id FROM messages WHERE thread_id=%s AND user_id=%s)",
                 (conversation_id, user_id),
             )
+            # Conversation deletion is an immediate privacy revocation for its
+            # feedback snapshots as well. Delete child rows explicitly so the
+            # operation remains correct if the FK is added to legacy databases later.
+            conn.execute(
+                "DELETE FROM feedback_snapshots WHERE feedback_id IN "
+                "(SELECT id FROM message_feedback WHERE thread_id=%s AND user_id=%s)",
+                (conversation_id, user_id),
+            )
+            conn.execute(
+                "DELETE FROM message_feedback WHERE thread_id=%s AND user_id=%s",
+                (conversation_id, user_id),
+            )
             # runs 关联的 retrievals / tool_calls 先删（按 run_id 子查询归属该 thread）
             conn.execute(
                 "DELETE FROM agent_run_tool_calls WHERE run_id IN "
@@ -798,6 +858,91 @@ class PostgresConversationDb(ConversationDb):
             )
         return {"id": tool_call_id, "run_id": run_id, "tool_name": tool_name, **fields}
 
+    # ── feedback / privacy snapshots ──
+
+    @_synchronized
+    def upsert_feedback(self, user_id, fields) -> dict:
+        with self._connect() as conn, conn.transaction():
+            now = _now()
+            conn.execute(
+                "INSERT INTO message_feedback (id, user_id, thread_id, turn_id, message_id, run_id, "
+                "rating, reason, comment, share_context, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (user_id, message_id) DO UPDATE SET rating=EXCLUDED.rating, "
+                "reason=EXCLUDED.reason, comment=EXCLUDED.comment, share_context=EXCLUDED.share_context, "
+                "thread_id=EXCLUDED.thread_id, turn_id=EXCLUDED.turn_id, run_id=EXCLUDED.run_id, "
+                "updated_at=EXCLUDED.updated_at",
+                (fields["id"], user_id, fields["thread_id"], fields["turn_id"], fields["message_id"],
+                 fields["run_id"], fields["rating"], fields.get("reason"), fields.get("comment"),
+                 fields["share_context"], now, now),
+            )
+            row = conn.execute(
+                "SELECT id, user_id, thread_id, turn_id, message_id, run_id, rating, reason, comment, "
+                "share_context, created_at, updated_at FROM message_feedback WHERE user_id=%s AND message_id=%s",
+                (user_id, fields["message_id"]),
+            ).fetchone()
+        return _row_to_dict(row) if row else {}
+
+    @_synchronized
+    def list_feedback(self, user_id, thread_id) -> list[dict]:
+        with self._connect() as conn, conn.transaction():
+            rows = conn.execute(
+                "SELECT id, message_id, rating, reason, comment, share_context, created_at, updated_at "
+                "FROM message_feedback WHERE user_id=%s AND thread_id=%s ORDER BY updated_at, id",
+                (user_id, thread_id),
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    @_synchronized
+    def upsert_feedback_snapshot(self, feedback_id, user_id, fields) -> dict:
+        with self._connect() as conn, conn.transaction():
+            now = _now()
+            snapshot_id = fields["id"]
+            conn.execute(
+                "INSERT INTO feedback_snapshots (id, feedback_id, user_id, snapshot_json, redaction_version, "
+                "redaction_count, expires_at, created_at) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s) "
+                "ON CONFLICT (feedback_id) DO UPDATE SET snapshot_json=EXCLUDED.snapshot_json, "
+                "redaction_version=EXCLUDED.redaction_version, redaction_count=EXCLUDED.redaction_count, "
+                "expires_at=EXCLUDED.expires_at, created_at=EXCLUDED.created_at",
+                (snapshot_id, feedback_id, user_id, _json_dumps(fields["snapshot_json"]),
+                 fields["redaction_version"], fields["redaction_count"], fields["expires_at"], now),
+            )
+            row = conn.execute(
+                "SELECT id, feedback_id, user_id, snapshot_json, redaction_version, redaction_count, expires_at, created_at "
+                "FROM feedback_snapshots WHERE feedback_id=%s AND user_id=%s", (feedback_id, user_id),
+            ).fetchone()
+        return _row_to_dict(row) if row else {}
+
+    @_synchronized
+    def delete_feedback_snapshot(self, feedback_id, user_id) -> bool:
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "DELETE FROM feedback_snapshots WHERE feedback_id=%s AND user_id=%s", (feedback_id, user_id)
+            )
+        return bool(cur.rowcount)
+
+    @_synchronized
+    def delete_feedback(self, user_id, message_id) -> bool:
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "DELETE FROM message_feedback WHERE user_id=%s AND message_id=%s", (user_id, message_id)
+            )
+        return bool(cur.rowcount)
+
+    @_synchronized
+    def insert_audit(self, actor_user_id, action, resource_type, resource_id, metadata) -> dict:
+        row = {"id": str(uuid7()), "actor_user_id": actor_user_id, "action": action,
+               "resource_type": resource_type, "resource_id": resource_id,
+               "metadata": metadata, "created_at": _now()}
+        with self._connect() as conn, conn.transaction():
+            conn.execute(
+                "INSERT INTO feedback_audit_log (id, actor_user_id, action, resource_type, resource_id, metadata, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)",
+                (row["id"], row["actor_user_id"], row["action"], row["resource_type"], row["resource_id"],
+                 _json_dumps(row["metadata"]), row["created_at"]),
+            )
+        return row
+
 
 class FakeConversationDb(ConversationDb):
     """内存实现（单测用），接口与 PostgresConversationDb 一致。"""
@@ -812,6 +957,9 @@ class FakeConversationDb(ConversationDb):
         self._retrievals: dict[str, dict] = {}
         self._tool_calls: dict[str, dict] = {}
         self._regenerations: dict[tuple[str, str], str | None] = {}
+        self._feedback: dict[tuple[str, str], dict] = {}
+        self._snapshots: dict[str, dict] = {}
+        self._audit: list[dict] = []
 
     # ── conversations ──
 
@@ -954,6 +1102,13 @@ class FakeConversationDb(ConversationDb):
         # 作用域限定为受影响的 thread。
         message_ids = {mid for mid, m in self._messages.items()
                        if m["thread_id"] == conversation_id and m["user_id"] == user_id}
+        feedback_ids = [row["id"] for row in self._feedback.values()
+                        if row["thread_id"] == conversation_id and row["user_id"] == user_id]
+        for feedback_id in feedback_ids:
+            self._snapshots.pop(feedback_id, None)
+        for key, row in list(self._feedback.items()):
+            if row["thread_id"] == conversation_id and row["user_id"] == user_id:
+                self._feedback.pop(key, None)
         for mid in message_ids:
             for key, val in list(self._regenerations.items()):
                 if val == mid:
@@ -1074,6 +1229,61 @@ class FakeConversationDb(ConversationDb):
     def insert_tool_call(self, tool_call_id, run_id, tool_name, fields) -> dict:
         row = {"id": tool_call_id, "run_id": run_id, "tool_name": tool_name, **fields}
         self._tool_calls[tool_call_id] = row
+        return dict(row)
+
+    # ── feedback / privacy snapshots ──
+
+    def upsert_feedback(self, user_id, fields) -> dict:
+        key = (user_id, fields["message_id"])
+        old = self._feedback.get(key)
+        now = _now()
+        row = {
+            "id": (old or fields)["id"], "user_id": user_id,
+            "thread_id": fields["thread_id"], "turn_id": fields["turn_id"],
+            "message_id": fields["message_id"], "run_id": fields["run_id"],
+            "rating": fields["rating"], "reason": fields.get("reason"),
+            "comment": fields.get("comment"), "share_context": fields["share_context"],
+            "created_at": (old or {}).get("created_at", now), "updated_at": now,
+        }
+        self._feedback[key] = row
+        return dict(row)
+
+    def list_feedback(self, user_id, thread_id) -> list[dict]:
+        rows = [row for row in self._feedback.values()
+                if row["user_id"] == user_id and row["thread_id"] == thread_id]
+        rows.sort(key=lambda row: (row["updated_at"], row["id"]))
+        return [dict(row) for row in rows]
+
+    def upsert_feedback_snapshot(self, feedback_id, user_id, fields) -> dict:
+        old = self._snapshots.get(feedback_id)
+        row = {
+            "id": (old or fields)["id"], "feedback_id": feedback_id, "user_id": user_id,
+            "snapshot_json": fields["snapshot_json"], "redaction_version": fields["redaction_version"],
+            "redaction_count": fields["redaction_count"], "expires_at": fields["expires_at"],
+            "created_at": _now(),
+        }
+        self._snapshots[feedback_id] = row
+        return dict(row)
+
+    def delete_feedback_snapshot(self, feedback_id, user_id) -> bool:
+        row = self._snapshots.get(feedback_id)
+        if row is None or row["user_id"] != user_id:
+            return False
+        del self._snapshots[feedback_id]
+        return True
+
+    def delete_feedback(self, user_id, message_id) -> bool:
+        row = self._feedback.pop((user_id, message_id), None)
+        if row is None:
+            return False
+        self._snapshots.pop(row["id"], None)
+        return True
+
+    def insert_audit(self, actor_user_id, action, resource_type, resource_id, metadata) -> dict:
+        row = {"id": str(uuid7()), "actor_user_id": actor_user_id, "action": action,
+               "resource_type": resource_type, "resource_id": resource_id,
+               "metadata": dict(metadata), "created_at": _now()}
+        self._audit.append(row)
         return dict(row)
 
 

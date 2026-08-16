@@ -44,6 +44,9 @@ def store_and_db():
     yield ConversationStore(db), db
     # 清理本测试创建的数据（用随机 user_id 避免跨测试串扰）
     with psycopg.connect(DSN) as conn, conn.transaction():
+        conn.execute("DELETE FROM feedback_snapshots")
+        conn.execute("DELETE FROM message_feedback")
+        conn.execute("DELETE FROM feedback_audit_log")
         conn.execute("DELETE FROM agent_run_tool_calls")
         conn.execute("DELETE FROM agent_run_retrievals")
         conn.execute("DELETE FROM agent_runs")
@@ -65,6 +68,9 @@ def test_tables_exist(store_and_db):
             "agent_runs",
             "agent_run_retrievals",
             "agent_run_tool_calls",
+            "message_feedback",
+            "feedback_snapshots",
+            "feedback_audit_log",
         ):
             row = conn.execute(
                 "SELECT 1 FROM information_schema.tables WHERE table_name = %s", (table,)
@@ -293,3 +299,25 @@ def test_effective_tools_roundtrip(store_and_db):
     runs = db.list_runs(uid, run["thread_id"])
     with_eff = [r for r in runs if r["effective_tools"] is not None]
     assert any(r["effective_tools"] == ["rag_query", "profile_update"] for r in with_eff)
+
+
+def test_feedback_snapshot_postgres_roundtrip(store_and_db):
+    """Focused real-Postgres check: upsert + 90-day authorized snapshot are durable."""
+    store, _ = store_and_db
+    uid = "u_feedback_pg"
+    _, _, _, assistant, _ = _begin_chat_turn(store, uid)
+    store.set_message_content(uid, assistant["id"], "mail a@b.com")
+    feedback = store.put_feedback(
+        uid, assistant["id"], rating="negative", reason="incorrect",
+        comment="bad", share_context=True,
+    )
+    import psycopg
+
+    with psycopg.connect(DSN) as conn:
+        row = conn.execute(
+            "SELECT snapshot_json, expires_at FROM feedback_snapshots WHERE feedback_id=%s",
+            (feedback["id"],),
+        ).fetchone()
+    assert row is not None
+    assert "a@b.com" not in str(row[0])
+    assert row[1] is not None
