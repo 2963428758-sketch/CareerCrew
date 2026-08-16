@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from careercrew_core.feedback.redaction import redact_value
+from careercrew_core.feedback.redaction import redact
 
 MAX_SNAPSHOT_CHARS = 12_000
 
@@ -21,22 +21,38 @@ def build_snapshot(messages: list[dict[str, Any]], rated: dict[str, Any]) -> tup
 
     rated_turn = rated["turn_id"]
     prior_turns = turn_order[:turn_order.index(rated_turn)][-2:]
-    selected = [m for m in by_turn[rated_turn] if m["role"] == "user"]
-    selected.append(rated)
+    current_user = [m for m in by_turn[rated_turn] if m["role"] == "user"][-1:]
+    selected = current_user + [rated]
     for turn_id in reversed(prior_turns):
         selected.extend(by_turn[turn_id])
 
-    captured: list[dict] = []
-    remaining = MAX_SNAPSHOT_CHARS
+    redacted = []
+    count = 0
     for message in selected:
-        content = str(message.get("content") or "")
-        if remaining <= 0:
-            break
-        content = content[:remaining]
-        remaining -= len(content)
+        result = redact(str(message.get("content") or ""))
+        redacted.append((message, result.text))
+        count += result.count
+
+    captured: list[dict] = []
+    current_pair = redacted[:2]
+    half_budget = MAX_SNAPSHOT_CHARS // 2
+    current_lengths = [min(len(content), half_budget) for _message, content in current_pair]
+    remaining = MAX_SNAPSHOT_CHARS - sum(current_lengths)
+    for index, (_message, content) in enumerate(current_pair):
+        additional = min(len(content) - current_lengths[index], remaining)
+        current_lengths[index] += additional
+        remaining -= additional
+    for (message, content), length in zip(current_pair, current_lengths):
         captured.append({
-            "role": message["role"], "content": content,
+            "role": message["role"], "content": content[:length],
             "turn_id": message["turn_id"], "message_id": message["id"],
         })
-    snapshot, count, _rules, version = redact_value({"messages": captured})
-    return snapshot, count, version
+    for message, content in redacted[2:]:
+        if remaining <= 0:
+            break
+        captured.append({
+            "role": message["role"], "content": content[:remaining],
+            "turn_id": message["turn_id"], "message_id": message["id"],
+        })
+        remaining -= min(len(content), remaining)
+    return {"messages": captured}, count, "feedback_snapshot.v1"

@@ -321,6 +321,10 @@ class ConversationStore:
 
     def _feedback_target(self, user_id: str, message_id: str) -> dict:
         """Resolve an eligible assistant result without revealing foreign messages."""
+        try:
+            message_id = str(UUID(message_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise OwnershipError("feedback target is not available") from exc
         message = self._db.get_message(user_id, message_id)
         if (message is None or message.get("role") != "assistant"
                 or message.get("status") != "completed" or not message.get("run_id")):
@@ -336,22 +340,20 @@ class ConversationStore:
                      reason: str | None, comment: str | None, share_context: bool) -> dict:
         """Upsert feedback, deriving every relationship from the owned assistant message."""
         message = self._feedback_target(user_id, message_id)
-        feedback = self._db.upsert_feedback(user_id, {
-            "id": str(uuid7()), "thread_id": message["thread_id"], "turn_id": message["turn_id"],
-            "message_id": message["id"], "run_id": message["run_id"], "rating": rating,
-            "reason": reason, "comment": comment, "share_context": share_context,
-        })
+        snapshot_fields = None
         if rating == "negative" and share_context:
             messages = self._db.list_messages(user_id, message["thread_id"])
             snapshot, count, version = build_snapshot(messages, message)
-            expiry = (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
-            self._db.upsert_feedback_snapshot(feedback["id"], user_id, {
+            snapshot_fields = {
                 "id": str(uuid7()), "snapshot_json": snapshot, "redaction_version": version,
-                "redaction_count": count, "expires_at": expiry,
-            })
-        else:
-            self._db.delete_feedback_snapshot(feedback["id"], user_id)
-        return feedback
+                "redaction_count": count,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
+            }
+        return self._db.replace_feedback_with_snapshot(user_id, {
+            "id": str(uuid7()), "thread_id": message["thread_id"], "turn_id": message["turn_id"],
+            "message_id": message["id"], "run_id": message["run_id"], "rating": rating,
+            "reason": reason, "comment": comment, "share_context": share_context,
+        }, snapshot_fields)
 
     def list_feedback(self, user_id: str, thread_id: str) -> list[dict]:
         """List the current user's metadata-only feedback for an owned conversation."""
@@ -360,12 +362,8 @@ class ConversationStore:
 
     def delete_feedback(self, user_id: str, message_id: str) -> bool:
         """Hard-delete feedback/snapshot and record content-free deletion metadata."""
-        self._feedback_target(user_id, message_id)
-        deleted = self._db.delete_feedback(user_id, message_id)
-        self._db.insert_audit(user_id, "feedback.deleted", "message_feedback", message_id, {
-            "deleted": deleted,
-        })
-        return deleted
+        message = self._feedback_target(user_id, message_id)
+        return self._db.delete_feedback_with_audit(user_id, message["id"], {"deleted": None})
 
     # ── regeneration idempotency ──
 

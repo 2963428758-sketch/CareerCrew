@@ -221,6 +221,14 @@ class ConversationDb(ABC):
     def insert_audit(self, actor_user_id: str, action: str, resource_type: str,
                      resource_id: str, metadata: dict) -> dict: ...
 
+    @abstractmethod
+    def replace_feedback_with_snapshot(self, user_id: str, fields: dict,
+                                       snapshot_fields: dict | None) -> dict: ...
+
+    @abstractmethod
+    def delete_feedback_with_audit(self, user_id: str, message_id: str,
+                                   metadata: dict) -> bool: ...
+
 
 class PostgresConversationDb(ConversationDb):
     """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
@@ -943,6 +951,71 @@ class PostgresConversationDb(ConversationDb):
             )
         return row
 
+    @_synchronized
+    def replace_feedback_with_snapshot(self, user_id, fields, snapshot_fields) -> dict:
+        """Persist the current consent state and its snapshot in one transaction."""
+        if fields["rating"] != "negative" or not fields["share_context"]:
+            snapshot_fields = None
+        with self._connect() as conn, conn.transaction():
+            now = _now()
+            conn.execute(
+                "INSERT INTO message_feedback (id, user_id, thread_id, turn_id, message_id, run_id, "
+                "rating, reason, comment, share_context, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (user_id, message_id) DO UPDATE SET rating=EXCLUDED.rating, "
+                "reason=EXCLUDED.reason, comment=EXCLUDED.comment, share_context=EXCLUDED.share_context, "
+                "thread_id=EXCLUDED.thread_id, turn_id=EXCLUDED.turn_id, run_id=EXCLUDED.run_id, "
+                "updated_at=EXCLUDED.updated_at",
+                (fields["id"], user_id, fields["thread_id"], fields["turn_id"], fields["message_id"],
+                 fields["run_id"], fields["rating"], fields.get("reason"), fields.get("comment"),
+                 fields["share_context"], now, now),
+            )
+            row = conn.execute(
+                "SELECT id, user_id, thread_id, turn_id, message_id, run_id, rating, reason, comment, "
+                "share_context, created_at, updated_at FROM message_feedback WHERE user_id=%s AND message_id=%s",
+                (user_id, fields["message_id"]),
+            ).fetchone()
+            feedback = _row_to_dict(row) if row else {}
+            if snapshot_fields is None:
+                conn.execute("DELETE FROM feedback_snapshots WHERE feedback_id=%s AND user_id=%s", (feedback["id"], user_id))
+            else:
+                conn.execute(
+                    "INSERT INTO feedback_snapshots (id, feedback_id, user_id, snapshot_json, redaction_version, "
+                    "redaction_count, expires_at, created_at) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s) "
+                    "ON CONFLICT (feedback_id) DO UPDATE SET snapshot_json=EXCLUDED.snapshot_json, "
+                    "redaction_version=EXCLUDED.redaction_version, redaction_count=EXCLUDED.redaction_count, "
+                    "expires_at=EXCLUDED.expires_at, created_at=EXCLUDED.created_at",
+                    (snapshot_fields["id"], feedback["id"], user_id, _json_dumps(snapshot_fields["snapshot_json"]),
+                     snapshot_fields["redaction_version"], snapshot_fields["redaction_count"],
+                     snapshot_fields["expires_at"], now),
+                )
+        return feedback
+
+    @_synchronized
+    def delete_feedback_with_audit(self, user_id, message_id, metadata) -> bool:
+        """Delete feedback/snapshot and add its audit row as one transaction."""
+        audit = {"id": str(uuid7()), "actor_user_id": user_id, "action": "feedback.deleted",
+                 "resource_type": "message_feedback", "resource_id": message_id,
+                 "metadata": dict(metadata), "created_at": _now()}
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "SELECT id FROM message_feedback WHERE user_id=%s AND message_id=%s FOR UPDATE",
+                (user_id, message_id),
+            ).fetchone()
+            deleted = row is not None
+            if audit["metadata"].get("deleted") is None:
+                audit["metadata"]["deleted"] = deleted
+            if row:
+                conn.execute("DELETE FROM feedback_snapshots WHERE feedback_id=%s AND user_id=%s", (row["id"], user_id))
+                conn.execute("DELETE FROM message_feedback WHERE id=%s AND user_id=%s", (row["id"], user_id))
+            conn.execute(
+                "INSERT INTO feedback_audit_log (id, actor_user_id, action, resource_type, resource_id, metadata, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)",
+                (audit["id"], audit["actor_user_id"], audit["action"], audit["resource_type"], audit["resource_id"],
+                 _json_dumps(audit["metadata"]), audit["created_at"]),
+            )
+        return deleted
+
 
 class FakeConversationDb(ConversationDb):
     """内存实现（单测用），接口与 PostgresConversationDb 一致。"""
@@ -1285,6 +1358,56 @@ class FakeConversationDb(ConversationDb):
                "metadata": dict(metadata), "created_at": _now()}
         self._audit.append(row)
         return dict(row)
+
+    def replace_feedback_with_snapshot(self, user_id, fields, snapshot_fields) -> dict:
+        """Fake equivalent of the Postgres all-or-nothing consent write."""
+        if fields["rating"] != "negative" or not fields["share_context"]:
+            snapshot_fields = None
+        with self.write_lock:
+            key = (user_id, fields["message_id"])
+            old = self._feedback.get(key)
+            now = _now()
+            feedback = {
+                "id": (old or fields)["id"], "user_id": user_id,
+                "thread_id": fields["thread_id"], "turn_id": fields["turn_id"],
+                "message_id": fields["message_id"], "run_id": fields["run_id"],
+                "rating": fields["rating"], "reason": fields.get("reason"),
+                "comment": fields.get("comment"), "share_context": fields["share_context"],
+                "created_at": (old or {}).get("created_at", now), "updated_at": now,
+            }
+            snapshot = None
+            if snapshot_fields is not None:
+                _json_dumps(snapshot_fields["snapshot_json"])
+                existing = self._snapshots.get(feedback["id"])
+                snapshot = {
+                    "id": (existing or snapshot_fields)["id"], "feedback_id": feedback["id"], "user_id": user_id,
+                    "snapshot_json": snapshot_fields["snapshot_json"],
+                    "redaction_version": snapshot_fields["redaction_version"],
+                    "redaction_count": snapshot_fields["redaction_count"],
+                    "expires_at": snapshot_fields["expires_at"], "created_at": now,
+                }
+            self._feedback[key] = feedback
+            if snapshot is None:
+                self._snapshots.pop(feedback["id"], None)
+            else:
+                self._snapshots[feedback["id"]] = snapshot
+            return dict(feedback)
+
+    def delete_feedback_with_audit(self, user_id, message_id, metadata) -> bool:
+        """Fake equivalent of the Postgres atomic deletion/audit transaction."""
+        with self.write_lock:
+            audit = {"id": str(uuid7()), "actor_user_id": user_id, "action": "feedback.deleted",
+                     "resource_type": "message_feedback", "resource_id": message_id,
+                     "metadata": dict(metadata), "created_at": _now()}
+            _json_dumps(audit["metadata"])
+            row = self._feedback.get((user_id, message_id))
+            if audit["metadata"].get("deleted") is None:
+                audit["metadata"]["deleted"] = row is not None
+            if row is not None:
+                del self._feedback[(user_id, message_id)]
+                self._snapshots.pop(row["id"], None)
+            self._audit.append(audit)
+            return row is not None
 
 
 def create_conversation_db(settings) -> ConversationDb:

@@ -321,3 +321,63 @@ def test_feedback_snapshot_postgres_roundtrip(store_and_db):
     assert row is not None
     assert "a@b.com" not in str(row[0])
     assert row[1] is not None
+
+
+def test_feedback_snapshot_postgres_failure_rolls_back_to_current_consent(store_and_db):
+    """A failed replacement cannot leave a snapshot beyond the committed consent row."""
+    store, db = store_and_db
+    uid = "u_feedback_pg_rollback"
+    conv, turn, _user, assistant, run = _begin_chat_turn(store, uid)
+    assistant = store.set_message_content(uid, assistant["id"], "answer")
+    store.set_message_status(uid, assistant["id"], "completed")
+    feedback = store.put_feedback(
+        uid, assistant["id"], rating="negative", reason="incorrect",
+        comment=None, share_context=True,
+    )
+    bad_snapshot = {
+        "id": "not-a-uuid", "snapshot_json": {"messages": []},
+        "redaction_version": "feedback_snapshot.v1", "redaction_count": 0,
+        "expires_at": "2026-01-01T00:00:00+00:00",
+    }
+    fields = {
+        "id": feedback["id"], "thread_id": conv["id"], "turn_id": turn["id"],
+        "message_id": assistant["id"], "run_id": run["id"], "rating": "negative",
+        "reason": "incorrect", "comment": None, "share_context": True,
+    }
+    with pytest.raises(Exception):
+        db.replace_feedback_with_snapshot(uid, fields, bad_snapshot)
+
+    import psycopg
+    with psycopg.connect(DSN) as conn:
+        row = conn.execute(
+            "SELECT f.share_context, s.feedback_id FROM message_feedback f "
+            "LEFT JOIN feedback_snapshots s ON s.feedback_id=f.id "
+            "WHERE f.user_id=%s AND f.message_id=%s", (uid, assistant["id"]),
+        ).fetchone()
+    assert row[0] is True
+    assert str(row[1]) == feedback["id"]
+
+
+def test_feedback_delete_postgres_audit_failure_rolls_back(store_and_db):
+    """Audit insertion failure restores both feedback and its authorized snapshot."""
+    store, db = store_and_db
+    uid = "u_feedback_pg_delete_rollback"
+    _conv, _turn, _user, assistant, _run = _begin_chat_turn(store, uid)
+    assistant = store.set_message_content(uid, assistant["id"], "answer")
+    store.set_message_status(uid, assistant["id"], "completed")
+    feedback = store.put_feedback(
+        uid, assistant["id"], rating="negative", reason="incorrect",
+        comment=None, share_context=True,
+    )
+    with pytest.raises(TypeError):
+        db.delete_feedback_with_audit(uid, assistant["id"], {"deleted": object()})
+
+    import psycopg
+    with psycopg.connect(DSN) as conn:
+        row = conn.execute(
+            "SELECT f.id, s.feedback_id FROM message_feedback f "
+            "LEFT JOIN feedback_snapshots s ON s.feedback_id=f.id "
+            "WHERE f.user_id=%s AND f.message_id=%s", (uid, assistant["id"]),
+        ).fetchone()
+    assert str(row[0]) == feedback["id"]
+    assert str(row[1]) == feedback["id"]

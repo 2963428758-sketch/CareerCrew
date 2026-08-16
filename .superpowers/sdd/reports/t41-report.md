@@ -47,3 +47,33 @@ are guarded by `POSTGRES_TEST_DSN`, which was not configured in this checkout.
 
 No frontend persistence wiring, reviewer/dashboard access, Bad Case workflow,
 or evaluation work was added; these remain T4.2/Phase 5/Phase 6 scope.
+
+## Fix round — review Critical/Important findings
+
+- Replaced the store-level feedback sequence with two persistence-level atomic
+  operations. Postgres now performs feedback upsert plus snapshot replacement
+  or revocation in one transaction, and feedback/snapshot deletion plus its
+  audit insert in another. The Fake backend holds its write lock, validates the
+  complete resulting state before mutation, and enforces that only negative
+  feedback with `share_context=true` can retain a snapshot.
+- Snapshot assembly now redacts every complete source string before any length
+  limit. The current rated user/assistant pair receives the whole 12,000-char
+  budget first (a 6,000-char reservation each when both overflow); only the
+  unused portion can include the latest two prior turns. Local path redaction
+  now includes `/opt`, `/srv`, and `/mnt`, while preserving root and sensitive
+  value boundaries.
+- Feedback message IDs are normalized as UUIDs at the store boundary; malformed
+  IDs follow the same ownership-safe 404 path as missing and foreign messages,
+  rather than reaching Postgres UUID coercion.
+
+### Fix verification
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path
+& 'F:\Python_develop\miniconda3\envs\careercrew\python.exe' -m pytest tests/unit/test_feedback_redaction.py tests/unit/test_feedback_persistence.py tests/api/test_feedback_api.py tests/api/test_thread_scope_api.py tests/integration/test_conversation_pg.py -q
+```
+
+Result: `28 passed, 14 skipped`. The skipped tests are the real-Postgres module,
+including replacement and deletion rollback assertions, because
+`POSTGRES_TEST_DSN` is not configured in this checkout. `compileall` and
+`git diff --check` also passed.

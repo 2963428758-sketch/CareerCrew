@@ -9,17 +9,17 @@ _VERSION = "feedback_snapshot.v1"
 _MASK = "[REDACTED]"
 _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("email", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
-    ("phone", re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")),
-    ("china_id", re.compile(r"(?<![\dXx])\d{17}[\dXx](?![\dXx])")),
+    ("phone", re.compile(r"(?<![A-Za-z0-9])(?:\+?86[- ]?)?1[3-9]\d{9}(?![A-Za-z0-9])")),
+    ("china_id", re.compile(r"(?<![A-Za-z0-9])\d{17}[\dXx](?![A-Za-z0-9])")),
     ("passport", re.compile(r"\b(?:[EG]\d{8}|[A-Z]{2}\d{7})\b")),
     ("api_key", re.compile(r"\b(?:sk|pk|rk|AKIA)[-_A-Za-z0-9]{8,}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")),
     ("bearer", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~-]+")),
     ("credential", re.compile(r"(?i)\b(?:access[_-]?key|secret|password|passwd|token|api[_-]?key)\s*[:=]\s*\S+")),
     ("database_url", re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s]+")),
-    ("windows_path", re.compile(r"(?i)\b[A-Z]:\\(?:[^<>:\"|?*\r\n]+\\?)*[^<>:\"|?*\r\n]*")),
-    ("unix_path", re.compile(r"(?<!\w)/(?:home|Users|tmp|var|etc)(?:/[^\s'\"<>]*)?")),
-    ("user_home", re.compile(r"(?i)(?:~[\\/]|%USERPROFILE%[\\/]|\$HOME[\\/])[^\s'\"<>]*")),
+    ("windows_path", re.compile(r"(?i)(?<![A-Za-z0-9_])[A-Z]:\\(?:[^\s<>:\"|?*\\;]+\\?)*[^\s<>:\"|?*\\;]*")),
+    ("unix_path", re.compile(r"(?<!\w)/(?:home|Users|opt|srv|mnt|tmp|var|etc)(?=$|[/\s'\"<>;])(?:/[^\s'\"<>;]*)?")),
+    ("user_home", re.compile(r"(?i)(?:~[\\/]|%USERPROFILE%[\\/]|\$HOME[\\/])[^\s'\"<>;]*")),
 )
 
 

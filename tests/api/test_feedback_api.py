@@ -65,6 +65,16 @@ def test_feedback_rejects_ineligible_messages_and_invalid_combinations(tenant_ap
 
 
 @pytest.mark.web
+@pytest.mark.parametrize("message_id", ["not-a-uuid", "also-not-a-uuid", "00000000-0000-0000-0000-000000000000x"])
+def test_feedback_malformed_message_id_is_not_found(tenant_api, message_id):
+    client, _runtime, headers, _ids = tenant_api
+    assert client.put(f"/api/messages/{message_id}/feedback", headers=headers["alice"], json={
+        "rating": "positive",
+    }).status_code == 404
+    assert client.delete(f"/api/messages/{message_id}/feedback", headers=headers["alice"]).status_code == 404
+
+
+@pytest.mark.web
 def test_snapshot_redaction_bounds_replacement_and_deletion_audit(tenant_api):
     client, runtime, headers, ids = tenant_api
     first, conv = _assistant(runtime, ids["alice"], "feedback-snapshot", "old one", "old answer")
