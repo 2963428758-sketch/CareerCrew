@@ -21,7 +21,7 @@ from __future__ import annotations
 #
 # 与 `_make_tools(kind)` 的 per-kind 构造保持 1:1 对齐（kind↔module 映射见下方注释）：
 #   matcher→matcher, resume→resume, knowledge→knowledge,
-#   interviewer→interview, salary→salary, planner→chat
+#   interviewer→interview, salary→salary, planner→chat, consult→五位顾问的并集
 # 任一 module 声明的集合必须严格等于 `_make_tools` 实际 register 的 tool 名集合，
 # 否则 `_server_allowlist`（registry ∩ module）会在默认路径漏裁/多裁，导致
 # recorded effective_tools 与真正 bound 的工具集合漂移（review Important 3）。
@@ -29,11 +29,14 @@ MODULE_TOOLS: dict[str, list[str]] = {
     # chat=planner：实际构造 rag_query/profile_update/memory_search/salary_query，
     # 不构造 memory_write/read_image——已从声明中移除，避免记录多报。
     "chat": ["rag_query", "memory_search", "profile_update", "salary_query"],
-    "matcher": ["search_jobs", "rag_query", "memory_write", "memory_search", "profile_update"],
+    "matcher": ["search_jobs", "rag_query", "memory_write", "memory_search", "profile_update", "submit_application"],
     "resume": ["rag_query", "profile_update"],
     "knowledge": ["rag_query", "read_image", "memory_search"],
     "interview": ["rag_query", "memory_write", "memory_search"],
     "salary": ["rag_query", "profile_update", "memory_search", "salary_query"],
+    # consult 会调度 salary/planner/matcher/resume/interviewer；只声明这些顾问
+    # 实际可构造工具的并集，不能把 knowledge-only read_image、MCP 等写入 run。
+    "consult": ["rag_query", "memory_search", "memory_write", "profile_update", "search_jobs", "salary_query", "submit_application"],
 }
 
 # 工具 id -> 人类可读显示名（未登记回退 id 本身）。
@@ -45,6 +48,7 @@ TOOL_LABELS: dict[str, str] = {
     "salary_query": "Salary Query",
     "read_image": "Read Image",
     "search_jobs": "Search Jobs",
+    "submit_application": "Submit Application",
 }
 
 

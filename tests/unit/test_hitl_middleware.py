@@ -1,6 +1,8 @@
 """T3.5 HITL 拦截中间件测试（block-and-record，无 approve/reject 恢复）。"""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
@@ -103,3 +105,69 @@ def test_observability_maps_blocked_to_awaiting_confirmation() -> None:
         "error_type": None,
         "error_summary": None,
     }]
+
+
+def test_real_runtime_bound_hitl_tool_is_blocked_and_persisted() -> None:
+    """生产 Runtime 的 matcher 真实绑定投递工具，HITL 短路后写入 run tool-call。
+
+    这里刻意不用 API FakeRuntime：验证 ``CareerCrewRuntime._make_tools`` 的实际
+    注册、``build_agent/run_agent`` 的调用链，以及 ``_finish_chat_turn`` 的持久化闭环。
+    """
+    from careercrew_api.runtime import CareerCrewRuntime, _observability_from_result
+    from careercrew_core.conversation.db import FakeConversationDb
+    from careercrew_core.conversation.store import ConversationStore
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.episodic import EpisodicMemory
+    from careercrew_core.memory.router import MemoryRouter
+
+    memory_db = FakeMemoryDb()
+    rt = CareerCrewRuntime()
+    rt._initialized = True  # 仅跳过重组件加载；以下均为生产 Runtime 所需的显式依赖。
+    rt.memory_db = memory_db
+    rt.memory_router = MemoryRouter()
+    rt.multimodal_search = object()
+    rt.embedding = None  # vectorize 关闭时 _make_vector_index 的正常降级路径
+    rt.conversation_store = ConversationStore(FakeConversationDb())
+    rt.settings = SimpleNamespace(
+        llm=SimpleNamespace(model="test-model"),
+        memory=SimpleNamespace(episodic=SimpleNamespace(vectorize=False)),
+        tools=SimpleNamespace(
+            registry=SimpleNamespace(
+                internal=["rag_query", "memory_search", "memory_write", "profile_update",
+                          "search_jobs", "salary_query", "read_image", "submit_application"],
+                mcp=[],
+            ),
+            hitl=SimpleNamespace(requires_confirmation=["submit_application"]),
+        ),
+    )
+    episodic = EpisodicMemory(memory_db, user_id="u-production", thread_id="hitl-production")
+    effective = rt.compute_effective_tools("matcher", ["submit_application"])
+    registry = rt._make_tools("matcher", episodic=episodic, allowed=effective)
+    assert registry.list_names() == ["submit_application"]
+
+    llm = FakeChatModel([
+        AIMessage(content="", tool_calls=[_tc("submit_application", {
+            "company": "字节", "title": "大模型工程师",
+        })]),
+        AIMessage(content="等待确认后才能投递"),
+    ])
+    agent = build_agent(
+        llm=llm, tools=registry.bindable_tools(), system_prompt="sys", max_iterations=5,
+        hitl_requires=rt._hitl_requires(),
+    )
+    result = run_agent(agent, [HumanMessage(content="投递字节")])
+    assert result.blocked_tool_calls == [{
+        "name": "submit_application",
+        "args": {"company": "字节", "title": "大模型工程师"},
+    }]
+
+    ctx = rt._begin_chat_turn(
+        "hitl-production", "u-production", module="matcher", agent_id="job_matcher",
+        user_text="投递字节", effective_tools=effective,
+    )
+    rt._finish_chat_turn(ctx, result.content, tool_calls=_observability_from_result(result)["tool_calls"])
+    calls = [c for c in rt.conversation_store._db._tool_calls.values() if c["run_id"] == ctx.run_id]
+    assert len(calls) == 1
+    assert calls[0]["status"] == "awaiting_confirmation"
+    assert calls[0]["hitl_status"] == "pending"
+    assert calls[0]["requires_hitl"] is True

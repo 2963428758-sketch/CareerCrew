@@ -205,10 +205,10 @@ def test_consult_skips_known_profile_fields(client, fake_runtime):
 
 @pytest.mark.web
 def test_consult_tools_outside_allowlist_clipped(client, fake_runtime):
-    """Important 2：consult 请求 tools 含 server 不允许的 id → effective_tools 不含它。"""
+    """consult recorded effective_tools 是顾问工具并集的请求子集，绝不含其他 registry 项。"""
     resp = client.post("/api/consult", json={
         "question": "30K 字节跳动 offer 要不要接？",
-        "tools": ["rag_query", "evil_tool", "salary_query"],
+        "tools": ["rag_query", "evil_tool", "salary_query", "read_image", "mcp_jobs"],
     })
     assert resp.status_code == 200
     events = _events(resp)
@@ -216,9 +216,20 @@ def test_consult_tools_outside_allowlist_clipped(client, fake_runtime):
     run_id = events[-1]["run_id"]
     run = fake_runtime.conversation_store._db.get_run("u_001", run_id)
     eff = run.get("effective_tools")
-    assert "evil_tool" not in eff
-    assert "rag_query" in eff
-    assert "salary_query" in eff
+    assert eff == ["rag_query", "salary_query"]
+
+
+@pytest.mark.web
+def test_consult_default_effective_tools_are_exact_advisor_union(client, fake_runtime):
+    """未指定 tools 时，persisted consult set 也只能是 advisor 实际绑定工具的并集。"""
+    resp = client.post("/api/consult", json={"question": "帮我评估下一步求职计划"})
+    assert resp.status_code == 200
+    run_id = _events(resp)[-1]["run_id"]
+    run = fake_runtime.conversation_store._db.get_run("u_001", run_id)
+    assert run["effective_tools"] == [
+        "rag_query", "memory_search", "memory_write", "profile_update",
+        "search_jobs", "salary_query", "submit_application",
+    ]
 
 
 @pytest.mark.web

@@ -133,7 +133,7 @@ def test_module_tools_align_with_make_tools_branches() -> None:
     # `_make_tools` 各 branch 实际 register 的工具名（与 runtime.py 一一对应）
     constructed = {
         "matcher": {"search_jobs", "rag_query", "memory_write", "memory_search",
-                    "profile_update"},
+                    "profile_update", "submit_application"},
         "resume": {"rag_query", "profile_update"},
         "interview": {"rag_query", "memory_write", "memory_search"},
         "salary": {"rag_query", "profile_update", "memory_search", "salary_query"},
@@ -151,6 +151,23 @@ def test_module_tools_align_with_make_tools_branches() -> None:
     assert "salary_query" in MODULE_TOOLS["chat"]
     assert "salary_query" in MODULE_TOOLS["salary"]
     assert "read_image" in MODULE_TOOLS["knowledge"]
+    assert "submit_application" in MODULE_TOOLS["matcher"]
     # chat=planner 不构造 memory_write/read_image，声明里不得保留（review Important 3）
     assert "memory_write" not in MODULE_TOOLS["chat"]
     assert "read_image" not in MODULE_TOOLS["chat"]
+
+
+def test_consult_module_tools_are_exact_advisor_union() -> None:
+    """consult 的 recorded set 只能包含五位顾问至少一位可实际构造的工具。"""
+    from careercrew_core.tools.capabilities import MODULE_TOOLS
+
+    advisor_union = (
+        set(MODULE_TOOLS["salary"])
+        | set(MODULE_TOOLS["chat"])
+        | set(MODULE_TOOLS["matcher"])
+        | set(MODULE_TOOLS["resume"])
+        | set(MODULE_TOOLS["interview"])
+    )
+    assert set(MODULE_TOOLS["consult"]) == advisor_union
+    assert "read_image" not in MODULE_TOOLS["consult"]
+    assert "mcp_jobs" not in MODULE_TOOLS["consult"]

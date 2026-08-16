@@ -90,11 +90,11 @@ class FakeRuntime:
                 "registry": type("RG", (), {
                     "internal": ["rag_query", "memory_search", "memory_write",
                                  "profile_update", "search_jobs", "salary_query",
-                                 "read_image"],
+                                 "read_image", "submit_application"],
                     "mcp": ["mcp_jobs"],
                 }),
                 "hitl": type("H", (), {
-                    "requires_confirmation": ["submit_application", "accept_offer"],
+                    "requires_confirmation": ["submit_application"],
                 }),
             }),
         })()

@@ -1425,6 +1425,7 @@ class CareerCrewRuntime:
         from careercrew_core.tools.internal.read_image import make_read_image_tool
         from careercrew_core.tools.internal.salary_query import make_salary_query_tool
         from careercrew_core.tools.internal.search_jobs import search_jobs
+        from careercrew_core.tools.mcp.mock_apply import submit_application
         from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
         if episodic is None:
@@ -1454,6 +1455,9 @@ class CareerCrewRuntime:
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="job_matcher")))
+            # T3.5 HITL MVP 的实际生产绑定：投递动作必须先经过
+            # HitlMiddleware；当前无 approve/reject 恢复协议时绝不执行工具函数。
+            tools.register(ToolSpec(tool=submit_application, requires_confirmation=True))
         elif kind == "resume":
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, categories=cats, filters={"user_id": user_id},
