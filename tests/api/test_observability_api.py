@@ -35,6 +35,7 @@ def test_knowledge_ask_persists_observability(client, fake_runtime):
                 "chunk_id": None,
                 "recall_score": 0.91,
                 "used_in_final_context": True,
+                "retrieval_source": "mention",
             },
         ],
     }
@@ -71,6 +72,33 @@ def test_knowledge_ask_persists_observability(client, fake_runtime):
     assert rets[0]["document_id"] == "doc-note"
     assert rets[0]["recall_score"] == 0.91
     assert rets[0]["used_in_final_context"] is True
+    assert rets[0]["retrieval_source"] == "mention"
     assert secret not in rets[0]["query_text_redacted"]
     assert "[REDACTED]" in rets[0]["query_text_redacted"]
     assert len(rets[0]["query_text_redacted"]) <= 220
+
+
+@pytest.mark.web
+def test_knowledge_ask_retrieval_defaults_to_auto(client, fake_runtime):
+    """无 mentions 时，retrieval 行 retrieval_source 默认 'auto'。"""
+    fake_runtime.knowledge_observability = {
+        "retrievals": [
+            {
+                "query_index": 0,
+                "query_text_redacted": "普通检索",
+                "scope": "all",
+                "document_id": "doc-note",
+                "chunk_id": None,
+                "recall_score": 0.8,
+                "used_in_final_context": True,
+            },
+        ],
+    }
+    resp = client.post("/api/knowledge/ask", json={"question": "RAG 的检索流程？"})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    run_id = events[-1]["run_id"]
+    store = fake_runtime.conversation_store
+    rets = [r for r in store._db._retrievals.values() if r["run_id"] == run_id]
+    assert len(rets) == 1
+    assert rets[0]["retrieval_source"] == "auto"

@@ -8,12 +8,13 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.schemas import MatchRequest, ResumeRequest
 from careercrew_api.sse import (
     CancellationEvent,
@@ -25,6 +26,18 @@ from careercrew_api.sse import (
 )
 
 router = APIRouter()
+
+
+def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dict]:
+    """T3.4 §15.2：mentions 服务端二次校验；拒绝越权引用 → 422。"""
+    if not mentions:
+        return []
+    try:
+        return rt.resolve_mentions(user_id, [m.model_dump() for m in mentions])
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -44,6 +57,8 @@ def match(
 ) -> StreamingResponse:
     """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
@@ -52,6 +67,7 @@ def match(
             nonlocal result
             res = rt.run_match_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
+                **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
@@ -86,6 +102,8 @@ def resume(
 ) -> StreamingResponse:
     """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
@@ -94,6 +112,7 @@ def resume(
             nonlocal result
             res = rt.run_resume_stream(
                 req.thread_id, current_user["id"], req.jd_text, cb,
+                **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
@@ -128,6 +147,8 @@ def plan(
 ) -> StreamingResponse:
     """求职对话：职业规划师主理（一站式画像/规划/匹配/简历/薪资），流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
@@ -136,6 +157,7 @@ def plan(
             nonlocal result
             res = rt.run_planner_chat_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
+                **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""

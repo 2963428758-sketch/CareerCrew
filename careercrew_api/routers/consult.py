@@ -11,12 +11,13 @@ import re
 import threading
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.schemas import ConsultRequest
 from careercrew_api.sse import (
     STREAM_IDLE_TIMEOUT_SECONDS,
@@ -121,6 +122,18 @@ def consult(
 ) -> StreamingResponse:
     """会诊总调度官：自动编排顾问 -> 多轮并行调度 -> 最终答案。"""
 
+    # T3.4 §15.2：mentions 服务端二次校验（拒绝越权引用 → 422）。
+    mentions: list[dict] = []
+    if req.mentions:
+        try:
+            mentions = rt.resolve_mentions(
+                current_user["id"], [m.model_dump() for m in req.mentions]
+            )
+        except MentionRejected as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except RuntimeInitError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
     def gen() -> Generator[str, None, None]:
         q: queue.Queue = queue.Queue(maxsize=512)
         err: dict[str, BaseException] = {}
@@ -147,6 +160,7 @@ def consult(
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="consult",
                 agent_id="consult_orchestrator", user_text=req.question,
+                user_metadata={"mentions": mentions} if mentions else None,
             )
             try:
                 from careercrew_core.supervisor.consult_orchestrator import (

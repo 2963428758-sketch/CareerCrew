@@ -5,7 +5,7 @@ import json
 from collections.abc import Generator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
@@ -15,6 +15,7 @@ from careercrew_api.runtime import (
     RuntimeInitError,
     _observability_from_result,
 )
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.schemas import (
     InterviewChatMessage,
     InterviewChatRequest,
@@ -38,6 +39,18 @@ router = APIRouter()
 _CHAT_PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "interviewer_chat.txt"
 )
+
+
+def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dict]:
+    """T3.4 §15.2：mentions 服务端二次校验；拒绝越权引用 → 422。"""
+    if not mentions:
+        return []
+    try:
+        return rt.resolve_mentions(user_id, [m.model_dump() for m in mentions])
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 def _interview_obs(lr) -> dict:
@@ -72,6 +85,8 @@ def questions(
 ) -> StreamingResponse:
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
@@ -86,7 +101,7 @@ def questions(
             prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="interview", agent_id="interviewer",
-                user_text=prompt,
+                user_text=prompt, user_metadata={"mentions": mentions} if mentions else None,
             )
             try:
                 pending_id = rt.record_user_message(
@@ -158,6 +173,8 @@ def chat(
 ) -> StreamingResponse:
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
@@ -179,6 +196,7 @@ def chat(
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="interview", agent_id="interviewer_chat",
                 user_text=last_user or (req.topic or "请开始模拟面试"),
+                user_metadata={"mentions": mentions} if mentions else None,
             )
             try:
                 pending_id = rt.record_user_message(

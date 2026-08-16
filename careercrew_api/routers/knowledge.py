@@ -15,6 +15,7 @@ from careercrew_api.auth.dependencies import CurrentUser, require_admin
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.sse import (
     CancellationEvent,
     done_event,
@@ -238,6 +239,15 @@ def ask_knowledge(
     sources 为 agent 实际检索到的结构化片段，前端标注来源并可点击查看。
     """
 
+    # T3.4 §15.2：mentions 服务端二次校验（ownership/visibility），拒绝越权引用。
+    mention_dicts = [m.model_dump() for m in req.mentions]
+    try:
+        resolved_mentions = rt.resolve_mentions(current_user["id"], mention_dicts)
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
     def gen():
         result: dict = {"content": "", "sources": [], "turn": None}
         cancel = CancellationEvent()
@@ -246,7 +256,8 @@ def ask_knowledge(
             nonlocal result
             res = rt.run_knowledge_ask_stream(
                 req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
-                category=req.category, scope=req.scope, cancel_check=cancel.check,
+                category=req.category, scope=req.scope, mentions=resolved_mentions,
+                cancel_check=cancel.check,
             )
             if hasattr(res, "content"):
                 result = {

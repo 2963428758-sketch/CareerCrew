@@ -211,6 +211,7 @@ def finish_turn(
             rank_before=rc.get("rank_before"),
             rank_after=rc.get("rank_after"),
             used_in_final_context=bool(rc.get("used_in_final_context", False)),
+            retrieval_source=str(rc.get("retrieval_source") or "auto"),
         )
     for tc in tool_calls or []:
         store.add_tool_call(

@@ -57,6 +57,7 @@ class FakeRuntime:
         self.knowledge_docs_by_user: dict[str, list[dict]] = {
             "u_001": self.knowledge_docs,
         }
+        self.resume_library_items: dict[str, list[tuple[str, str]]] = {}
         from careercrew_core.memory.db import FakeMemoryDb
         from careercrew_core.memory.injection import MemoryInjector
         from careercrew_core.memory.policy import MemoryPolicyStore
@@ -94,7 +95,7 @@ class FakeRuntime:
         return "fake-model"
 
     def _begin_chat_turn(self, thread_id, user_id, module, agent_id, user_text,
-                         title=None):
+                         title=None, user_metadata=None):
         from careercrew_api.chat_lifecycle import begin_turn
         from careercrew_core.versioning import agent_version, prompt_version_for_agent
 
@@ -105,6 +106,7 @@ class FakeRuntime:
                 model=self._conversation_model(), title=title,
                 prompt_version=prompt_version_for_agent(agent_id),
                 agent_version=agent_version(),
+                user_metadata=user_metadata,
             )
         except Exception:
             return None
@@ -171,17 +173,19 @@ class FakeRuntime:
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
+                         mentions: list[dict] | None = None,
                          cancel_check: Callable[[], None] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         self.last_call = {
             "method": "run_match_stream", "thread_id": thread_id,
-            "user_id": user_id, "intent": intent,
+            "user_id": user_id, "intent": intent, "mentions": mentions,
         }
         if cancel_check:
             cancel_check()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="matcher", agent_id="job_matcher", user_text=intent,
+            user_metadata={"mentions": mentions} if mentions else None,
         )
         if cb:
             if self.stream_preamble:
@@ -192,14 +196,19 @@ class FakeRuntime:
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
+                          mentions: list[dict] | None = None,
                           cancel_check: Callable[[], None] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         if cancel_check:
             cancel_check()
+        meta: dict = {"jd_text": jd_text[:5000]}
+        if mentions:
+            meta["mentions"] = mentions
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="resume", agent_id="resume_advisor",
             user_text=f"按这个 JD 定制简历：{jd_text[:200]}",
+            user_metadata=meta,
         )
         if cb:
             if self.stream_preamble:
@@ -210,6 +219,7 @@ class FakeRuntime:
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
+                                mentions: list[dict] | None = None,
                                 cancel_check: Callable[[], None] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
@@ -217,6 +227,7 @@ class FakeRuntime:
             cancel_check()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="chat", agent_id="career_planner", user_text=intent,
+            user_metadata={"mentions": mentions} if mentions else None,
         )
         if cb:
             if self.stream_preamble:
@@ -229,6 +240,7 @@ class FakeRuntime:
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "",
                                  scope: str = "all",
+                                 mentions: list[dict] | None = None,
                                  cancel_check: Callable[[], None] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
@@ -237,9 +249,12 @@ class FakeRuntime:
         sources = self.knowledge_sources_by_user.get(user_id, self.knowledge_sources)
         if cancel_check:
             cancel_check()
+        meta: dict = {"sources": sources}
+        if mentions:
+            meta["mentions"] = mentions
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
-            user_text=question,
+            user_text=question, user_metadata=meta,
         )
         if cb:
             if self.stream_preamble:
@@ -690,6 +705,53 @@ class FakeRuntime:
         if not self.knowledge_asset_owners:
             return user_id == "u_001"
         return self.knowledge_asset_owners.get(path) == user_id
+
+    def list_context_resources(self, user_id: str, types: list[str] | None = None,
+                               q: str = "") -> list[dict]:
+        """T3.4：FakeRuntime 的 context resources（复用 knowledge_docs_by_user + resume 库）。"""
+        ql = (q or "").strip().lower()
+        want_knowledge = types is None or "knowledge" in types
+        want_resume = types is None or "resume" in types
+        items: list[dict] = []
+        if want_knowledge:
+            for owner, docs in self.knowledge_docs_by_user.items():
+                for d in docs:
+                    entry_owner = str(d.get("owner_user_id") or owner)
+                    vis = str(d.get("visibility") or "private")
+                    if vis != "public" and entry_owner != user_id:
+                        continue
+                    doc_id = str(d.get("doc") or "")
+                    if ql and ql not in doc_id.lower():
+                        continue
+                    items.append({
+                        "type": "knowledge_document", "id": doc_id, "name": doc_id,
+                        "visibility": vis,
+                    })
+        if want_resume:
+            for rid, name in (self.resume_library_items or {}).get(user_id, []):
+                if ql and ql not in name.lower() and ql not in rid.lower():
+                    continue
+                items.append({"type": "resume", "id": rid, "name": name, "visibility": "private"})
+        return items
+
+    def resolve_mentions(self, user_id: str, mentions: list[dict]) -> list[dict]:
+        from careercrew_api.mentions import resolve_mentions as _resolve, MentionRejected
+
+        docs = []
+        for owner, doc_list in self.knowledge_docs_by_user.items():
+            for d in doc_list:
+                if d.get("visibility", "private") != "public" and owner != user_id:
+                    continue
+                entry = dict(d)
+                entry.setdefault("owner_user_id", owner)
+                entry.setdefault("visibility", "private")
+                docs.append(entry)
+        resume_items = [
+            {"resume_id": rid, "filename": name}
+            for rid, name in (self.resume_library_items or {}).get(user_id, [])
+        ]
+        resolved = _resolve(user_id, mentions, knowledge_docs=docs, resume_items=resume_items)
+        return [m.as_dict() for m in resolved]
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):

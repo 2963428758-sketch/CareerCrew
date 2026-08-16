@@ -96,14 +96,26 @@ class TokenResponse(BaseModel):
 # ── Chat（M1 对话闭环）──
 
 
+class Mention(BaseModel):
+    """@ 引用资源。type ∈ {knowledge_document, resume}；不支持 @Agent。
+
+    id 不可信：服务端必须再次校验 ownership / visibility，逐条 resolve。
+    """
+
+    type: Literal["knowledge_document", "resume"]
+    id: str = Field(min_length=1, max_length=255)
+
+
 class MatchRequest(BaseModel):
     intent: str
     thread_id: str = "m1"
+    mentions: list[Mention] = Field(default_factory=list)
 
 
 class ResumeRequest(BaseModel):
     jd_text: str
     thread_id: str = "m1"
+    mentions: list[Mention] = Field(default_factory=list)
 
 
 # ── Interview ──
@@ -112,6 +124,7 @@ class ResumeRequest(BaseModel):
 class QuestionRequest(BaseModel):
     topic: str = ""
     thread_id: str = "interview"
+    mentions: list[Mention] = Field(default_factory=list)
 
 
 class InterviewChatMessage(BaseModel):
@@ -123,6 +136,7 @@ class InterviewChatRequest(BaseModel):
     topic: str = ""
     messages: list[InterviewChatMessage] = []
     thread_id: str = "interview"
+    mentions: list[Mention] = Field(default_factory=list)
 
 
 class ScoreRequest(BaseModel):
@@ -175,6 +189,7 @@ class ConsultRequest(BaseModel):
     # 前端"资料填写框"提交的结构化用户画像（current_position / experience_years /
     # skills / target_direction / city / salary / target_companies），后端并入会诊上下文。
     profile: dict[str, str] = Field(default_factory=dict)
+    mentions: list[Mention] = Field(default_factory=list)
 
 
 # ── Knowledge（知识库问答）──
@@ -185,3 +200,4 @@ class KnowledgeAskRequest(BaseModel):
     thread_id: str = "knowledge"
     category: str = ""  # resume / knowledge / interview，空串=全部
     scope: str = "all"  # all（公共+本人私有）| public | private
+    mentions: list[Mention] = Field(default_factory=list)  # 强制上下文（§15）

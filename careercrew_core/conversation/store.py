@@ -357,9 +357,13 @@ class ConversationStore:
         rank_before: int | None = None,
         rank_after: int | None = None,
         used_in_final_context: bool = False,
+        retrieval_source: str = "auto",
     ) -> dict:
         self._require_run_owned(user_id, run_id)
-        fields: dict[str, Any] = {"used_in_final_context": used_in_final_context}
+        fields: dict[str, Any] = {
+            "used_in_final_context": used_in_final_context,
+            "retrieval_source": retrieval_source,
+        }
         for key, val in (
             ("query_text_redacted", query_text_redacted),
             ("scope", scope),

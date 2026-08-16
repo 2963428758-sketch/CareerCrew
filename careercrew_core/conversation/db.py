@@ -286,6 +286,19 @@ class PostgresConversationDb(ConversationDb):
                 "used_in_final_context BOOLEAN NOT NULL DEFAULT FALSE, "
                 "created_at TIMESTAMPTZ NOT NULL)"
             )
+            # T3.4：retrieval_source 区分 mention（强制上下文）与 auto（Agent 自动检索）。
+            # 幂等迁移：存量行回退 NULL，读侧按 NULL 视作 'auto'（见 store.add_retrieval 默认）。
+            conn.execute("SET lock_timeout = '5s'")
+            try:
+                conn.execute(
+                    "DO $$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'agent_run_retrievals' AND column_name = 'retrieval_source') THEN "
+                    "ALTER TABLE agent_run_retrievals ADD COLUMN retrieval_source VARCHAR(30) NOT NULL DEFAULT 'auto'; "
+                    "END IF; END $$"
+                )
+            finally:
+                conn.execute("SET lock_timeout = '0'")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS agent_run_tool_calls ("
                 "id UUID PRIMARY KEY, run_id UUID NOT NULL, tool_name VARCHAR(150) NOT NULL, "
