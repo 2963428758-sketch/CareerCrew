@@ -34,6 +34,7 @@ from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
 )
@@ -181,9 +182,9 @@ def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
         )
         _set(status="done", stage="done", progress=1.0, result={**meta, "content": text})
     except RuntimeInitError as e:
-        _set(status="error", error=str(e))
+        _set(status="error", error=friendly_error(e))
     except Exception as e:  # noqa: BLE001 - 用户可见的解析错误统一收口
-        _set(status="error", error=str(e))
+        _set(status="error", error=friendly_error(e))
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -331,19 +332,21 @@ def generate(
             agent.run(state)
             cancel.check()
 
+        failed = False
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
-            yield done_event("".join(content_parts))
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            if not failed:
+                yield done_event("".join(content_parts))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -402,14 +405,19 @@ def chat(
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
 
+        failed = False
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
+            if failed:
+                return
             # 最终内容以 agent.last_result 为准（流式 chunk 含中间轮次开头，会重复）
             content = result["content"] or "".join(content_parts)
             try:
@@ -420,9 +428,7 @@ def chat(
             except Exception:
                 pass  # transcript 写入失败不阻塞主流程
             yield done_event(content)
-        except RuntimeInitError as e:
-            yield error_event(str(e))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())

@@ -33,7 +33,7 @@ export function AgentDots({ colors }: { colors: string[] }) {
   return (
     <div className="flex items-center gap-1.5">
       {colors.map((c) => (
-        <span key={c} className="h-1.5 w-1.5 rounded-full opacity-80" style={{ backgroundColor: c }} />
+        <span key={c} className="h-2 w-2 rounded-full opacity-80" style={{ backgroundColor: c }} />
       ))}
     </div>
   )

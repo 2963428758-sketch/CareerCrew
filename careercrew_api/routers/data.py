@@ -132,7 +132,7 @@ def patch_thread(thread_id: str, req: ThreadPatchRequest, current_user: CurrentU
             retrieval_scope=req.retrieval_scope.model_dump(exclude_none=True) if req.retrieval_scope else None,
         )
     except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail="thread not found") from e
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
 
 
 @router.delete("/threads/{thread_id}")
@@ -142,7 +142,7 @@ def delete_thread(thread_id: str, current_user: CurrentUser,
     try:
         return rt.delete_thread(thread_id, current_user["id"])
     except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail="thread not found") from e
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
 
 
 @router.get("/memory")

@@ -45,7 +45,7 @@ def test_require_quality_reviewer_rejects_user_and_admin(service):
     with pytest.raises(HTTPException) as err_user:
         require_quality_reviewer({"id": "u", "username": "u", "role": "user"})
     assert err_user.value.status_code == 403
-    assert "quality reviewer required" in str(err_user.value.detail)
+    assert "质检员权限" in str(err_user.value.detail)
 
     # admin 不自动满足（方案：admin 对质量指标是"可选只读"，由 Phase 5 端点自行放行）
     with pytest.raises(HTTPException) as err_admin:
@@ -60,7 +60,7 @@ def test_reviewer_is_rejected_by_require_admin(service):
     with pytest.raises(HTTPException) as err:
         require_admin(user_dict)
     assert err.value.status_code == 403
-    assert "administrator required" in str(err.value.detail)
+    assert "管理员权限" in str(err.value.detail)
 
 
 def test_reviewer_login_token_has_quality_reviewer_role_claim(service):

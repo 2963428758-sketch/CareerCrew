@@ -1,5 +1,6 @@
 /** 简历上传与简历库的共享类型/工具（简历优化页 + 简历管理面板共用）。 */
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText } from "@/lib/errors"
 
 /** 简历上传任务（POST /api/resume/upload 返回 + GET /upload/{job_id} 轮询）。 */
 export interface ResumeUploadJob {
@@ -58,7 +59,7 @@ export async function pollResumeUpload(
 /** 读取简历库中某份简历的解析文本（点「用于当前对话」时）。 */
 export async function fetchResumeContent(resumeId: string): Promise<string> {
   const resp = await apiFetch(`/api/resume/library/${encodeURIComponent(resumeId)}/content`)
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  if (!resp.ok) throw new Error(await apiErrorText(resp, "读取简历失败，请稍后重试"))
   const data: { content: string } = await resp.json()
   return data.content
 }

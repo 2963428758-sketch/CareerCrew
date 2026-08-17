@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tooltip } from "@/components/ui/tooltip"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface CreateUserDialogProps {
   open: boolean
@@ -64,12 +65,14 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password: password || null, role }),
       })
-      const data = await resp.json()
       if (!resp.ok) {
-        setError(data.detail || `HTTP ${resp.status}`)
+        setError(await apiErrorText(resp, "创建账号失败，请重试"))
         return
       }
+      const data = await resp.json()
       onCreated(data.username)
+    } catch (e) {
+      setError(networkErrorText(e, "网络连接失败，请检查网络后重试"))
     } finally {
       setSubmitting(false)
     }

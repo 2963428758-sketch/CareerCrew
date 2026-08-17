@@ -1,4 +1,5 @@
 import { apiFetch } from "@/lib/auth"
+import { notifyError } from "@/lib/toastBus"
 
 /**
  * 恢复线程历史（§37 状态恢复）的共享解析逻辑，六个对话页共用。
@@ -78,25 +79,33 @@ export function parseMemoryEntries(entries: unknown[]): RestoredMessage[] {
 
 /**
  * 恢复线程历史：优先 messages 端点（稳定 ID），空时回退 memory。
- * 两类端点任一失败都返回空数组（调用方据此显示空态，不抛错）。
+ * 两类端点任一失败都返回空数组（调用方据此显示空态，不抛错）；
+ * 两个端点都失败（网络/服务异常）时弹全局错误提示，避免用户误以为会话本就为空。
  */
 export async function restoreHistory(tid: string): Promise<RestoredMessage[]> {
+  let firstFailed = false
   try {
     const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}/messages`)
     if (resp.ok) {
       const rows: unknown = await resp.json()
       const msgs = parseThreadMessages(Array.isArray(rows) ? rows : [])
       if (msgs.length > 0) return msgs
+    } else if (resp.status !== 404) {
+      firstFailed = true
     }
   } catch {
-    // 落到 memory 回退
+    firstFailed = true
   }
   try {
     const resp = await apiFetch(`/api/memory?thread_id=${encodeURIComponent(tid)}`)
-    if (!resp.ok) return []
+    if (!resp.ok) {
+      if (firstFailed) notifyError("会话历史加载失败，请刷新页面重试")
+      return []
+    }
     const entries: unknown = await resp.json()
     return parseMemoryEntries(Array.isArray(entries) ? entries : [])
   } catch {
+    if (firstFailed) notifyError("会话历史加载失败，请刷新页面重试")
     return []
   }
 }

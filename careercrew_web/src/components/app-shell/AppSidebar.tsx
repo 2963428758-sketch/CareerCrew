@@ -3,8 +3,8 @@ import {
 } from "react"
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import {
-  BookOpen, Copy, FileText, GraduationCap, Loader2, MessageSquare,
-  MoreHorizontal, PanelLeftClose, Pencil, Pin, Plus,
+  BookOpen, Copy, FileText, FlaskConical, Gauge, GraduationCap, Loader2, MessageSquare,
+  MessageSquareWarning, MoreHorizontal, PanelLeftClose, Pencil, Pin, SquarePen,
   Sun, Moon, Target, Trash2, UserCog, Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -17,13 +17,16 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { UserMenu } from "@/components/UserMenu"
 import type { AuthUser } from "@/lib/auth"
 
-const NAV: { to: string; label: string; icon: ComponentType<{ className?: string; strokeWidth?: number }>; end?: boolean; adminOnly?: boolean }[] = [
+const NAV: { to: string; label: string; icon: ComponentType<{ className?: string; strokeWidth?: number }>; end?: boolean; adminOnly?: boolean; reviewerOnly?: boolean }[] = [
   { to: "/", label: "求职规划", icon: MessageSquare, end: true },
   { to: "/matcher", label: "职位匹配", icon: Target },
   { to: "/resume", label: "简历优化", icon: FileText },
   { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/consult", label: "会诊", icon: Users },
   { to: "/knowledge", label: "知识库问答", icon: BookOpen },
+  { to: "/quality", label: "质检看板", icon: Gauge, reviewerOnly: true },
+  { to: "/quality/bad-cases", label: "坏例处理", icon: MessageSquareWarning, reviewerOnly: true },
+  { to: "/quality/eval-cases", label: "评估集", icon: FlaskConical, reviewerOnly: true },
   { to: "/admin/users", label: "用户管理", icon: UserCog, adminOnly: true },
 ]
 
@@ -123,7 +126,7 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
                 compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px]"
               )}
             >
-              <Plus className="h-4 w-4 shrink-0 text-ink-soft" strokeWidth={1.7} />
+              <SquarePen className="h-4 w-4 shrink-0 text-ink-soft" strokeWidth={1.7} />
               {!compact && <span className="flex-1 text-left">新对话</span>}
             </button>
           </Tooltip>
@@ -136,7 +139,11 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
           <p className="mb-[5px] mt-4 px-[11px] text-[11px] font-medium text-ink-faint">求职助手</p>
         )}
         <div className="flex flex-col gap-[2px] px-2">
-          {NAV.filter((item) => !item.adminOnly || auth?.role === "admin").map((item) => (
+          {NAV.filter(
+            (item) =>
+              (!item.adminOnly || auth?.role === "admin") &&
+              (!item.reviewerOnly || (auth?.role as string) === "quality_reviewer")
+          ).map((item) => (
             <Tooltip key={item.to} label={compact ? item.label : undefined}>
               <NavLink
                 to={item.to}
@@ -221,6 +228,8 @@ function ThreadList() {
     threadsByModule, currentThreadByModule, loading, error, copiedThreadId, nonce,
     setActiveModule, fetchThreads, selectThread, renameThread, togglePin, deleteThread, copyThreadId,
   } = useThreadStore()
+  /** 待删除确认的会话（自定义 Codex 确认框，替代 window.confirm） */
+  const [confirmDelete, setConfirmDelete] = useState<ThreadItem | null>(null)
 
   useEffect(() => {
     if (module) {
@@ -241,9 +250,6 @@ function ThreadList() {
     navigate(moduleMeta.path)
   }
 
-  /** 待删除确认的会话（自定义 Codex 确认框，替代 window.confirm） */
-  const [confirmDelete, setConfirmDelete] = useState<ThreadItem | null>(null)
-
   const handleDelete = (tid: string) => {
     deleteThread(module, tid)
   }
@@ -255,7 +261,15 @@ function ThreadList() {
         {loading ? (
           <p className="px-[9px] py-1 text-[11px] text-ink-faint">加载中…</p>
         ) : error ? (
-          <p className="px-[9px] py-1 text-[11px] text-destructive/80">会话加载失败</p>
+          <div className="px-[9px] py-1">
+            <p className="text-[11px] text-destructive/80">{error}</p>
+            <button
+              onClick={() => fetchThreads(module)}
+              className="mt-1 text-[11px] text-ink-faint underline underline-offset-2 transition-colors duration-100 hover:text-ink"
+            >
+              点击重试
+            </button>
+          </div>
         ) : threads.length === 0 ? (
           <p className="px-[9px] py-1 text-[11px] text-ink-faint">暂无会话</p>
         ) : (

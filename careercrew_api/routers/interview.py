@@ -29,6 +29,7 @@ from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
     turn_done_fields,
@@ -133,14 +134,19 @@ def questions(
             result["turn"] = ctx
             result["lr"] = lr  # T1.4：观测字段随收尾一起落（token / tool_call）
 
+        failed = False
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
+            if failed:
+                return
             # 最终内容以 agent 最后一轮回答为准：流式 chunk 会包含多轮迭代的
             # "好的，我先检索…"开头话，全部拼接会重复（回归：分布式锁开头重复 3 次）
             content = result["content"] or "".join(content_parts)
@@ -153,10 +159,8 @@ def questions(
                 pass
             rt._finish_chat_turn(result["turn"], content, **_interview_obs(result.get("lr")))
             yield done_event(content, **turn_done_fields(result["turn"]))
-        except RuntimeInitError as e:
-            yield error_event(str(e))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -237,14 +241,19 @@ def chat(
             result["turn"] = ctx
             result["lr"] = lr  # T1.4：观测字段随收尾一起落（token / tool_call）
 
+        failed = False
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
+            if failed:
+                return
             # 最终内容以最后一轮回答为准（流式 chunk 含中间轮开头话，会重复）
             content = result["content"] or "".join(content_parts)
             extra: dict = {}
@@ -266,10 +275,8 @@ def chat(
                 pass
             rt._finish_chat_turn(result["turn"], content, **_interview_obs(result.get("lr")))
             yield done_event(content, **extra, **turn_done_fields(result["turn"]))
-        except RuntimeInitError as e:
-            yield error_event(str(e))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 

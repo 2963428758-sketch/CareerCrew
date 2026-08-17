@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { apiFetch, logout, restoreSession } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 /** 首次登录（或管理员重置密码后）的强制改密页：改完自动恢复会话。 */
 export default function PasswordChangeScreen() {
@@ -32,15 +33,14 @@ export default function PasswordChangeScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ new_password: password }),
       })
-      const data = await resp.json().catch(() => null)
       if (!resp.ok) {
-        setError((data as { detail?: string } | null)?.detail || `修改失败（HTTP ${resp.status}）`)
+        setError(await apiErrorText(resp, "修改失败，请重试"))
         return
       }
       // 改密会 bump token_version：重新刷新会话换取新 token 并清除强制改密标记
       await restoreSession()
     } catch (e) {
-      setError((e as Error).message)
+      setError(networkErrorText(e, "网络连接失败，请检查网络后重试"))
     } finally {
       setBusy(false)
     }

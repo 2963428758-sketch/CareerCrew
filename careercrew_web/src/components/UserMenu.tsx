@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { useNavigate } from "react-router-dom"
-import { ChevronUp, LogOut, Settings, ShieldCheck } from "lucide-react"
+import { ChevronUp, LogOut, Pencil, Settings } from "lucide-react"
 import { getAuthSnapshot, logout, subscribeAuth } from "@/lib/auth"
 import { useAvatar } from "@/lib/avatar"
 import { cn } from "@/lib/utils"
 import { Tooltip } from "@/components/ui/tooltip"
+import { NameEditor } from "@/components/DisplayNameEditor"
+import { RoleBadge } from "@/components/RoleBadge"
 
 /** 头像底色：按用户名哈希从品牌色板里取，稳定且不重复（无上传头像时兜底）。 */
 const AVATAR_COLORS = ["#0D9488", "#7C3AED", "#D97706", "#BE185D", "#2563EB"]
@@ -15,15 +17,40 @@ function avatarColor(username: string) {
   return AVATAR_COLORS[h % AVATAR_COLORS.length]
 }
 
-/** 侧边栏左下角的用户区：头像（已上传头像优先）+ 用户名，点击弹出设置/退出登录菜单（Codex 风格：克制、无大卡片）。 */
+/** 侧边栏左下角的用户区：头像（已上传头像优先）+ 显示名，点击弹出设置/改名/退出登录菜单。 */
 export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  /** 折叠模式下菜单锚点（fixed 定位，避免被侧边栏 overflow-hidden 裁剪） */
-  const [menuAnchor, setMenuAnchor] = useState<{ left: number; top: number } | null>(null)
+  /** 菜单锚点（fixed 定位，避免被侧边栏 overflow-hidden 裁剪） */
+  const [menuAnchor, setMenuAnchor] = useState<{ left: number; top: number; width: number } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   const avatarUrl = useAvatar(auth.user?.id)
+  /** 改名状态（在菜单弹层内联编辑） */
+  const [renaming, setRenaming] = useState(false)
+
+  /** 按头像按钮当前位置计算菜单锚点：展开右对齐、折叠贴左侧，均夹在视口内 */
+  const anchorMenu = useCallback(() => {
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return null
+    const width = collapsed ? 256 : 240
+    const left = collapsed
+      ? Math.max(8, r.left)
+      : Math.min(Math.max(r.right - width, 8), window.innerWidth - width - 8)
+    return { left, top: r.top - 8, width }
+  }, [collapsed])
+
+  // 菜单打开期间：窗口尺寸 / 侧边栏收起状态变化时，跟随头像重新锚定
+  useEffect(() => {
+    if (!open) return
+    const reposition = () => {
+      const anchor = anchorMenu()
+      if (anchor) setMenuAnchor(anchor)
+    }
+    reposition()
+    window.addEventListener("resize", reposition)
+    return () => window.removeEventListener("resize", reposition)
+  }, [open, anchorMenu])
 
   useEffect(() => {
     if (!open) return
@@ -37,15 +64,15 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
   const user = auth.user
   if (!user) return null
 
-  const initial = user.username.charAt(0).toUpperCase()
-  const roleLabel = user.role === "admin" ? "管理员" : "普通用户"
+  const initial = (user.display_name || user.username).charAt(0).toUpperCase()
+  const displayName = user.display_name || user.username
 
   const toggleMenu = () => {
     const next = !open
-    if (next && collapsed && ref.current) {
-      const r = ref.current.getBoundingClientRect()
-      setMenuAnchor({ left: Math.max(8, r.left), top: r.top - 8 })
-    } else if (!next) {
+    if (next) {
+      const anchor = anchorMenu()
+      if (anchor) setMenuAnchor(anchor)
+    } else {
       setMenuAnchor(null)
     }
     setOpen(next)
@@ -60,11 +87,27 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
           initial={initial}
           size="h-8 w-8 text-[13px]"
         />
-        <div className="min-w-0">
-          <p className="truncate text-[13px] font-medium text-ink">{user.username}</p>
-          <p className="flex items-center gap-1 text-[11px] text-ink-faint">
-            {user.role === "admin" && <ShieldCheck className="h-3 w-3" />}
-            {roleLabel}
+        <div className="min-w-0 flex-1">
+          {renaming ? (
+            <NameEditor current={displayName} onDone={() => setRenaming(false)} />
+          ) : (
+            <p className="flex items-center gap-1.5 truncate text-[13px] font-medium text-ink">
+              <span className="truncate">{displayName}</span>
+              <Tooltip label="修改名字">
+                <button
+                  type="button"
+                  onClick={() => setRenaming(true)}
+                  aria-label="修改名字"
+                  className="shrink-0 rounded-[5px] p-0.5 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              </Tooltip>
+            </p>
+          )}
+          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-ink-faint">
+            <span className="truncate">@{user.username}</span>
+            <RoleBadge role={user.role} />
           </p>
         </div>
       </div>
@@ -88,12 +131,12 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
 
   return (
     <div ref={ref} className="relative w-full">
-      <Tooltip label={collapsed ? user.username : undefined}>
+      <Tooltip label={collapsed ? displayName : undefined}>
         <button
           onClick={toggleMenu}
-          aria-label={collapsed ? user.username : undefined}
+          aria-label={collapsed ? displayName : undefined}
           className={cn(
-            "flex w-full items-center rounded-[7px] text-left transition-colors duration-100",
+            "relative flex w-full items-center rounded-[7px] text-left transition-colors duration-100",
             collapsed ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px]",
             open ? "bg-[var(--active)]" : "hover:bg-[var(--hover)]"
           )}
@@ -104,11 +147,18 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
             initial={initial}
             size="h-6 w-6 text-[11px]"
           />
+          {/* 折叠模式：头像右下角角色小圆点（管理员绿 / 普通用户灰） */}
+          {collapsed && (
+            <span
+              className="absolute bottom-[7px] right-[9px] h-2.5 w-2.5 rounded-full border-2 border-[var(--shell)]"
+              style={{ backgroundColor: user.role === "admin" ? "#0D9488" : "#8F8F8A" }}
+            />
+          )}
           {!collapsed && (
             <>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] font-medium leading-tight text-ink">{user.username}</span>
-                <span className="block truncate text-[11px] leading-tight text-ink-faint">{roleLabel}</span>
+              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                <span className="truncate text-[12.5px] font-medium leading-tight text-ink">{displayName}</span>
+                <RoleBadge role={user.role} />
               </span>
               <ChevronUp className={cn("h-3.5 w-3.5 shrink-0 text-ink-faint transition-transform duration-100", open && "rotate-180")} />
             </>
@@ -116,16 +166,16 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
         </button>
       </Tooltip>
 
-      {open && collapsed && menuAnchor && (
+      {open && menuAnchor && (
         <div
-          className="fixed z-50 w-56 overflow-hidden rounded-[9px] border border-[var(--border-soft)] bg-workspace py-1 shadow-popover"
-          style={{ left: menuAnchor.left, top: menuAnchor.top, transform: "translateY(-100%)" }}
+          className="fixed z-50 overflow-hidden rounded-[9px] border border-[var(--border-soft)] bg-workspace py-1 shadow-popover"
+          style={{
+            left: menuAnchor.left,
+            top: menuAnchor.top,
+            width: menuAnchor.width,
+            transform: "translateY(-100%)",
+          }}
         >
-          {menuContent}
-        </div>
-      )}
-      {open && !collapsed && (
-        <div className="absolute bottom-full right-1 z-50 mb-1 overflow-hidden rounded-[9px] border border-[var(--border-soft)] bg-workspace py-1 shadow-popover">
           {menuContent}
         </div>
       )}

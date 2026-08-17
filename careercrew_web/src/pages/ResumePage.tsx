@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
-import { Plus, FileText, X } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { FileText, X } from "lucide-react"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { Tooltip } from "@/components/ui/tooltip"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
-import { EmptyState } from "@/components/workspace/EmptyState"
+import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import ResumePanel from "@/components/ResumePanel"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
+import { ConversationHeader, HeaderIconAction } from "@/components/conversation/ConversationHeader"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { groupTurns } from "@/components/conversation/turn"
@@ -23,6 +25,7 @@ import { cn } from "@/lib/utils"
 import { pollResumeUpload, type ActiveResume } from "@/lib/resumeUpload"
 import { restoreHistory } from "@/lib/historyRestore"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
@@ -50,6 +53,10 @@ export default function ResumePage() {
   /** 最近上传/选中的简历：首轮发送时随请求携带，之后由后端按线程存储复用 */
   const pendingResumeRef = useRef<{ threadId: string; text: string } | null>(null)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.resume)
+  // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
+  const threadTitle = useThreadStore((s) =>
+    s.threadsByModule.resume?.find((t) => t.thread_id === s.currentThreadByModule.resume)?.title
+  )
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
@@ -65,6 +72,8 @@ export default function ResumePage() {
   const { toast, showToast } = useToast()
   const [versionSelections, setVersionSelections] = useState<Record<string, number>>({})
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   // 流结束：把最终内容写回最后一条 assistant 气泡
   useEffect(() => {
@@ -135,14 +144,15 @@ export default function ResumePage() {
       const form = new FormData()
       form.append("file", file)
       const resp = await apiFetch("/api/resume/upload", { method: "POST", body: form })
-      const data = await resp.json()
       if (!resp.ok) {
-        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `上传失败：${data.detail || `HTTP ${resp.status}`}` }])
+        const errText = await apiErrorText(resp, "上传失败，请重试")
+        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `上传失败：${errText}` }])
         return
       }
+      const data = await resp.json()
       const job = await pollResumeUpload(data.job_id)
       if (job.status === "error") {
-        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `解析失败：${job.error}` }])
+        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `解析失败：${job.error || "请重试"}` }])
         return
       }
       const r = job.result
@@ -155,6 +165,8 @@ export default function ResumePage() {
           content: r.content,
         })
       }
+    } catch (e) {
+      setMessages((prev) => [...prev, { id: nextId(), role: "user", content: `上传失败：${networkErrorText(e, "网络连接失败，请重试")}` }])
     } finally {
       setUploading(false)
     }
@@ -215,23 +227,44 @@ export default function ResumePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        title="简历优化"
+      <ConversationHeader
+        parent="简历优化"
+        title={threadTitle ?? "新对话"}
         subtitle="上传简历，对话式定制优化 · 按目标 JD 重构"
-        actions={
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={search.openSearch}
+extra={
           <>
-            <Button variant="outline" size="sm" onClick={handleNew}>
-              <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新对话
-            </Button>
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPanelOpen((v) => !v)}>
-              <FileText className="h-3.5 w-3.5 text-primary" strokeWidth={1.7} />
-              简历管理
-            </Button>
+            <HeaderIconAction label="简历面板" onClick={() => setPanelOpen((v) => !v)}>
+              <FileText className="h-4 w-4" strokeWidth={1.7} />
+            </HeaderIconAction>
+            <ConversationMenu
+              threadId={currentThreadId}
+              title={threadTitle ?? "新对话"}
+              module="resume"
+              onAfterClear={() => void restoreHistory(currentThreadId)}
+            />
           </>
         }
       />
 
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
         <div
           ref={scrollRef}
           className={cn("h-full overflow-y-auto", dragOver && "bg-surface-1")}
@@ -250,11 +283,7 @@ export default function ResumePage() {
                     随后直接在对话里描述目标 JD 或想优化的部分。
                   </>
                 }
-                accent={
-                  <span className="flex h-9 w-9 items-center justify-center rounded-[9px] bg-surface-2">
-                    <FileText className="h-4 w-4 text-primary" strokeWidth={1.7} />
-                  </span>
-                }
+                accent={<AgentDots colors={["#D97706", "#0D9488", "#BE185D", "#7C3AED", "#2563EB"]} />}
               />
             ) : (
               <div className="flex flex-col gap-10">
@@ -324,6 +353,7 @@ export default function ResumePage() {
             onStop={() => stopStream(currentThreadId)}
             placeholder={activeResume ? "已添加简历，输入目标 JD 或想优化的部分…" : "上传简历，或直接输入简历内容与优化需求…"}
             hint="上传简历后，直接描述目标 JD 或想优化的部分"
+            toolbar
             textareaRef={composerRef}
             className="w-full"
             header={

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from careercrew_api.auth.dependencies import get_auth_service, get_current_user, require_admin
 from careercrew_api.auth.service import (
+    AccountDisabledError,
     AccountExistsError,
     AuthService,
     AuthenticationError,
@@ -27,6 +28,7 @@ from careercrew_api.schemas import (
     PasswordResetRequest,
     PublicUser,
     TokenResponse,
+    UpdateDisplayNameRequest,
     UserListResponse,
     UserPatchRequest,
 )
@@ -108,7 +110,7 @@ def get_avatar(
     if avatar_ref.startswith("oss:"):
         config = oss_config()
         if config is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="avatar not available")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="头像存储服务不可用")
         key = avatar_ref[len("oss:"):]
         media_type = _AVATAR_MIME.get("." + key.rsplit(".", 1)[-1].lower(), "application/octet-stream")
         try:
@@ -121,9 +123,9 @@ def get_avatar(
         name = avatar_ref[len("local:"):]
         path = resolve_under(AVATAR_ROOT, *name.split("/"))
         if not path.is_file():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="avatar not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="头像不存在或已被删除")
         return FileResponse(str(path))
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="avatar not set")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该用户尚未设置头像")
 
 
 def _set_refresh_cookie(response: Response, auth: AuthService, refresh_token: str) -> None:
@@ -157,9 +159,9 @@ def bootstrap(
     try:
         return auth.bootstrap_admin(request.username, request.password)
     except PermissionError as err:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="bootstrap is disabled") from err
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="当前环境不允许初始化管理员") from err
     except AccountExistsError as err:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="bootstrap already completed") from err
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="系统已初始化过管理员，请直接登录") from err
 
 
 @router.get("/bootstrap")
@@ -182,14 +184,19 @@ def login(
     client_ip = http_request.client.host if http_request.client else ""
     try:
         payload, refresh_token = auth.login(request.username, request.password, client_ip=client_ip)
+    except AccountDisabledError as err:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="你的账号已被锁定，请联系管理员",
+        ) from err
     except LoginLockedError as err:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="too many login attempts",
+            detail=f"登录尝试次数过多，请稍后再试（{err.retry_after_seconds} 秒后解除）",
             headers={"Retry-After": str(err.retry_after_seconds)},
         ) from err
     except AuthenticationError as err:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid username or password") from err
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码不正确") from err
     _set_refresh_cookie(response, auth, refresh_token)
     return payload
 
@@ -205,7 +212,7 @@ def refresh(
         payload, new_refresh_token = auth.refresh(refresh_token)
     except AuthenticationError as err:
         _clear_refresh_cookie(response, auth)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token") from err
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已失效，请重新登录") from err
     _set_refresh_cookie(response, auth, new_refresh_token)
     return payload
 
@@ -238,7 +245,7 @@ def create_user(
     try:
         return auth.create_user(actor, request.username, request.password, request.role)
     except AccountExistsError as err:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username already exists") from err
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该用户名已被占用，请换一个") from err
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
@@ -269,13 +276,15 @@ def patch_user(
         return auth.update_user(admin, user_id, role=request.role, status=request.status)
     except SelfAdminError as err:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="administrators cannot modify their own account here") from err
+                            detail="不能修改自己的账号，请在「账号」设置中操作") from err
     except LastAdminError as err:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail="operation would remove the last active administrator") from err
+                            detail="操作失败：系统至少需要保留一名有效管理员") from err
     except KeyError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="account not found") from err
+                            detail="账号不存在或已被删除") from err
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
 
 @router.post("/users/{user_id}/reset-password")
@@ -290,10 +299,10 @@ def reset_password(
         auth.admin_reset_password(admin, user_id, request.password)
     except SelfAdminError as err:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="administrators must use /api/auth/password for themselves") from err
+                            detail="不能重置自己的密码，请在「账号」设置中修改") from err
     except KeyError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="account not found") from err
+                            detail="账号不存在或已被删除") from err
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     return {"ok": True}
@@ -314,7 +323,20 @@ def change_password(
         )
     except AuthenticationError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="invalid password") from err
+                            detail="当前密码不正确") from err
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     return {"ok": True}
+
+
+@router.post("/display-name", response_model=PublicUser)
+def update_display_name(
+    request: UpdateDisplayNameRequest,
+    user: Annotated[dict[str, str], Depends(get_current_user)],
+    auth: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict:
+    """修改自己的显示名（用于界面展示，登录用户名不变）。"""
+    try:
+        return auth.update_own_display_name(user, request.name)
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err

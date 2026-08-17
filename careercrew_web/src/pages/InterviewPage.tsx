@@ -5,6 +5,9 @@ import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
 import { ConversationHeader, HeaderIconAction } from "@/components/conversation/ConversationHeader"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { groupTurns } from "@/components/conversation/turn"
@@ -15,6 +18,7 @@ import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 import { restoreHistory } from "@/lib/historyRestore"
 import type { InterviewQA } from "@/types"
 
@@ -60,6 +64,8 @@ export default function InterviewPage() {
   const { activeId, selectTurn, highlightId } = useConversationNavigation(turnIds, scrollRef)
   const { toast, showToast } = useToast()
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   // 流结束：把最终内容写回最后一条 assistant 气泡；若带评分则计入 qaList
   useEffect(() => {
@@ -152,12 +158,21 @@ export default function InterviewPage() {
 
   const handleRecord = async () => {
     if (qaList.length === 0) return
-    await apiFetch("/api/interview/record", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entries: qaList.map((qa) => ({ q: qa.question, a: qa.answer, score: qa.score })) }),
-    })
-    setQaList([])
+    try {
+      const resp = await apiFetch("/api/interview/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries: qaList.map((qa) => ({ q: qa.question, a: qa.answer, score: qa.score })) }),
+      })
+      if (!resp.ok) {
+        showToast(await apiErrorText(resp, "保存到记忆失败，请重试"))
+        return
+      }
+      setQaList([])
+      showToast(`已保存 ${qaList.length} 条问答到记忆`)
+    } catch (e) {
+      showToast(networkErrorText(e, "保存失败，请检查网络后重试"))
+    }
   }
 
   const handleEdit = (text: string) => {
@@ -184,7 +199,7 @@ export default function InterviewPage() {
         subtitle="对话式模拟面试 · 出题 → 作答 → 评分 → 追问"
         threadId={currentThreadId}
         onNew={handleNew}
-        onSearch={() => composerRef.current?.focus()}
+        onSearch={search.openSearch}
         extra={
           <>
             {qaList.length > 0 && (
@@ -197,11 +212,32 @@ export default function InterviewPage() {
                 <Flag className="h-4 w-4" strokeWidth={1.7} />
               </HeaderIconAction>
             ) : undefined}
+            <ConversationMenu
+              threadId={currentThreadId}
+              title={threadTitle ?? "新对话"}
+              module="interview"
+              onAfterClear={() => void restoreHistory(currentThreadId)}
+            />
           </>
         }
       />
 
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
         <div ref={scrollRef} className="h-full overflow-y-auto">
           <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
             {messages.length === 0 ? (

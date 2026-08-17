@@ -9,6 +9,9 @@ import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
 import { ConversationHeader } from "@/components/conversation/ConversationHeader"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { FeedbackArea } from "@/components/conversation/FeedbackArea"
@@ -62,6 +65,8 @@ export default function ConsultPage() {
   const { activeId, selectTurn, highlightId } = useConversationNavigation(turnIds, scrollRef)
   const { toast, showToast } = useToast()
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   // 流结束（done / 手动停止 / 出错）后把结果落进对话历史
   useEffect(() => {
@@ -189,10 +194,33 @@ export default function ConsultPage() {
         subtitle="总调度官自动调度顾问，综合给出建议"
         threadId={currentThreadId}
         onNew={handleNew}
-        onSearch={() => composerRef.current?.focus()}
+        onSearch={search.openSearch}
+        extra={
+          <ConversationMenu
+            threadId={currentThreadId}
+            title={threadTitle ?? "新对话"}
+            module="consult"
+            onAfterClear={() => void restoreHistory(currentThreadId)}
+          />
+        }
       />
 
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
         <div ref={scrollRef} className="h-full overflow-y-auto">
           <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
             {messages.length === 0 && stream.status === "idle" ? (

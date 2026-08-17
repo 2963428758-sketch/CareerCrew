@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { EmptyCard, ErrorCard } from "@/components/data/shared"
 import { Tooltip } from "@/components/ui/tooltip"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface MemoryItem {
   kind: "fact" | "event"
@@ -34,14 +35,11 @@ export function MemoryPanel() {
     setError("")
     apiFetch("/api/memory")
       .then(async (r) => {
-        if (!r.ok) {
-          const body = await r.json().catch(() => null)
-          throw new Error(body?.detail || `HTTP ${r.status}`)
-        }
+        if (!r.ok) throw new Error(await apiErrorText(r, "加载记忆数据失败"))
         return r.json()
       })
       .then((d: MemoryItem[]) => setData(d))
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
   }
 
@@ -54,10 +52,10 @@ export function MemoryPanel() {
       if (item.kind === "fact") params.set("name", item.id)
       else params.set("entry_id", item.id)
       const resp = await apiFetch(`/api/memory?${params.toString()}`, { method: "DELETE" })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "删除记忆失败"))
       load()
     } catch (e) {
-      setError((e as Error).message)
+      setError(networkErrorText(e, "删除失败，请稍后重试"))
     } finally {
       setDeleting("")
     }

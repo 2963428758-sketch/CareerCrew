@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import secrets
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -79,6 +80,9 @@ class AccountStore(ABC):
     def update_avatar(self, user_id: str, avatar_ref: str) -> None: ...
 
     @abstractmethod
+    def update_display_name(self, user_id: str, name: str) -> None: ...
+
+    @abstractmethod
     def set_must_change_password(self, user_id: str, value: bool) -> None: ...
 
     @abstractmethod
@@ -121,7 +125,7 @@ class AccountStore(ABC):
     def _public(row: dict[str, Any]) -> dict[str, Any]:
         return {k: row[k] for k in ("id", "username", "role", "status",
                                     "token_version", "created_at", "updated_at",
-                                    "must_change_password", "avatar")
+                                    "must_change_password", "avatar", "display_name")
                 if k in row and row.get(k) is not None}
 
 
@@ -129,61 +133,81 @@ class PostgresAccountStore(AccountStore):
     """Postgres 实现（唯一运行时后端）。所有写操作走事务。"""
 
     def __init__(self, dsn: str) -> None:
-        import psycopg
-        import psycopg.rows
+        """惰性连接：构造不触碰数据库（首次操作才建连+建表）。
 
+        TestClient/lifespan 等场景会无副作用地构建 store，避免测试环境
+        因数据库不可达而在应用启动阶段挂起。
+        """
         self._dsn = dsn
-        with psycopg.connect(dsn, row_factory=psycopg.rows.dict_row) as conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS auth_accounts ("
-                "id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
-                "role TEXT NOT NULL CHECK (role IN ('admin','user','quality_reviewer')), "
-                "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')), "
-                "token_version INTEGER NOT NULL DEFAULT 0, "
-                "must_change_password BOOLEAN NOT NULL DEFAULT false, "
-                "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-            )
-            # 幂等迁移：既有库的旧 role CHECK（admin/user）不会随 CREATE TABLE IF NOT EXISTS
-            # 更新，需 DROP + ADD。任何已有数据（admin/user）仍满足新约束，故无数据丢失。
-            with conn.transaction():
+        self._connected = False
+        self._ensure_lock = threading.Lock()
+
+    def _ensure(self) -> None:
+        if self._connected:
+            return
+        with self._ensure_lock:
+            if self._connected:
+                return
+            import psycopg
+            import psycopg.rows
+
+            with psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row) as conn:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS auth_accounts ("
+                    "id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
+                    "role TEXT NOT NULL CHECK (role IN ('admin','user','quality_reviewer')), "
+                    "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')), "
+                    "token_version INTEGER NOT NULL DEFAULT 0, "
+                    "must_change_password BOOLEAN NOT NULL DEFAULT false, "
+                    "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                # 幂等迁移：既有库的旧 role CHECK（admin/user）不会随 CREATE TABLE IF NOT EXISTS
+                # 更新，需 DROP + ADD。任何已有数据（admin/user）仍满足新约束，故无数据丢失。
+                with conn.transaction():
+                    conn.execute(
+                        "ALTER TABLE auth_accounts "
+                        "DROP CONSTRAINT IF EXISTS auth_accounts_role_check"
+                    )
+                    conn.execute(
+                        "ALTER TABLE auth_accounts "
+                        "ADD CONSTRAINT auth_accounts_role_check "
+                        "CHECK (role IN ('admin','user','quality_reviewer'))"
+                    )
                 conn.execute(
                     "ALTER TABLE auth_accounts "
-                    "DROP CONSTRAINT IF EXISTS auth_accounts_role_check"
+                    "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false"
                 )
                 conn.execute(
                     "ALTER TABLE auth_accounts "
-                    "ADD CONSTRAINT auth_accounts_role_check "
-                    "CHECK (role IN ('admin','user','quality_reviewer'))"
+                    "ADD COLUMN IF NOT EXISTS avatar TEXT"
                 )
-            conn.execute(
-                "ALTER TABLE auth_accounts "
-                "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false"
-            )
-            conn.execute(
-                "ALTER TABLE auth_accounts "
-                "ADD COLUMN IF NOT EXISTS avatar TEXT"
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS auth_refresh_sessions ("
-                "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL "
-                "REFERENCES auth_accounts(id) ON DELETE CASCADE, "
-                "expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
-                "revoked_at TIMESTAMPTZ)"
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS admin_audit_events ("
-                "id BIGSERIAL PRIMARY KEY, actor_id TEXT NOT NULL, action TEXT NOT NULL, "
-                "target_user_id TEXT, context JSONB NOT NULL DEFAULT '{}'::jsonb, "
-                "created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS auth_login_attempts ("
-                "key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, "
-                "window_start TIMESTAMPTZ, locked_until TIMESTAMPTZ, "
-                "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-            )
+                conn.execute(
+                    "ALTER TABLE auth_accounts "
+                    "ADD COLUMN IF NOT EXISTS display_name TEXT"
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS auth_refresh_sessions ("
+                    "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL "
+                    "REFERENCES auth_accounts(id) ON DELETE CASCADE, "
+                    "expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+                    "revoked_at TIMESTAMPTZ)"
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS admin_audit_events ("
+                    "id BIGSERIAL PRIMARY KEY, actor_id TEXT NOT NULL, action TEXT NOT NULL, "
+                    "target_user_id TEXT, context JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                    "created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS auth_login_attempts ("
+                    "key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, "
+                    "window_start TIMESTAMPTZ, locked_until TIMESTAMPTZ, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                self._connected = True
 
     def _connect(self):
+        self._ensure()
         import psycopg
         import psycopg.rows
 
@@ -282,6 +306,15 @@ class PostgresAccountStore(AccountStore):
             if cur.rowcount == 0:
                 raise KeyError(user_id)
 
+    def update_display_name(self, user_id: str, name: str) -> None:
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute(
+                "UPDATE auth_accounts SET display_name = %s, updated_at = now() WHERE id = %s",
+                (name, user_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(user_id)
+
     def set_must_change_password(self, user_id: str, value: bool) -> None:
         with self._connect() as conn, conn.transaction():
             conn.execute(
@@ -313,7 +346,7 @@ class PostgresAccountStore(AccountStore):
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
                 "SELECT s.expires_at, a.id, a.username, a.role, a.status, a.token_version, "
-                "a.created_at, a.updated_at, a.must_change_password, a.avatar "
+                "a.created_at, a.updated_at, a.must_change_password, a.avatar, a.display_name "
                 "FROM auth_refresh_sessions s JOIN auth_accounts a ON a.id = s.user_id "
                 "WHERE s.token_hash = %s AND s.revoked_at IS NULL AND a.status = 'active'",
                 (old_hash,),

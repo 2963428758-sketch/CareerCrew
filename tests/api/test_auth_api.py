@@ -51,7 +51,7 @@ def test_bootstrap_status_only_reports_whether_first_admin_can_be_created(auth_c
 @pytest.mark.web
 def test_password_login_protects_me_and_never_returns_refresh_token(auth_client):
     user = _bootstrap(auth_client)
-    assert user == {"id": "u_001", "username": "admin", "role": "admin", "must_change_password": False}
+    assert user == {"id": "u_001", "username": "admin", "role": "admin", "must_change_password": False, "display_name": None}
 
     unauthorized = auth_client.get("/api/auth/me")
     assert unauthorized.status_code == 401
@@ -165,9 +165,11 @@ def test_admin_lists_patches_and_disables_users(auth_client):
     )
     assert patched.status_code == 200
     assert patched.json()["status"] == "disabled"
-    # 禁用立即生效：旧 access token 失效、登录被拒
+    # 禁用立即生效：旧 access token 失效、登录被拒（明确提示账号已锁定）
     assert auth_client.get("/api/auth/me", headers=member_headers).status_code == 401
-    assert auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).status_code == 401
+    blocked = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD})
+    assert blocked.status_code == 403
+    assert "账号已被锁定" in blocked.json()["detail"]
 
     reenabled = auth_client.patch(
         f"/api/auth/users/{member_id}", json={"status": "active"}, headers=admin_headers

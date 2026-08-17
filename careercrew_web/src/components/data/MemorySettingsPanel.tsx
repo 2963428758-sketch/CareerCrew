@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ErrorCard } from "@/components/data/shared"
 import { cn } from "@/lib/utils"
 import { apiFetch, getAuthSnapshot } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface MemorySettingsData {
   enabled: boolean
@@ -17,7 +17,9 @@ interface MemoryPolicyData {
   effective: { enabled: boolean; generate: boolean; use: boolean }
 }
 
-/** 记忆设置面板（全局开关 + 用户级策略），供设置页「记忆设置」独立区块使用。 */
+/**
+ * 记忆设置面板：标题在框外，内容在圆润框内，每一行横线隔开（开关点击即保存）。
+ */
 export function MemorySettingsPanel() {
   const [settings, setSettings] = useState<MemorySettingsData | null>(null)
   const [policy, setPolicy] = useState<MemoryPolicyData | null>(null)
@@ -29,14 +31,20 @@ export function MemorySettingsPanel() {
     setLoading(true)
     setError("")
     Promise.all([
-      apiFetch("/api/settings/memory").then((r) => r.json()),
-      apiFetch(`/api/memory/policy?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`).then((r) => r.json()),
+      apiFetch("/api/settings/memory").then(async (r) => {
+        if (!r.ok) throw new Error(await apiErrorText(r, "加载记忆设置失败"))
+        return r.json()
+      }),
+      apiFetch(`/api/memory/policy?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`).then(async (r) => {
+        if (!r.ok) throw new Error(await apiErrorText(r, "加载记忆策略失败"))
+        return r.json()
+      }),
     ])
       .then(([s, p]) => {
         setSettings(s as MemorySettingsData)
         setPolicy(p as MemoryPolicyData)
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
   }
 
@@ -48,10 +56,7 @@ export function MemorySettingsPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
-    if (!resp.ok) {
-      const b = await resp.json().catch(() => null)
-      throw new Error(b?.detail || `HTTP ${resp.status}`)
-    }
+    if (!resp.ok) throw new Error(await apiErrorText(resp, "保存失败"))
     return resp.json()
   }
 
@@ -64,7 +69,7 @@ export function MemorySettingsPanel() {
       const s = await put("/api/settings/memory", { enabled: v })
       setSettings(s as MemorySettingsData)
     } catch (e) {
-      setSaveError((e as Error).message)
+      setSaveError(networkErrorText(e, "保存失败，请稍后重试"))
       load()
     }
   }
@@ -82,7 +87,7 @@ export function MemorySettingsPanel() {
       })
       setPolicy(p as MemoryPolicyData)
     } catch (e) {
-      setSaveError((e as Error).message)
+      setSaveError(networkErrorText(e, "保存失败，请稍后重试"))
       load()
     }
   }
@@ -92,23 +97,24 @@ export function MemorySettingsPanel() {
   if (!settings || !policy) return null
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-[13px] font-medium">全局记忆开关</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
+    <div className="space-y-5">
+      {saveError && <p className="text-[12px] font-medium text-destructive">保存失败：{saveError}</p>}
+
+      <div>
+        <h3 className="mb-2 text-[13px] font-medium text-ink">全局记忆开关</h3>
+        <div className="overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace">
           <ToggleRow
             label="启用记忆（全局）"
             desc="关闭时记忆完全不写入/不注入；开启后仍需用户级策略允许。"
             checked={settings.enabled}
             onChange={(v) => updateGlobalEnabled(v)}
           />
-          {saveError && <p className="text-[12px] font-medium text-destructive">保存失败：{saveError}</p>}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-[13px] font-medium">我的记忆策略</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
+      <div>
+        <h3 className="mb-2 text-[13px] font-medium text-ink">我的记忆策略</h3>
+        <div className="overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace">
           <ToggleRow
             label="允许记忆"
             desc="开启后允许写入与注入本用户记忆。"
@@ -127,9 +133,8 @@ export function MemorySettingsPanel() {
             checked={policy.user.use}
             onChange={(v) => updateUserPolicy({ use: v })}
           />
-          {saveError && <p className="text-[12px] font-medium text-destructive">保存失败：{saveError}</p>}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   )
 }
@@ -143,7 +148,7 @@ function ToggleRow({ label, desc, checked, onChange }: {
   return (
     <button
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between gap-3 rounded-[8px] border border-[var(--border-soft)] px-3 py-2.5 text-left transition-colors duration-100 hover:bg-[var(--hover)]"
+      className="flex w-full items-center justify-between gap-3 border-b border-[var(--border-soft)] px-3.5 py-2.5 text-left transition-colors duration-100 last:border-0 hover:bg-[var(--hover)]"
     >
       <div>
         <p className="text-[13px] font-medium">{label}</p>

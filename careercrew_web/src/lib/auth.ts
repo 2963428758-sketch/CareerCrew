@@ -1,7 +1,11 @@
+import { apiErrorText, networkErrorText } from "@/lib/errors"
+
 export interface AuthUser {
   id: string
   username: string
   role: "admin" | "user"
+  /** 显示名（可修改，用于界面展示）；为空时前端回退显示 username */
+  display_name?: string | null
   /** 新建/重置密码后为 true：进入系统前必须修改密码（后端业务 API 会 403 拦截） */
   must_change_password?: boolean
 }
@@ -76,6 +80,14 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
 
 export const getAuthSnapshot = () => snapshot
 
+/** 局部更新当前登录用户信息（如修改显示名后），并通知订阅方。 */
+export const updateSessionUser = (patch: Partial<AuthUser>) => {
+  if (snapshot.status === "authenticated" && snapshot.user) {
+    snapshot = { ...snapshot, user: { ...snapshot.user, ...patch } }
+    notify()
+  }
+}
+
 export const subscribeAuth = (listener: () => void) => {
   subscribers.add(listener)
   return () => subscribers.delete(listener)
@@ -90,22 +102,32 @@ export function restoreSession(): Promise<boolean> {
 }
 
 export async function login(username: string, password: string): Promise<void> {
-  const response = await rawFetch("/api/auth/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  })
-  if (!response.ok) throw new Error(await responseMessage(response, "用户名或密码不正确"))
+  let response: Response
+  try {
+    response = await rawFetch("/api/auth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    })
+  } catch (err) {
+    throw new Error(networkErrorText(err, "无法连接服务器，请检查网络后重试"))
+  }
+  if (!response.ok) throw new Error(await apiErrorText(response, "用户名或密码不正确"))
   setSession(await response.json() as TokenResponse)
 }
 
 export async function bootstrapAdmin(username: string, password: string): Promise<void> {
-  const response = await rawFetch("/api/auth/bootstrap", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  })
-  if (!response.ok) throw new Error(await responseMessage(response, "无法初始化管理员"))
+  let response: Response
+  try {
+    response = await rawFetch("/api/auth/bootstrap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    })
+  } catch (err) {
+    throw new Error(networkErrorText(err, "无法连接服务器，请检查网络后重试"))
+  }
+  if (!response.ok) throw new Error(await apiErrorText(response, "无法初始化管理员"))
   await login(username, password)
 }
 
@@ -122,9 +144,4 @@ export async function logout(): Promise<void> {
   } finally {
     clearSession()
   }
-}
-
-async function responseMessage(response: Response, fallback: string): Promise<string> {
-  const body = await response.json().catch(() => null) as { detail?: unknown } | null
-  return typeof body?.detail === "string" ? body.detail : fallback
 }

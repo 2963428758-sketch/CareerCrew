@@ -1,5 +1,5 @@
 import { useRef, useState, useSyncExternalStore } from "react"
-import { Camera, KeyRound, Loader2, ShieldCheck } from "lucide-react"
+import { Camera, KeyRound, Loader2, Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -9,8 +9,11 @@ import { MemorySettingsPanel } from "@/components/data/MemorySettingsPanel"
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
 import { AvatarImage } from "@/components/UserMenu"
 import { Tooltip } from "@/components/ui/tooltip"
+import { NameEditor } from "@/components/DisplayNameEditor"
+import { RoleBadge } from "@/components/RoleBadge"
 import { SETTINGS_SECTIONS } from "@/components/app-shell/settingsSections"
-import { apiFetch, getAuthSnapshot, subscribeAuth } from "@/lib/auth"
+import { apiFetch, getAuthSnapshot, logout, subscribeAuth } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 import { bumpAvatarNonce, useAvatar } from "@/lib/avatar"
 import { cn } from "@/lib/utils"
 
@@ -51,9 +54,11 @@ export default function SettingsPage({ section }: { section: string }) {
 function AccountPanel() {
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
   const user = auth.user
+  const [renaming, setRenaming] = useState(false)
   if (!user) return null
 
-  const initial = user.username.charAt(0).toUpperCase()
+  const initial = (user.display_name || user.username).charAt(0).toUpperCase()
+  const displayName = user.display_name || user.username
 
   return (
     <div className="space-y-4">
@@ -62,18 +67,30 @@ function AccountPanel() {
         <CardContent>
           <div className="flex items-center gap-3">
             <AvatarUpload userId={user.id} username={user.username} initial={initial} />
-            <div className="min-w-0">
-              <p className="flex items-center gap-1.5 text-[13px] font-medium">
-                {user.username}
-                {user.role === "admin" && (
-                  <span className="inline-flex items-center gap-1 rounded-[5px] bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
-                    <ShieldCheck className="h-3 w-3" />管理员
-                  </span>
-                )}
-              </p>
-              <p className="mt-0.5 text-[12px] text-ink-faint">
-                {user.role === "admin" ? "管理员账号" : "普通用户"}
-              </p>
+            <div className="min-w-0 flex-1">
+              {renaming ? (
+                <NameEditor
+                  current={displayName}
+                  onDone={() => setRenaming(false)}
+                  inputClassName="bg-workspace"
+                />
+              ) : (
+                <p className="flex items-center gap-1.5 text-[13px] font-medium">
+                  <span className="truncate">{displayName}</span>
+                  <RoleBadge role={user.role} />
+                  <Tooltip label="修改名字">
+                    <button
+                      type="button"
+                      onClick={() => setRenaming(true)}
+                      aria-label="修改名字"
+                      className="shrink-0 rounded-[5px] p-0.5 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                  </Tooltip>
+                </p>
+              )}
+              <p className="mt-0.5 text-[12px] text-ink-faint">@{user.username}</p>
             </div>
           </div>
         </CardContent>
@@ -108,13 +125,12 @@ function AvatarUpload({ userId, username, initial }: { userId: string; username:
       const form = new FormData()
       form.append("file", file)
       const resp = await apiFetch("/api/auth/avatar", { method: "POST", body: form })
-      const data = await resp.json().catch(() => ({}))
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "头像上传失败，请重试"))
       bumpAvatarNonce() // 使侧边栏/本页头像失效并重取
       setSuccess(true)
       setTimeout(() => setSuccess(false), 3000)
     } catch (e) {
-      setError((e as Error).message)
+      setError(networkErrorText(e, "头像上传失败，请检查网络后重试"))
     } finally {
       setUploading(false)
       if (inputRef.current) inputRef.current.value = ""
@@ -184,14 +200,15 @@ function ChangePasswordCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
       })
-      const data = await resp.json().catch(() => ({}))
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "密码修改失败，请重试"))
       setOldPassword("")
       setNewPassword("")
       setConfirm("")
       setSuccess(true)
+      // 密码已修改：撤销所有会话并跳回登录页
+      setTimeout(() => void logout(), 1000)
     } catch (e) {
-      setError((e as Error).message)
+      setError(networkErrorText(e, "网络连接失败，请检查网络后重试"))
     } finally {
       setSaving(false)
     }
@@ -207,13 +224,13 @@ function ChangePasswordCard() {
       <CardContent className="space-y-3">
         {(success || error) && (
           <div className="rounded-[7px] border border-[var(--border-soft)] px-3 py-2 text-[12px]">
-            {success && <p className="text-green-600">✓ 密码已修改，其他设备的登录会话已失效</p>}
+            {success && <p className="text-green-600">✓ 密码已修改，请重新登录…</p>}
             {error && <p className="text-destructive">{error}</p>}
           </div>
         )}
         <label className="block">
           <span className="mb-1 block text-[12px] font-medium text-ink-soft">当前密码</span>
-          <Input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} autoComplete="current-password" />
+          <Input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="请输入当前密码" autoComplete="current-password" />
         </label>
         <label className="block">
           <span className="mb-1 block text-[12px] font-medium text-ink-soft">新密码</span>

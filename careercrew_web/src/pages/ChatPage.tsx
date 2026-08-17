@@ -1,14 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { MoreHorizontal, Search, SquarePen } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
+import { AttachmentPicker } from "@/components/prompt/AttachmentPicker"
+import { MentionPicker } from "@/components/prompt/MentionPicker"
+import { ToolPicker } from "@/components/prompt/ToolPicker"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { UserMessage } from "@/components/conversation/UserMessage"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
-import { Tooltip } from "@/components/ui/tooltip"
+import { ConversationHeader } from "@/components/conversation/ConversationHeader"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
 import { groupTurns, turnAnchorId } from "@/components/conversation/turn"
 import { useActiveTurn } from "@/hooks/useActiveTurn"
 import { useChatScroll } from "@/hooks/useChatScroll"
@@ -54,6 +58,8 @@ export default function ChatPage() {
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   useEffect(
     () => () => {
@@ -165,30 +171,40 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
+      <ConversationHeader
         parent="求职规划"
         title={threadTitle ?? "新对话"}
         subtitle="职业规划师 · 求职规划"
-        actions={
-          <div className="flex items-center gap-0.5">
-            <HeaderIconButton title="新对话" onClick={handleNew}>
-              <SquarePen className="h-4 w-4" strokeWidth={1.7} />
-            </HeaderIconButton>
-            <HeaderIconButton title="搜索" onClick={() => composerRef.current?.focus()}>
-              <Search className="h-4 w-4" strokeWidth={1.7} />
-            </HeaderIconButton>
-            <HeaderIconButton
-              title="复制会话 ID"
-              onClick={() => void useThreadStore.getState().copyThreadId(currentThreadId)}
-            >
-              <MoreHorizontal className="h-4 w-4" strokeWidth={1.7} />
-            </HeaderIconButton>
-          </div>
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={search.openSearch}
+        extra={
+          <ConversationMenu
+            threadId={currentThreadId}
+            title={threadTitle ?? "新对话"}
+            module="chat"
+            onAfterClear={() => void restoreHistory(currentThreadId)}
+          />
         }
       />
 
       {/* Conversation Area：滚动线程 + 左侧 Minimap Rail + 浮动 Composer（渐变收底） */}
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
         <div ref={scrollRef} className="h-full overflow-y-auto">
           <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
             {messages.length === 0 ? (
@@ -201,24 +217,8 @@ export default function ChatPage() {
                     帮你建立能力画像、确定目标公司、制定阶段规划。
                   </>
                 }
-                accent={<AgentDots colors={["#0D9488", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
-              >
-                <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-                  {SUGGESTIONS.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => {
-                        setInput(s)
-                        composerRef.current?.focus()
-                      }}
-                      className="rounded-full border border-[var(--border-soft)] px-3 py-1 text-[12px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </EmptyState>
+                accent={<AgentDots colors={["#2563EB", "#0D9488", "#D97706", "#BE185D", "#7C3AED"]} />}
+              />
             ) : (
               <div className="flex flex-col gap-10">
                 {turns.map((turn, i) => {
@@ -296,8 +296,11 @@ export default function ChatPage() {
             disabled={lastIsStreaming}
             streaming={lastIsStreaming}
             onStop={() => stopStream(currentThreadId)}
-            placeholder="Message Agent…（Enter 发送，Shift + Enter 换行）"
+            placeholder="聊聊你的求职方向与背景…"
             toolbar
+            attachments={<AttachmentPicker threadId={currentThreadId} disabled={lastIsStreaming} />}
+            mentions={<MentionPicker disabled={lastIsStreaming} />}
+            tools={<ToolPicker module="chat" disabled={lastIsStreaming} />}
             textareaRef={composerRef}
             className="w-full"
           />
@@ -310,24 +313,5 @@ export default function ChatPage() {
         )}
       </div>
     </div>
-  )
-}
-
-function HeaderIconButton({ title, onClick, children }: {
-  title: string
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <Tooltip label={title} side="bottom">
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label={title}
-        className="flex h-[30px] w-[30px] items-center justify-center rounded-[7px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
-      >
-        {children}
-      </button>
-    </Tooltip>
   )
 }

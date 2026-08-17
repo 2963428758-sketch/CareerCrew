@@ -20,6 +20,7 @@ from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
     turn_done_fields,
@@ -74,23 +75,26 @@ def match(
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)
 
+        failed = False
         try:
             yield stage_event("match")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(
-                result["content"] or "".join(content_parts),
-                **turn_done_fields(result["turn"]),
-            )
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            # 出错时不补发 done，避免前端错误提示被空回答覆盖
+            if not failed:
+                yield done_event(
+                    result["content"] or "".join(content_parts),
+                    **turn_done_fields(result["turn"]),
+                )
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -120,23 +124,25 @@ def resume(
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)
 
+        failed = False
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准
-            yield done_event(
-                result["content"] or "".join(content_parts),
-                **turn_done_fields(result["turn"]),
-            )
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            if not failed:
+                yield done_event(
+                    result["content"] or "".join(content_parts),
+                    **turn_done_fields(result["turn"]),
+                )
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -166,22 +172,24 @@ def plan(
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)
 
+        failed = False
         try:
             yield stage_event("planning")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(
-                result["content"] or "".join(content_parts),
-                **turn_done_fields(result["turn"]),
-            )
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            if not failed:
+                yield done_event(
+                    result["content"] or "".join(content_parts),
+                    **turn_done_fields(result["turn"]),
+                )
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())

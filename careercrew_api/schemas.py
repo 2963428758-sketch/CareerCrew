@@ -39,6 +39,8 @@ class PublicUser(BaseModel):
     username: str
     role: Literal["user", "admin", "quality_reviewer"]
     must_change_password: bool = False
+    # 显示名（可修改，用于界面展示）；为空时前端回退显示 username
+    display_name: str | None = None
 
 
 class AccountListItem(BaseModel):
@@ -72,6 +74,18 @@ class UserPatchRequest(BaseModel):
 
 class PasswordResetRequest(BaseModel):
     password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，下次登录强制改密
+
+
+class UpdateDisplayNameRequest(BaseModel):
+    name: str = Field(max_length=30)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("名字不能为空")
+        return value
 
 
 class ChangePasswordRequest(BaseModel):

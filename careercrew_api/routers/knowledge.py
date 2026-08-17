@@ -20,6 +20,7 @@ from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
     turn_done_fields,
@@ -90,16 +91,11 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
             job = _jobs.get(job_id)
             if job is not None:
                 job.update(status="done", stage="done", progress=1.0, result=result)
-    except RuntimeInitError as e:
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if job is not None:
-                job.update(status="error", error=str(e))
     except Exception as e:  # noqa: BLE001 - 用户可见的解析/入库错误统一收口
         with _jobs_lock:
             job = _jobs.get(job_id)
             if job is not None:
-                job.update(status="error", error=f"解析入库失败：{e}")
+                job.update(status="error", error=friendly_error(e))
 
 
 @router.post("/upload", status_code=202)
@@ -257,7 +253,7 @@ def ask_knowledge(
             res = rt.run_knowledge_ask_stream(
                 req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
                 category=req.category, scope=req.scope, mentions=resolved_mentions,
-                cancel_check=cancel.check,
+                cancel_check=cancel.check, tools=req.tools,
             )
             if hasattr(res, "content"):
                 result = {
@@ -272,25 +268,30 @@ def ask_knowledge(
                     "turn": None,
                 }
 
+        failed = False
         try:
             yield stage_event("knowledge")
             content_parts: list[str] = []
             # agentic 检索 + VLM 读图可能长时间无文本 chunk，统一空闲超时（与会诊一致）
             for line in stream_agent(_run, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(
-                result.get("content") or "".join(content_parts),
-                sources=result.get("sources", []),
-                **turn_done_fields(result.get("turn")),
-            )
+            # 出错时不补发 done，避免前端错误提示被空回答覆盖
+            if not failed:
+                yield done_event(
+                    result.get("content") or "".join(content_parts),
+                    sources=result.get("sources", []),
+                    **turn_done_fields(result.get("turn")),
+                )
         except RuntimeInitError as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return StreamingResponse(
         gen(),

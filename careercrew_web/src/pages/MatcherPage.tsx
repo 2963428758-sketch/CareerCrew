@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Plus, Target } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
-import { EmptyState } from "@/components/workspace/EmptyState"
+import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
+import { ConversationHeader } from "@/components/conversation/ConversationHeader"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { groupTurns } from "@/components/conversation/turn"
@@ -37,6 +38,10 @@ export default function MatcherPage() {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<MatcherMessage[]>([])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.matcher)
+  // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
+  const threadTitle = useThreadStore((s) =>
+    s.threadsByModule.matcher?.find((t) => t.thread_id === s.currentThreadByModule.matcher)?.title
+  )
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
@@ -53,6 +58,8 @@ export default function MatcherPage() {
   const { toast, showToast } = useToast()
   const [versionSelections, setVersionSelections] = useState<Record<string, number>>({})
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   useEffect(() => {
     if (stream.status === "error") {
@@ -146,17 +153,39 @@ export default function MatcherPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        title="职位匹配"
+      <ConversationHeader
+        parent="职位匹配"
+        title={threadTitle ?? "新对话"}
         subtitle="输入求职方向，匹配官检索岗位"
-        actions={
-          <Button variant="outline" size="sm" onClick={handleNew}>
-            <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新对话
-          </Button>
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={search.openSearch}
+        extra={
+          <ConversationMenu
+            threadId={currentThreadId}
+            title={threadTitle ?? "新对话"}
+            module="matcher"
+            onAfterClear={() => void restoreHistory(currentThreadId)}
+          />
         }
       />
 
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
         <div ref={scrollRef} className="h-full overflow-y-auto">
           <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
             {messages.length === 0 ? (
@@ -169,7 +198,7 @@ export default function MatcherPage() {
                     匹配官会搜索猎聘真实岗位并评估匹配度。
                   </>
                 }
-                accent={<Target className="h-5 w-5" style={{ color: meta.color }} strokeWidth={1.7} />}
+                accent={<AgentDots colors={["#0D9488", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
               />
             ) : (
               <div className="flex flex-col gap-10">
@@ -245,6 +274,7 @@ export default function MatcherPage() {
             onStop={() => stopStream(currentThreadId)}
             placeholder="输入求职方向与背景，匹配官将自动检索岗位"
             hint="匹配官会搜索猎聘真实岗位并评估匹配度"
+            toolbar
             textareaRef={composerRef}
             className="w-full"
           />

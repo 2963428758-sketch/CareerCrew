@@ -37,6 +37,7 @@ coverage.xml
 
 # SDD session scratch (briefs / review diffs are per-session artifacts)
 .superpowers/sdd/briefs/
+.superpowers/sdd/deferred/
 .superpowers/sdd/review-*.diff
 
 # CareerCrew runtime data（向量库/模型/记忆不进 git；知识库文档进 git）

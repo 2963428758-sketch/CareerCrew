@@ -9,6 +9,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { KB_CATEGORIES, KB_CATEGORY_LABELS } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch, getAuthSnapshot, subscribeAuth } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface KnowledgeDoc {
   doc: string
@@ -71,9 +72,12 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     setLoading(true)
     setError("")
     apiFetch("/api/knowledge")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await apiErrorText(r, "加载知识库失败"))
+        return r.json()
+      })
       .then((d) => setStatus(d))
-      .catch((e) => setError((e as Error).message))
+      .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
   }
 
@@ -135,11 +139,11 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
     fd.append("visibility", uploadVisibility)
     try {
       const resp = await apiFetch("/api/knowledge/upload", { method: "POST", body: fd })
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "上传失败，请重试"))
       const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
       setJob(data as UploadJob)
     } catch (e) {
-      setUploadError((e as Error).message)
+      setUploadError(networkErrorText(e, "上传失败，请检查网络后重试"))
     }
   }
 
@@ -147,24 +151,35 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
   const [confirmDoc, setConfirmDoc] = useState<KnowledgeDoc | null>(null)
 
   const handleDelete = async (doc: KnowledgeDoc) => {
-    const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}`, { method: "DELETE" })
-    if (resp.status === 403) {
-      setError("只有管理员可以删除公共知识库文档")
-      return
+    try {
+      const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}`, { method: "DELETE" })
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "删除文档失败"))
+      refresh()
+    } catch (e) {
+      setError(`删除失败：${networkErrorText(e, "网络连接失败，请重试")}`)
     }
-    if (!resp.ok) setError(`删除失败：HTTP ${resp.status}`)
-    refresh()
   }
 
   const togglePublish = async (doc: KnowledgeDoc) => {
     const action = doc.visibility === "public" ? "unpublish" : "publish"
-    const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}/${action}`, { method: "POST" })
-    if (!resp.ok) { const data = await resp.json().catch(() => ({})); setError(data.detail || `操作失败：HTTP ${resp.status}`); return }
-    refresh()
+    try {
+      const resp = await apiFetch(`/api/knowledge/${encodeURIComponent(doc.doc)}/${action}`, { method: "POST" })
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "操作失败"))
+      refresh()
+    } catch (e) {
+      setError(networkErrorText(e, "操作失败，请检查网络后重试"))
+    }
   }
 
   return (
     <div className="space-y-4">
+      <ConfirmDialog
+        open={confirmDoc !== null}
+        title="从知识库删除？"
+        message={`「${confirmDoc?.doc ?? ""}」删除后需重新上传才能恢复。`}
+        onConfirm={() => confirmDoc && void handleDelete(confirmDoc)}
+        onClose={() => setConfirmDoc(null)}
+      />
       {onClose && (
         <div className="flex items-center justify-between">
           <p className="text-[12px] font-medium text-ink-soft">知识库管理</p>
@@ -289,7 +304,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                           <span className="font-normal text-ink-faint">（所有人可见 · {publicDocs.length} 份）</span>
                         </p>
                         <div className="space-y-1.5">
-                          {publicDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={handleDelete} onTogglePublish={togglePublish} />)}
+                          {publicDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={(d) => setConfirmDoc(d)} onTogglePublish={togglePublish} />)}
                         </div>
                       </div>
                     )}
@@ -300,7 +315,7 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                           <span className="ml-1 font-normal text-ink-faint">（仅自己可见 · {privateDocs.length} 份）</span>
                         </p>
                         <div className="space-y-1.5">
-                          {privateDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={handleDelete} onTogglePublish={togglePublish} />)}
+                          {privateDocs.map((doc) => <DocRow key={doc.doc + doc.visibility} doc={doc} me={me} isAdmin={isAdmin} onDelete={(d) => setConfirmDoc(d)} onTogglePublish={togglePublish} />)}
                         </div>
                       </div>
                     )}
@@ -360,7 +375,7 @@ function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
           <Tooltip label={`删除 ${doc.doc}`}>
             <button
               className="shrink-0 rounded-[5px] p-1 text-ink-faint transition-colors duration-100 hover:text-destructive"
-              onClick={() => setConfirmDoc(doc)}
+              onClick={() => onDelete(doc)}
               aria-label={`删除 ${doc.doc}`}
             >
               <Trash2 className="h-3.5 w-3.5" />

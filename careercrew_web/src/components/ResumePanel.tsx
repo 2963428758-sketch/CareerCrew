@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip } from "@/components/ui/tooltip"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { cn } from "@/lib/utils"
 import {
   fetchResumeContent,
@@ -13,6 +14,7 @@ import {
   type ResumeUploadJob,
 } from "@/lib/resumeUpload"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -52,9 +54,12 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
     setLoading(true)
     setError("")
     apiFetch("/api/resume/library")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await apiErrorText(r, "加载简历列表失败"))
+        return r.json()
+      })
       .then((d: { resumes: ResumeLibraryItem[] }) => setResumes(d.resumes))
-      .catch((e) => setError((e as Error).message))
+      .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
   }
 
@@ -128,11 +133,11 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
     fd.append("file", files[0])
     try {
       const resp = await apiFetch("/api/resume/upload", { method: "POST", body: fd })
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "上传失败，请重试"))
       const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
       setJob(data as ResumeUploadJob)
     } catch (e) {
-      setUploadError((e as Error).message)
+      setUploadError(networkErrorText(e, "上传失败，请检查网络后重试"))
     }
   }
 
@@ -149,7 +154,7 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
         content,
       })
     } catch (e) {
-      setUploadError(`读取简历失败：${(e as Error).message}`)
+      setUploadError(`读取简历失败：${networkErrorText(e, "网络连接失败，请重试")}`)
     } finally {
       setActivatingId(null)
     }
@@ -163,15 +168,22 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
       const resp = await apiFetch(`/api/resume/library/${encodeURIComponent(item.resume_id)}`, {
         method: "DELETE",
       })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "删除简历失败"))
       refresh()
     } catch (e) {
-      setUploadError(`删除失败：${(e as Error).message}`)
+      setUploadError(`删除失败：${networkErrorText(e, "网络连接失败，请重试")}`)
     }
   }
 
   return (
     <div className="space-y-4">
+      <ConfirmDialog
+        open={confirmItem !== null}
+        title="从简历库删除？"
+        message={`「${confirmItem?.filename ?? ""}」删除后需重新上传才能恢复。`}
+        onConfirm={() => confirmItem && void handleDelete(confirmItem)}
+        onClose={() => setConfirmItem(null)}
+      />
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
@@ -292,7 +304,7 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
                   <Tooltip label={`删除 ${item.filename}`}>
                     <button
                       className="shrink-0 rounded-[5px] p-1 text-ink-faint transition-colors duration-100 hover:text-destructive"
-                      onClick={() => handleDelete(item)}
+                      onClick={() => setConfirmItem(item)}
                       aria-label={`删除 ${item.filename}`}
                     >
                       <Trash2 className="h-3.5 w-3.5" />

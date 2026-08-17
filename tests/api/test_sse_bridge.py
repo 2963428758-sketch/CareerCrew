@@ -51,7 +51,7 @@ def test_stream_timeout():
 
     lines = list(stream_agent(run_fn, timeout=0.5, max_q=8))
     events = [json.loads(l) for l in lines]
-    assert any(e["type"] == "error" and "timeout" in e["message"] for e in events)
+    assert any(e["type"] == "error" and "超时" in e["message"] for e in events)
 
 
 @pytest.mark.web

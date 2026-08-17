@@ -21,6 +21,10 @@ const KnowledgePage = lazy(() => import("@/pages/KnowledgePage"))
 const ConsultPage = lazy(() => import("@/pages/ConsultPage"))
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"))
 const AdminUsersPage = lazy(() => import("@/pages/AdminUsersPage"))
+const QualityDashboardPage = lazy(() => import("@/pages/QualityDashboardPage"))
+const BadCasesPage = lazy(() => import("@/pages/BadCasesPage"))
+const BadCaseDetailPage = lazy(() => import("@/pages/BadCaseDetailPage"))
+const EvalCasesPage = lazy(() => import("@/pages/EvalCasesPage"))
 
 const PAGES: Record<string, ComponentType> = {
   "/": ChatPage,
@@ -30,6 +34,17 @@ const PAGES: Record<string, ComponentType> = {
   "/knowledge": KnowledgePage,
   "/consult": ConsultPage,
   "/admin/users": AdminUsersPage,
+  "/quality": QualityDashboardPage,
+  "/quality/bad-cases": BadCasesPage,
+  "/quality/eval-cases": EvalCasesPage,
+}
+
+/** 质检详情路由 /quality/bad-cases/:feedbackId（PAGES 精确匹配之外的动态段） */
+const QUALITY_BAD_CASE_DETAIL = /^\/quality\/bad-cases\/[^/]+$/
+
+const resolvePage = (pathname: string): ComponentType => {
+  if (QUALITY_BAD_CASE_DETAIL.test(pathname)) return BadCaseDetailPage
+  return PAGES[pathname] ?? ChatPage
 }
 
 type Viewport = "wide" | "narrow" | "mobile"
@@ -134,11 +149,12 @@ export default function App() {
             <SettingsPage section={settingsSection} />
           ) : (
             (() => {
-              const requested = PAGES[location.pathname] ?? ChatPage
-              const Page =
-                location.pathname === "/admin/users" && auth.user?.role !== "admin"
-                  ? ChatPage
-                  : requested
+              const requested = resolvePage(location.pathname)
+              const role = (auth.user?.role as string | undefined) ?? ""
+              const forbidden =
+                (location.pathname === "/admin/users" && role !== "admin") ||
+                (location.pathname.startsWith("/quality") && role !== "quality_reviewer")
+              const Page = forbidden ? ChatPage : requested
               return <Page key={location.pathname} />
             })()
           )}

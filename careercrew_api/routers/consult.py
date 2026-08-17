@@ -23,6 +23,7 @@ from careercrew_api.sse import (
     STREAM_IDLE_TIMEOUT_SECONDS,
     CancellationEvent,
     StreamCancelled,
+    friendly_error,
     put_guaranteed,
     turn_done_fields,
 )
@@ -350,16 +351,16 @@ def consult(
                 except queue.Empty:
                     yield _ndjson_line({
                         "type": "error",
-                        "message": f"stream timeout after {STREAM_IDLE_TIMEOUT_SECONDS}s",
+                        "message": f"回答生成超时（等待超过 {STREAM_IDLE_TIMEOUT_SECONDS:g} 秒无响应），请重试",
                     })
                     break
                 if item is _SENTINEL:
                     break
                 yield _ndjson_line(item)
             if "exc" in err:
-                yield _ndjson_line({"type": "error", "message": str(err["exc"])})
+                yield _ndjson_line({"type": "error", "message": friendly_error(err["exc"])})
         except RuntimeInitError as e:
-            yield _ndjson_line({"type": "error", "message": str(e)})
+            yield _ndjson_line({"type": "error", "message": friendly_error(e)})
         finally:
             cancel.set()  # 生成器关闭（客户端断开/停止）→ 通知 worker 协作式取消
         t.join(timeout=1)

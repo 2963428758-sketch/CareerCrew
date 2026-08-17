@@ -1,5 +1,7 @@
 import { create } from "zustand"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
+import { notifyError } from "@/lib/toastBus"
 
 export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
@@ -128,7 +130,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     set({ loading: true, error: "" })
     try {
       const resp = await apiFetch(`/api/threads?module=${m}`)
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "加载会话列表失败"))
       const data: unknown = await resp.json()
       const list: ThreadItem[] = (Array.isArray(data) ? data : []).map((t) => {
         const tid = String((t as Record<string, unknown>).thread_id || "")
@@ -147,7 +149,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       const filtered = list.filter((t) => t.module === m)
       set((s) => ({ threadsByModule: { ...s.threadsByModule, [m]: sortThreads(filtered) } }))
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: networkErrorText(e, "加载会话列表失败") })
     } finally {
       set({ loading: false })
     }
@@ -210,9 +212,12 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ thread_id: tid, module: m, title: trimmed, retrieval_scope: scope ?? null }),
         })
+      } else if (!resp.ok) {
+        throw new Error(await apiErrorText(resp, "会话标题保存失败"))
       }
-    } catch {
-      // 后端未就绪时忽略，仅保留本地标题
+    } catch (e) {
+      // 后端未就绪时保留本地标题，但明确提示用户
+      notifyError(`${networkErrorText(e, "会话标题保存失败")}，本地已保留`)
     }
   },
 
@@ -249,9 +254,12 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
             ),
           },
         }))
+      } else if (!resp.ok) {
+        throw new Error(await apiErrorText(resp, "检索范围保存失败"))
       }
-    } catch {
+    } catch (e) {
       // 后端未就绪：保留本地范围，下轮 fetchThreads 会以服务端为准
+      notifyError(`${networkErrorText(e, "检索范围保存失败")}，本地已保留`)
     }
   },
 
@@ -267,13 +275,15 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       },
     }))
     try {
-      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
+      const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: trimmed }),
       })
-    } catch {
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "重命名失败"))
+    } catch (e) {
       // 后端未就绪：保留本地改名，下轮 fetch 可能被覆盖，属可接受降级
+      notifyError(`${networkErrorText(e, "重命名失败")}，本地已保留`)
     }
   },
 
@@ -289,21 +299,25 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       },
     }))
     try {
-      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
+      const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned }),
       })
-    } catch {
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "置顶设置保存失败"))
+    } catch (e) {
       // 后端未就绪：仅本地生效
+      notifyError(networkErrorText(e, "置顶设置保存失败"))
     }
   },
 
   deleteThread: async (m, tid) => {
     try {
-      await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, { method: "DELETE" })
-    } catch {
+      const resp = await apiFetch(`/api/threads/${encodeURIComponent(tid)}`, { method: "DELETE" })
+      if (!resp.ok && resp.status !== 404) throw new Error(await apiErrorText(resp, "删除会话失败"))
+    } catch (e) {
       // 删除失败也先移除本地项，保持列表即时响应
+      notifyError(`${networkErrorText(e, "删除会话失败")}，已从本地列表移除`)
     }
     const current = get().currentThreadByModule[m]
     if (current === tid) {

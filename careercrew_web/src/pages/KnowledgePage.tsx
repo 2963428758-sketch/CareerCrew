@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { BookOpen, ChevronDown, Plus, X } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { BookOpen, ChevronDown, X } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { Tooltip } from "@/components/ui/tooltip"
 import { ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
-import { EmptyState } from "@/components/workspace/EmptyState"
+import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import KnowledgePanel from "@/components/KnowledgePanel"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
+import { ConversationHeader, HeaderIconAction } from "@/components/conversation/ConversationHeader"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
 import { TurnSection } from "@/components/conversation/TurnSection"
 import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { groupTurns } from "@/components/conversation/turn"
@@ -114,6 +116,10 @@ export default function KnowledgePage() {
   const [panelOpen, setPanelOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.knowledge)
+  // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
+  const threadTitle = useThreadStore((s) =>
+    s.threadsByModule.knowledge?.find((t) => t.thread_id === s.currentThreadByModule.knowledge)?.title
+  )
   // 检索范围：存于会话元数据（retrieval_scope），切换会话自动恢复，修改即时 PATCH 持久化
   const threads = useThreadStore((s) => s.threadsByModule.knowledge ?? EMPTY_THREADS)
   const setThreadScope = useThreadStore((s) => s.setThreadScope)
@@ -134,7 +140,6 @@ export default function KnowledgePage() {
   const stopStream = useStreamStore((s) => s.stop)
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
-  const meta = AGENT_META.knowledge_advisor
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -143,6 +148,8 @@ export default function KnowledgePage() {
   const { toast, showToast } = useToast()
   const [versionSelections, setVersionSelections] = useState<Record<string, number>>({})
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   useEffect(() => {
     if (stream.status === "error") {
@@ -250,23 +257,44 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        title="知识库问答"
+      <ConversationHeader
+        parent="知识库问答"
+        title={threadTitle ?? "新对话"}
         subtitle="基于知识库文档检索回答，点击来源可查看原文"
-        actions={
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={search.openSearch}
+extra={
           <>
-            <Button variant="outline" size="sm" onClick={handleNew}>
-              <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新对话
-            </Button>
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPanelOpen((v) => !v)}>
-              <BookOpen className="h-3.5 w-3.5 text-primary" strokeWidth={1.7} />
-              知识库管理
-            </Button>
+            <HeaderIconAction label="知识库面板" onClick={() => setPanelOpen((v) => !v)}>
+              <BookOpen className="h-4 w-4" strokeWidth={1.7} />
+            </HeaderIconAction>
+            <ConversationMenu
+              threadId={currentThreadId}
+              title={threadTitle ?? "新对话"}
+              module="knowledge"
+              onAfterClear={() => void restoreHistory(currentThreadId)}
+            />
           </>
         }
       />
 
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
         <div ref={scrollRef} className="h-full overflow-y-auto">
           <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
             {messages.length === 0 ? (
@@ -279,11 +307,7 @@ export default function KnowledgePage() {
                     回答会标注数据来源，点击即可查看对应片段。
                   </>
                 }
-                accent={
-                  <span className="flex h-9 w-9 items-center justify-center rounded-[9px] bg-surface-2">
-                    <BookOpen className="h-4 w-4" style={{ color: meta.color }} strokeWidth={1.7} />
-                  </span>
-                }
+                accent={<AgentDots colors={["#16A34A", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
               />
             ) : (
               <div className="flex flex-col gap-10">
@@ -320,7 +344,7 @@ export default function KnowledgePage() {
                           />}
                           onRegenerate={
                             isLast && isNewestVersion && !asstStreaming && Boolean(asst.content) && Boolean(turn.user.content)
-                              ? () => handleRegenerate(turn.id, asst.messageId)
+                            ? () => handleRegenerate(turn.id, asst.messageId)
                               : undefined
                           }
                           onFeedback={() => showToast("感谢你的反馈")}
@@ -353,6 +377,7 @@ export default function KnowledgePage() {
             onStop={() => stopStream(currentThreadId)}
             placeholder="输入问题，将自动检索知识库后回答"
             hint="知识库图片会自动内嵌显示"
+            toolbar
             textareaRef={composerRef}
             className="w-full"
             header={
@@ -439,6 +464,7 @@ function KnowledgeAssistant({ msg, threadId, isStreaming, streamingText, thinkin
       initializing={isStreaming && !content && initializing}
       initText="正在检索知识库"
       workingText="正在检索知识库…"
+      versionSwitcher={versionSwitcher}
       contentNode={
         <>
           <MarkdownContent className={cn(isStreaming && content && !thinking && "typing-cursor")}>
@@ -449,7 +475,6 @@ function KnowledgeAssistant({ msg, threadId, isStreaming, streamingText, thinkin
       }
       onRegenerate={onRegenerate}
       onFeedback={onFeedback}
-      versionSwitcher={versionSwitcher}
     >
       {!isStreaming && msg.sources && msg.sources.length > 0 && (
         <SourceList sources={msg.sources} onPreview={onPreview} />

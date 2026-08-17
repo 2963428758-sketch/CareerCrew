@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   ArrowLeft, PanelLeftClose,
@@ -7,6 +8,7 @@ import { BrandMark, ThemeToggle } from "@/components/app-shell/AppSidebar"
 import { Tooltip } from "@/components/ui/tooltip"
 import { SETTINGS_SECTIONS } from "@/components/app-shell/settingsSections"
 import { UserMenu } from "@/components/UserMenu"
+import { getAuthSnapshot, subscribeAuth } from "@/lib/auth"
 
 interface SettingsSidebarProps {
   collapsed: boolean
@@ -30,6 +32,9 @@ export function SettingsSidebar({
 }: SettingsSidebarProps) {
   const navigate = useNavigate()
   const compact = collapsed && !overlay
+  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
+  // 非管理员隐藏 adminOnly 区块（用户管理等）
+  const sections = SETTINGS_SECTIONS.filter((s) => !s.adminOnly || auth.user?.role === "admin")
 
   return (
     <>
@@ -111,7 +116,7 @@ export function SettingsSidebar({
           <p className="mb-[5px] mt-4 px-[11px] text-[11px] font-medium text-ink-faint">设置</p>
         )}
         <div className="flex flex-col gap-[2px] px-2">
-          {SETTINGS_SECTIONS.map((s) => (
+          {sections.map((s) => (
             <Tooltip key={s.key} label={compact ? s.label : undefined}>
               <button
                 onClick={() => { onSelectSection(s.key); onOverlayClose() }}
