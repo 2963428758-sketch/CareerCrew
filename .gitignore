@@ -40,6 +40,11 @@ coverage.xml
 .superpowers/sdd/deferred/
 .superpowers/sdd/review-*.diff
 
+# Agent session artifacts (opencode/subagent working files & stray screenshots)
+session.jsonl
+subagents/
+data/login-locked.png
+
 # CareerCrew runtime data（向量库/模型/记忆不进 git；知识库文档进 git）
 data/db/
 data/ms_cache/
