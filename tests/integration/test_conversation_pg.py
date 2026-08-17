@@ -44,6 +44,8 @@ def store_and_db():
     yield ConversationStore(db), db
     # 清理本测试创建的数据（用随机 user_id 避免跨测试串扰）
     with psycopg.connect(DSN) as conn, conn.transaction():
+        conn.execute("DELETE FROM feedback_review_events")
+        conn.execute("DELETE FROM feedback_reviews")
         conn.execute("DELETE FROM feedback_snapshots")
         conn.execute("DELETE FROM message_feedback")
         conn.execute("DELETE FROM feedback_audit_log")
@@ -416,3 +418,40 @@ def test_quality_views_postgres_are_metadata_only_and_audited(store_and_db):
         ).fetchone()
     assert audit[0] == "quality.snapshot.viewed"
     assert "a@b.com" not in str(audit[1]) and "private comment" not in str(audit[1])
+
+def test_quality_review_postgres_persists_events_and_audits(store_and_db):
+    """Attribution writes are atomic: review row + events + content-free audits."""
+    import psycopg
+
+    store, db = store_and_db
+    uid = "u_review_pg"
+    _conv, _turn, _user, assistant, _run = _begin_chat_turn(store, uid)
+    feedback = store.put_feedback(
+        uid, assistant["id"], rating="negative", reason="tool_failure",
+        comment="private comment", share_context=True,
+    )
+    review = store.update_quality_review(
+        "reviewer-1", feedback["id"], root_cause="tool", status="triaged", note="参数错误",
+    )
+    assert review["review_status"] == "triaged" and review["root_cause"] == "tool"
+    assert store.get_quality_review(feedback["id"])["reviewer_note"] == "参数错误"
+    row = store.get_quality_feedback(feedback["id"])
+    assert row["review_status"] == "triaged" and row["root_cause"] == "tool"
+
+    with psycopg.connect(DSN) as conn:
+        events = conn.execute(
+            "SELECT event_type FROM feedback_review_events WHERE feedback_id=%s ORDER BY created_at",
+            (feedback["id"],),
+        ).fetchall()
+        audits = conn.execute(
+            "SELECT action, metadata FROM feedback_audit_log WHERE actor_user_id=%s",
+            ("reviewer-1",),
+).fetchall()
+    assert {row2[0] for row2 in events} == {"status_changed", "root_cause_changed", "note_changed"}
+    assert {row2[0] for row2 in audits} == {
+        "quality.review.status_changed", "quality.review.root_cause_changed",
+    }
+    assert all("private comment" not in str(a[1]) for a in audits)
+
+    with pytest.raises(ValueError):
+        store.update_quality_review("reviewer-1", feedback["id"], status="promoted_to_eval")

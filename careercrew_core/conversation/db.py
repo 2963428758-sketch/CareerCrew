@@ -255,6 +255,15 @@ class ConversationDb(ABC):
     @abstractmethod
     def get_quality_diagnostics(self, feedback_id: str) -> dict | None: ...
 
+    # ── feedback reviews（人工归因）──
+
+    @abstractmethod
+    def get_feedback_review(self, feedback_id: str) -> dict | None: ...
+
+    @abstractmethod
+    def upsert_feedback_review(self, fields: dict, events: list[dict],
+                               audits: list[dict]) -> dict: ...
+
 
 class PostgresConversationDb(ConversationDb):
     """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
@@ -406,6 +415,26 @@ class PostgresConversationDb(ConversationDb):
                 "id UUID PRIMARY KEY, actor_user_id VARCHAR(64) NOT NULL, action VARCHAR(80) NOT NULL, "
                 "resource_type VARCHAR(80) NOT NULL, resource_id VARCHAR(128) NOT NULL, "
                 "metadata JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)"
+            )
+            # T5.4 人工归因：review 当前状态 + 全量变更事件（§27）。与 message_feedback
+            # 同域隔离：reviewer 只写自己的归因元数据，永远不接触用户正文。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS feedback_reviews ("
+                "id UUID PRIMARY KEY, feedback_id UUID NOT NULL UNIQUE REFERENCES message_feedback(id) ON DELETE CASCADE, "
+                "reviewer_user_id VARCHAR(64) NOT NULL, "
+                "root_cause VARCHAR(50), status VARCHAR(50) NOT NULL, "
+                "reviewer_note TEXT, "
+                "created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS feedback_review_events ("
+                "id UUID PRIMARY KEY, feedback_id UUID NOT NULL, reviewer_user_id VARCHAR(64) NOT NULL, "
+                "event_type VARCHAR(50) NOT NULL, old_value JSONB, new_value JSONB, "
+                "created_at TIMESTAMPTZ NOT NULL)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_feedback_review_events_feedback "
+                "ON feedback_review_events(feedback_id, created_at)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_message_feedback_user_thread "
@@ -1050,9 +1079,11 @@ class PostgresConversationDb(ConversationDb):
             "SELECT f.id AS feedback_id, f.run_id, f.reason, f.share_context, f.created_at, f.updated_at, "
             "r.module, r.agent_id, r.model, r.prompt_version, r.agent_version, r.status, "
             "r.input_tokens, r.output_tokens, r.total_tokens, r.latency_ms, r.error_type, r.error_code, "
+            "rv.status AS review_status, rv.root_cause, "
             "(s.id IS NOT NULL AND s.expires_at > now()) AS snapshot_available "
             "FROM message_feedback f JOIN agent_runs r ON r.id=f.run_id AND r.user_id=f.user_id "
             "LEFT JOIN feedback_snapshots s ON s.feedback_id=f.id AND s.user_id=f.user_id "
+            "LEFT JOIN feedback_reviews rv ON rv.feedback_id=f.id "
             "WHERE f.rating='negative' " + where
         )
 
@@ -1115,6 +1146,54 @@ class PostgresConversationDb(ConversationDb):
             "tool_calls": [_row_to_dict(row) for row in tool_calls],
         }
 
+    # ── feedback reviews（人工归因）──
+
+    @_synchronized
+    def get_feedback_review(self, feedback_id) -> dict | None:
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "SELECT id, feedback_id, reviewer_user_id, root_cause, "
+                "status AS review_status, reviewer_note, created_at, updated_at "
+                "FROM feedback_reviews WHERE feedback_id=%s",
+                (feedback_id,),
+            ).fetchone()
+        return _row_to_dict(row) if row else None
+
+    @_synchronized
+    def upsert_feedback_review(self, fields, events, audits) -> dict:
+        """Atomically upsert a review row and append its change events + audit rows."""
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "INSERT INTO feedback_reviews (id, feedback_id, reviewer_user_id, root_cause, status, "
+                "reviewer_note, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (feedback_id) DO UPDATE SET "
+                "reviewer_user_id=EXCLUDED.reviewer_user_id, root_cause=EXCLUDED.root_cause, "
+                "status=EXCLUDED.status, reviewer_note=EXCLUDED.reviewer_note, "
+                "updated_at=EXCLUDED.updated_at RETURNING id, feedback_id, reviewer_user_id, "
+                "root_cause, status AS review_status, reviewer_note, created_at, updated_at",
+                (fields["id"], fields["feedback_id"], fields["reviewer_user_id"],
+                 fields.get("root_cause"), fields["status"], fields.get("reviewer_note"),
+                 fields["created_at"], fields["updated_at"]),
+            ).fetchone()
+            for event in events:
+                conn.execute(
+                    "INSERT INTO feedback_review_events (id, feedback_id, reviewer_user_id, "
+                    "event_type, old_value, new_value, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)",
+                    (event["id"], fields["feedback_id"], event["reviewer_user_id"],
+                     event["event_type"], _json_dumps(event.get("old_value")),
+                     _json_dumps(event.get("new_value")), event["created_at"]),
+                )
+            for audit in audits:
+                conn.execute(
+                    "INSERT INTO feedback_audit_log (id, actor_user_id, action, resource_type, resource_id, "
+                    "metadata, created_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)",
+                    (audit["id"], audit["actor_user_id"], audit["action"], audit["resource_type"],
+                     audit["resource_id"], _json_dumps(audit["metadata"]), audit["created_at"]),
+                )
+        return _row_to_dict(row)
+
 
 class FakeConversationDb(ConversationDb):
     """内存实现（单测用），接口与 PostgresConversationDb 一致。"""
@@ -1131,6 +1210,8 @@ class FakeConversationDb(ConversationDb):
         self._regenerations: dict[tuple[str, str], str | None] = {}
         self._feedback: dict[tuple[str, str], dict] = {}
         self._snapshots: dict[str, dict] = {}
+        self._reviews: dict[str, dict] = {}
+        self._review_events: list[dict] = []
         self._audit: list[dict] = []
 
     # ── conversations ──
@@ -1513,6 +1594,7 @@ class FakeConversationDb(ConversationDb):
     @staticmethod
     def _quality_feedback_row(feedback: dict, snapshot: dict | None) -> dict:
         run = feedback["run"]
+        review = feedback.get("review")
         return {
             "feedback_id": feedback["id"], "run_id": feedback["run_id"], "reason": feedback.get("reason"),
             "share_context": feedback["share_context"], "created_at": feedback["created_at"],
@@ -1521,7 +1603,9 @@ class FakeConversationDb(ConversationDb):
             "status": run["status"], "input_tokens": run.get("input_tokens"),
             "output_tokens": run.get("output_tokens"), "total_tokens": run.get("total_tokens"),
             "latency_ms": run.get("latency_ms"), "error_type": run.get("error_type"),
-            "error_code": run.get("error_code"), "snapshot_available": bool(snapshot and _snapshot_active(snapshot)),
+            "error_code": run.get("error_code"),
+            "review_status": (review or {}).get("status"), "root_cause": (review or {}).get("root_cause"),
+            "snapshot_available": bool(snapshot and _snapshot_active(snapshot)),
         }
 
     def list_quality_feedback(self) -> list[dict]:
@@ -1534,6 +1618,7 @@ class FakeConversationDb(ConversationDb):
                 continue
             row = dict(feedback)
             row["run"] = run
+            row["review"] = self._reviews.get(feedback["id"])
             rows.append(self._quality_feedback_row(row, self._snapshots.get(feedback["id"])))
         return sorted(rows, key=lambda row: (row["updated_at"], row["feedback_id"]), reverse=True)
 
@@ -1546,6 +1631,7 @@ class FakeConversationDb(ConversationDb):
                 return None
             row = dict(feedback)
             row["run"] = run
+            row["review"] = self._reviews.get(feedback["id"])
             return self._quality_feedback_row(row, self._snapshots.get(feedback["id"]))
         return None
 
@@ -1585,6 +1671,41 @@ class FakeConversationDb(ConversationDb):
                            for row in self._retrievals.values() if row["run_id"] == run["id"]],
             "tool_calls": [{key: row.get(key) for key in tool_fields}
                            for row in self._tool_calls.values() if row["run_id"] == run["id"]],
+        }
+
+    # ── feedback reviews（人工归因）──
+
+    def get_feedback_review(self, feedback_id) -> dict | None:
+        review = self._reviews.get(feedback_id)
+        if review is None:
+            return None
+        return {
+            "id": review["id"], "feedback_id": review["feedback_id"],
+            "reviewer_user_id": review["reviewer_user_id"], "root_cause": review["root_cause"],
+            "review_status": review["status"], "reviewer_note": review["reviewer_note"],
+            "created_at": review["created_at"], "updated_at": review["updated_at"],
+        }
+
+    def upsert_feedback_review(self, fields, events, audits) -> dict:
+        """Fake equivalent of the Postgres atomic review+events+audit write."""
+        with self.write_lock:
+            row = dict(fields)
+            existing = self._reviews.get(fields["feedback_id"])
+            row["created_at"] = fields["created_at"]
+            if existing:
+                row["created_at"] = existing.get("created_at", row["created_at"])
+            self._reviews[fields["feedback_id"]] = dict(row)
+            for event in events:
+                stored_event = dict(event)
+                stored_event["feedback_id"] = fields["feedback_id"]
+                self._review_events.append(stored_event)
+            for audit in audits:
+                _json_dumps(audit["metadata"])
+                self._audit.append(dict(audit))
+        return {
+            "id": row["id"], "feedback_id": row["feedback_id"], "reviewer_user_id": row["reviewer_user_id"],
+            "root_cause": row["root_cause"], "review_status": row["status"],
+            "reviewer_note": row["reviewer_note"], "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
 
 

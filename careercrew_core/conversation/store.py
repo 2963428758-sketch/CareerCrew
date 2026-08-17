@@ -26,6 +26,21 @@ class OwnershipError(Exception):
     """资源不属于该用户（user_id 不匹配）时抛出。"""
 
 
+REVIEW_ROOT_CAUSES = frozenset({
+    "llm", "prompt", "rag_retrieval", "reranker", "tool",
+    "context", "ambiguous_question", "product_bug", "unknown",
+})
+_REVIEW_STATUSES = ("new", "triaged", "fixed", "ignored", "promoted_to_eval")
+# §27 状态机：promoted_to_eval 仅由 Promote API 设置，人工接口不可直接迁入。
+_REVIEW_TRANSITIONS = {
+    "new": {"triaged", "fixed", "ignored"},
+    "triaged": {"fixed", "ignored", "new"},
+    "fixed": {"triaged", "ignored"},
+    "ignored": {"triaged", "fixed"},
+    "promoted_to_eval": set(),
+}
+
+
 def _is_uuid(value: Any) -> bool:
     if isinstance(value, UUID):
         return True
@@ -399,6 +414,75 @@ class ConversationStore:
     def get_quality_diagnostics(self, feedback_id: str) -> dict | None:
         normalized = self._quality_feedback_id(feedback_id)
         return self._db.get_quality_diagnostics(normalized) if normalized else None
+
+    # ── feedback reviews（人工归因，T5.4）──
+
+    def get_quality_review(self, feedback_id: str) -> dict | None:
+        """Return the review row for a negative-feedback record, or None."""
+        normalized = self._quality_feedback_id(feedback_id)
+        if not normalized or self._db.get_quality_feedback(normalized) is None:
+            return None
+        return self._db.get_feedback_review(normalized)
+
+    def update_quality_review(self, reviewer_id: str, feedback_id: str, *,
+                              root_cause: str | None, status: str, note: str | None) -> dict:
+        """Apply one reviewed attribution change atomically with events and audit rows.
+
+        - ``root_cause=None`` keeps the previous value; ``""`` clears it.
+        - ``note=None`` keeps the previous note; ``""`` clears it.
+        - Raises ``ValueError`` on an illegal status transition (mapped to 409).
+        - Raises ``OwnershipError`` when the feedback record is not reviewable.
+        """
+        normalized = self._quality_feedback_id(feedback_id)
+        if not normalized or self._db.get_quality_feedback(normalized) is None:
+            raise OwnershipError("quality target is not available")
+        existing = self._db.get_feedback_review(normalized)
+        old_status = (existing or {}).get("review_status") or "new"
+        old_cause = (existing or {}).get("root_cause")
+        old_note = (existing or {}).get("reviewer_note")
+        if status != old_status and status not in _REVIEW_TRANSITIONS.get(old_status, set()):
+            raise ValueError(f"illegal review status transition: {old_status} -> {status}")
+        if root_cause is not None and root_cause not in REVIEW_ROOT_CAUSES:
+            raise ValueError(f"invalid root cause: {root_cause}")
+        new_cause = root_cause if root_cause is not None else old_cause
+        new_note = note if note is not None else old_note
+        now = _now()
+        review_id = (existing or {}).get("id") or str(uuid7())
+        events: list[dict] = []
+        audits: list[dict] = []
+        if status != old_status:
+            events.append({
+                "id": str(uuid7()), "reviewer_user_id": reviewer_id, "event_type": "status_changed",
+                "old_value": {"status": old_status}, "new_value": {"status": status}, "created_at": now,
+            })
+            audits.append({
+                "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.review.status_changed",
+                "resource_type": "feedback_review", "resource_id": review_id,
+                "metadata": {"feedback_id": normalized, "old_status": old_status, "new_status": status},
+                "created_at": now,
+            })
+        if new_cause != old_cause:
+            events.append({
+                "id": str(uuid7()), "reviewer_user_id": reviewer_id, "event_type": "root_cause_changed",
+                "old_value": {"root_cause": old_cause}, "new_value": {"root_cause": new_cause}, "created_at": now,
+            })
+            audits.append({
+                "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.review.root_cause_changed",
+                "resource_type": "feedback_review", "resource_id": review_id,
+                "metadata": {"feedback_id": normalized, "old_root_cause": old_cause, "new_root_cause": new_cause},
+                "created_at": now,
+            })
+        if new_note != old_note:
+            events.append({
+                "id": str(uuid7()), "reviewer_user_id": reviewer_id, "event_type": "note_changed",
+                "old_value": {"note": old_note}, "new_value": {"note": new_note}, "created_at": now,
+            })
+        fields = {
+            "id": review_id, "feedback_id": normalized, "reviewer_user_id": reviewer_id,
+            "root_cause": new_cause, "status": status, "reviewer_note": new_note,
+            "created_at": now, "updated_at": now,
+        }
+        return self._db.upsert_feedback_review(fields, events, audits)
 
     # ── regeneration idempotency ──
 

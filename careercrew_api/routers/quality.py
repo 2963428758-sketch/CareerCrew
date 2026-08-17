@@ -6,12 +6,26 @@ thread/message identifiers, and raw retrieval/tool payloads.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict
 
 from careercrew_api.auth.dependencies import QualityReviewer
 from careercrew_api.deps import get_runtime_dep
+from careercrew_core.conversation.store import OwnershipError
 
 router = APIRouter()
+
+
+class ReviewUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    root_cause: Literal["llm", "prompt", "rag_retrieval", "reranker", "tool",
+                        "context", "ambiguous_question", "product_bug", "unknown"] | None = None
+    # promoted_to_eval 在枚举内但状态机拒绝（409）：只能由 Promote API 设置。
+    status: Literal["new", "triaged", "fixed", "ignored", "promoted_to_eval"]
+    note: str | None = None
 
 
 def _not_found() -> HTTPException:
@@ -31,6 +45,32 @@ def get_bad_case(feedback_id: str, reviewer: QualityReviewer, rt=Depends(get_run
     if feedback is None:
         raise _not_found()
     return feedback
+
+
+@router.get("/bad-cases/{feedback_id}/review")
+def get_bad_case_review(feedback_id: str, reviewer: QualityReviewer,
+                        rt=Depends(get_runtime_dep)) -> dict:
+    """Return the reviewer's attribution row (root cause / status / note)."""
+    review = rt.conversation_store.get_quality_review(feedback_id)
+    if review is None:
+        raise _not_found()
+    return review
+
+
+@router.put("/bad-cases/{feedback_id}/review")
+def update_bad_case_review(feedback_id: str, req: ReviewUpdateRequest, reviewer: QualityReviewer,
+                           rt=Depends(get_runtime_dep)) -> dict:
+    """Apply one attribution change; illegal transitions are rejected with 409."""
+    try:
+        review = rt.conversation_store.update_quality_review(
+            reviewer["id"], feedback_id, root_cause=req.root_cause,
+            status=req.status, note=req.note,
+        )
+    except OwnershipError as exc:
+        raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return review
 
 
 @router.get("/bad-cases/{feedback_id}/snapshot")
