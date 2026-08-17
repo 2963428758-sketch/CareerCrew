@@ -6,9 +6,10 @@ thread/message identifiers, and raw retrieval/tool payloads.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
 from careercrew_api.auth.dependencies import QualityReviewer
@@ -16,6 +17,15 @@ from careercrew_api.deps import get_runtime_dep
 from careercrew_core.conversation.store import OwnershipError
 
 router = APIRouter()
+
+
+def _parse_dt(value: datetime | None) -> datetime | None:
+    """Normalize a query datetime into a tz-aware UTC value."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class ReviewUpdateRequest(BaseModel):
@@ -30,6 +40,27 @@ class ReviewUpdateRequest(BaseModel):
 
 def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="质检记录不存在或无可访问内容")
+
+
+@router.get("/metrics")
+def quality_metrics(reviewer: QualityReviewer, rt=Depends(get_runtime_dep),
+                    from_: datetime | None = Query(None, alias="from"),
+                    to: datetime | None = Query(None),
+                    module: str | None = Query(None, max_length=50),
+                    agent: str | None = Query(None, max_length=100),
+                    model: str | None = Query(None, max_length=150),
+                    prompt_version: str | None = Query(None, max_length=80),
+                    agent_version: str | None = Query(None, max_length=80)) -> dict:
+    """Dashboard aggregates: helpful rate with sample size, coverage, reason
+    distribution, failure shares, latency/token stats, version trend and the
+    unversioned-run alert (§25.2 / §25.3 / §44 / T5.5)."""
+    filters = {
+        "from_dt": _parse_dt(from_),
+        "to_dt": _parse_dt(to),
+        "module": module, "agent": agent, "model": model,
+        "prompt_version": prompt_version, "agent_version": agent_version,
+    }
+    return rt.conversation_store.compute_quality_metrics(filters)
 
 
 @router.get("/bad-cases")

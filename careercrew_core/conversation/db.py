@@ -264,6 +264,11 @@ class ConversationDb(ABC):
     def upsert_feedback_review(self, fields: dict, events: list[dict],
                                audits: list[dict]) -> dict: ...
 
+    # ── quality metrics（T5.2 Dashboard）──
+
+    @abstractmethod
+    def compute_quality_metrics(self, filters: dict) -> dict: ...
+
 
 class PostgresConversationDb(ConversationDb):
     """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
@@ -1194,6 +1199,102 @@ class PostgresConversationDb(ConversationDb):
                 )
         return _row_to_dict(row)
 
+    @staticmethod
+    def _metrics_clauses(filters: dict) -> tuple[str, list]:
+        """Build a run-scoped WHERE fragment from dashboard filters (T5.2)."""
+        clauses: list[str] = []
+        params: list = []
+        if filters.get("from_dt") is not None:
+            clauses.append("r.started_at >= %s")
+            params.append(filters["from_dt"])
+        if filters.get("to_dt") is not None:
+            clauses.append("r.started_at < %s")
+            params.append(filters["to_dt"])
+        for column, key in (("module", "module"), ("agent_id", "agent"),
+                            ("model", "model"), ("prompt_version", "prompt_version"),
+                            ("agent_version", "agent_version")):
+            value = filters.get(key)
+            if value:
+                clauses.append(f"r.{column}=%s")
+                params.append(value)
+        return (" AND " + " AND ".join(clauses)) if clauses else "", params
+
+    @_synchronized
+    def compute_quality_metrics(self, filters: dict) -> dict:
+        """Aggregate feedback/run metrics within a single run scope (§25.2 + T5.5)."""
+        where, params = self._metrics_clauses(filters)
+        with self._connect() as conn, conn.transaction():
+            run_row = conn.execute(
+                "SELECT COUNT(*) AS runs, COUNT(latency_ms) AS latency_n, "
+                "percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS median_latency_ms, "
+                "percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms, "
+                "AVG(input_tokens) AS avg_input_tokens, AVG(output_tokens) AS avg_output_tokens, "
+                "COUNT(*) FILTER (WHERE prompt_version IS NULL OR prompt_version='' "
+                "OR prompt_version='unversioned' OR agent_version IS NULL OR agent_version='' "
+                "OR agent_version='unversioned') AS unversioned_runs "
+                "FROM agent_runs r WHERE 1=1" + where,
+                params,
+            ).fetchone()
+            ratings = conn.execute(
+                "SELECT f.rating, COUNT(*) AS n FROM message_feedback f "
+                "JOIN agent_runs r ON r.id=f.run_id AND r.user_id=f.user_id "
+                "WHERE 1=1" + where + " GROUP BY f.rating",
+                params,
+            ).fetchall()
+            reasons = conn.execute(
+                "SELECT f.reason, COUNT(*) AS n FROM message_feedback f "
+                "JOIN agent_runs r ON r.id=f.run_id AND r.user_id=f.user_id "
+                "WHERE f.rating='negative' AND 1=1" + where + " GROUP BY f.reason",
+                params,
+            ).fetchall()
+            trend = conn.execute(
+                "SELECT r.prompt_version, "
+                "COUNT(f.id) FILTER (WHERE f.rating='positive') AS positive_count, "
+                "COUNT(f.id) AS feedback_count "
+                "FROM agent_runs r LEFT JOIN message_feedback f "
+                "ON f.run_id=r.id AND f.user_id=r.user_id "
+                "WHERE 1=1" + where + " GROUP BY r.prompt_version ORDER BY r.prompt_version",
+                params,
+            ).fetchall()
+        run = _row_to_dict(run_row)
+        total = int(run["runs"] or 0)
+        rating_map = {row["rating"]: int(row["n"]) for row in ratings}
+        positive = rating_map.get("positive", 0)
+        negative = rating_map.get("negative", 0)
+        rated = positive + negative
+        reason_distribution = {row["reason"] or "other": int(row["n"]) for row in reasons}
+        return {
+            "runs": total,
+            "feedback_count": rated,
+            "positive_count": positive,
+            "negative_count": negative,
+            "helpful_rate": round(positive / rated, 4) if rated else 0.0,
+            "feedback_coverage": round(rated / total, 4) if total else 0.0,
+            "negative_reason_distribution": reason_distribution,
+            "rag_failure_share": round(reason_distribution.get("citation_failure", 0) / negative, 4)
+            if negative else 0.0,
+            "tool_failure_share": round(reason_distribution.get("tool_failure", 0) / negative, 4)
+            if negative else 0.0,
+            "median_latency_ms": run.get("median_latency_ms"),
+            "p95_latency_ms": run.get("p95_latency_ms"),
+            "latency_n": int(run["latency_n"] or 0),
+            "avg_input_tokens": round(float(run["avg_input_tokens"]), 1)
+            if run.get("avg_input_tokens") is not None else None,
+            "avg_output_tokens": round(float(run["avg_output_tokens"]), 1)
+            if run.get("avg_output_tokens") is not None else None,
+            "unversioned_run_count": int(run["unversioned_runs"] or 0),
+            "unversioned_run_rate": round(int(run["unversioned_runs"] or 0) / total, 4) if total else 0.0,
+            "helpful_rate_by_prompt_version": [
+                {
+                    "prompt_version": row["prompt_version"], "positive_count": int(row["positive_count"]),
+                    "feedback_count": int(row["feedback_count"]),
+                    "rate": round(int(row["positive_count"]) / int(row["feedback_count"]), 4)
+                    if int(row["feedback_count"]) else 0.0,
+                }
+                for row in trend
+            ],
+        }
+
 
 class FakeConversationDb(ConversationDb):
     """内存实现（单测用），接口与 PostgresConversationDb 一致。"""
@@ -1706,6 +1807,88 @@ class FakeConversationDb(ConversationDb):
             "id": row["id"], "feedback_id": row["feedback_id"], "reviewer_user_id": row["reviewer_user_id"],
             "root_cause": row["root_cause"], "review_status": row["status"],
             "reviewer_note": row["reviewer_note"], "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _run_in_scope(run: dict, filters: dict) -> bool:
+        if filters.get("from_dt") is not None and (run.get("started_at") or "") < filters["from_dt"]:
+            return False
+        if filters.get("to_dt") is not None and (run.get("started_at") or "") >= filters["to_dt"]:
+            return False
+        for key in ("module", "agent", "model", "prompt_version", "agent_version"):
+            value = filters.get(key)
+            if value and run.get({"agent": "agent_id"}.get(key, key)) != value:
+                return False
+        return True
+
+    def compute_quality_metrics(self, filters: dict) -> dict:
+        runs = [r for r in self._runs.values() if self._run_in_scope(r, filters)]
+        feedback = [f for f in self._feedback.values() if self._runs.get(f["run_id"]) in runs]
+        positive = sum(1 for f in feedback if f["rating"] == "positive")
+        negative = sum(1 for f in feedback if f["rating"] == "negative")
+        rated = positive + negative
+        total = len(runs)
+        latency = sorted(r["latency_ms"] for r in runs if r.get("latency_ms") is not None)
+        reason_distribution: dict[str, int] = {}
+        for f in feedback:
+            if f["rating"] == "negative":
+                reason = f.get("reason") or "other"
+                reason_distribution[reason] = reason_distribution.get(reason, 0) + 1
+
+        def percentile(values: list, p: float) -> float | None:
+            if not values:
+                return None
+            index = (len(values) - 1) * p
+            lower = int(index)
+            upper = min(lower + 1, len(values) - 1)
+            return values[lower] if lower == upper else (values[lower] + values[upper]) / 2
+
+        unversioned = sum(
+            1 for r in runs
+            if not (r.get("prompt_version") and r.get("prompt_version") != "unversioned")
+            or not (r.get("agent_version") and r.get("agent_version") != "unversioned")
+        )
+        token_runs = [r for r in runs if r.get("input_tokens") is not None or r.get("output_tokens") is not None]
+        avg_in = round(sum(r.get("input_tokens") or 0 for r in token_runs) / len(token_runs), 1) if token_runs else None
+        avg_out = round(sum(r.get("output_tokens") or 0 for r in token_runs) / len(token_runs), 1) if token_runs else None
+        versions: dict[str, dict] = {}
+        for f in feedback:
+            run = self._runs.get(f["run_id"])
+            if not run:
+                continue
+            version = run.get("prompt_version") or ""
+            entry = versions.setdefault(version, {"positive_count": 0, "feedback_count": 0})
+            entry["feedback_count"] += 1
+            if f["rating"] == "positive":
+                entry["positive_count"] += 1
+        return {
+            "runs": total,
+            "feedback_count": rated,
+            "positive_count": positive,
+            "negative_count": negative,
+            "helpful_rate": round(positive / rated, 4) if rated else 0.0,
+            "feedback_coverage": round(rated / total, 4) if total else 0.0,
+            "negative_reason_distribution": reason_distribution,
+            "rag_failure_share": round(reason_distribution.get("citation_failure", 0) / negative, 4)
+            if negative else 0.0,
+            "tool_failure_share": round(reason_distribution.get("tool_failure", 0) / negative, 4)
+            if negative else 0.0,
+            "median_latency_ms": percentile(latency, 0.5),
+            "p95_latency_ms": percentile(latency, 0.95),
+            "latency_n": len(latency),
+            "avg_input_tokens": avg_in,
+            "avg_output_tokens": avg_out,
+            "unversioned_run_count": unversioned,
+            "unversioned_run_rate": round(unversioned / total, 4) if total else 0.0,
+            "helpful_rate_by_prompt_version": [
+                {
+                    "prompt_version": version or "unversioned",
+                    "positive_count": entry["positive_count"], "feedback_count": entry["feedback_count"],
+                    "rate": round(entry["positive_count"] / entry["feedback_count"], 4)
+                    if entry["feedback_count"] else 0.0,
+                }
+                for version, entry in sorted(versions.items())
+            ],
         }
 
 

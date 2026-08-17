@@ -415,6 +415,10 @@ class ConversationStore:
         normalized = self._quality_feedback_id(feedback_id)
         return self._db.get_quality_diagnostics(normalized) if normalized else None
 
+    def compute_quality_metrics(self, filters: dict) -> dict:
+        """Aggregate dashboard metrics within a single run scope (§25.2 / T5.5)."""
+        return self._db.compute_quality_metrics(filters)
+
     # ── feedback reviews（人工归因，T5.4）──
 
     def get_quality_review(self, feedback_id: str) -> dict | None:

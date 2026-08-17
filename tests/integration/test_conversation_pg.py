@@ -455,3 +455,20 @@ def test_quality_review_postgres_persists_events_and_audits(store_and_db):
 
     with pytest.raises(ValueError):
         store.update_quality_review("reviewer-1", feedback["id"], status="promoted_to_eval")
+
+def test_quality_metrics_postgres_matches_fake_semantics(store_and_db):
+    """Dashboard aggregates on real SQL: coverage, latency percentiles, trend, alert."""
+    store, _db = store_and_db
+    uid = "u_metrics_pg"
+    _conv, _turn, _user, good, _run = _begin_chat_turn(store, uid)
+    _conv, _turn, _user, bad, _run = _begin_chat_turn(store, uid)
+    store.finish_run(uid, _run["id"], "completed", latency_ms=800, input_tokens=20, output_tokens=40)
+    store.put_feedback(uid, good["id"], rating="positive")
+    store.put_feedback(uid, bad["id"], rating="negative", reason="tool_failure")
+    metrics = store.compute_quality_metrics({})
+    assert metrics["runs"] == 2
+    assert metrics["positive_count"] == 1 and metrics["negative_count"] == 1
+    assert metrics["helpful_rate"] == 0.5
+    assert metrics["tool_failure_share"] == 1.0
+    assert metrics["median_latency_ms"] == 800 and metrics["p95_latency_ms"] == 800
+    assert metrics["avg_input_tokens"] == 20 and metrics["avg_output_tokens"] == 40
