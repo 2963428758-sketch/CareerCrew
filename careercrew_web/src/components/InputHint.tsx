@@ -11,13 +11,13 @@ interface InputHintProps {
  */
 export function InputHint({ tip }: InputHintProps) {
   return (
-    <p className="mx-auto mt-2 flex max-w-3xl items-center gap-1 text-[11px] text-muted-foreground">
+    <p className="mx-auto mt-2 flex max-w-[820px] items-center gap-1 text-[11px] text-ink-faint">
       <CornerDownLeft className="h-3 w-3" /> 发送
-      <span className="mx-1">·</span>
+      <span className="mx-1 opacity-60">·</span>
       Shift + Enter 换行
       {tip && (
         <>
-          <span className="mx-1">·</span>
+          <span className="mx-1 opacity-60">·</span>
           {tip}
         </>
       )}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { Send, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Tooltip } from "@/components/ui/tooltip"
 import type { ConsultInputField } from "@/types"
 import { CONSULT_INPUT_FIELDS } from "@/types"
 import { cn } from "@/lib/utils"
@@ -61,25 +62,27 @@ export function ConsultFormDialog({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="w-full max-w-lg overflow-hidden rounded-xl border bg-card shadow-2xl stream-fade-in">
-        <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
+      <div className="w-full max-w-lg overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace shadow-popover stream-fade-in">
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--border-soft)] px-5 py-4">
           <div className="min-w-0">
-            <h3 className="font-display text-base font-semibold">补充你的求职信息</h3>
-            {message && <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">{message}</p>}
+            <h3 className="text-[15px] font-medium text-ink">补充你的求职信息</h3>
+            {message && <p className="mt-1 line-clamp-3 text-[12.5px] text-ink-soft">{message}</p>}
           </div>
-          <button
-            onClick={onClose}
-            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="稍后填写"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <Tooltip label="稍后填写">
+            <button
+              onClick={onClose}
+              aria-label="稍后填写"
+              className="shrink-0 rounded-[7px] p-1 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </Tooltip>
         </div>
 
         <div className="max-h-[55vh] space-y-3 overflow-y-auto px-5 py-4">
           {resolved.map((f) => (
             <label key={f.id} className="block">
-              <span className="mb-1 flex items-center gap-1 text-xs font-medium text-foreground">
+              <span className="mb-1 flex items-center gap-1 text-[12.5px] font-medium text-ink">
                 {f.label}
                 {f.required && <span className="text-destructive">*</span>}
               </span>
@@ -92,8 +95,8 @@ export function ConsultFormDialog({
                 placeholder={f.placeholder}
                 autoFocus={f.id === resolved[0]?.id}
                 className={cn(
-                  "h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition-colors",
-                  "placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  "h-9 w-full rounded-[7px] border bg-workspace px-3 text-[13px] outline-none transition-colors duration-100",
+                  "placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-ring/40",
                   errors[f.id] ? "border-destructive" : "border-input"
                 )}
               />
@@ -104,7 +107,7 @@ export function ConsultFormDialog({
           ))}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--border-soft)] px-5 py-3">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>
             稍后填写
           </Button>

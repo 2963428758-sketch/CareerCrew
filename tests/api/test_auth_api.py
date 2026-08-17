@@ -51,7 +51,7 @@ def test_bootstrap_status_only_reports_whether_first_admin_can_be_created(auth_c
 @pytest.mark.web
 def test_password_login_protects_me_and_never_returns_refresh_token(auth_client):
     user = _bootstrap(auth_client)
-    assert user == {"id": "u_001", "username": "admin", "role": "admin", "must_change_password": False}
+    assert user == {"id": "u_001", "username": "admin", "role": "admin", "must_change_password": False, "display_name": None}
 
     unauthorized = auth_client.get("/api/auth/me")
     assert unauthorized.status_code == 401
@@ -135,7 +135,7 @@ def test_production_startup_requires_explicit_auth_secret(tmp_path, monkeypatch)
         encoding="utf-8",
     )
     monkeypatch.setattr(settings_module, "DEFAULT_CONFIG_PATH", config)
-    monkeypatch.setattr(settings_module, "load_dotenv", lambda: None)
+    monkeypatch.setattr(settings_module, "load_dotenv", lambda *a, **k: None)
     with pytest.raises(SettingsError, match="auth.jwt_secret"):
         create_app()
 
@@ -165,9 +165,11 @@ def test_admin_lists_patches_and_disables_users(auth_client):
     )
     assert patched.status_code == 200
     assert patched.json()["status"] == "disabled"
-    # 禁用立即生效：旧 access token 失效、登录被拒
+    # 禁用立即生效：旧 access token 失效、登录被拒（明确提示账号已锁定）
     assert auth_client.get("/api/auth/me", headers=member_headers).status_code == 401
-    assert auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).status_code == 401
+    blocked = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD})
+    assert blocked.status_code == 403
+    assert "账号已被锁定" in blocked.json()["detail"]
 
     reenabled = auth_client.patch(
         f"/api/auth/users/{member_id}", json={"status": "active"}, headers=admin_headers
@@ -259,6 +261,46 @@ def test_refresh_rejects_untrusted_origin(auth_client):
     assert evil.status_code == 403
     trusted = auth_client.post("/api/auth/refresh", headers={"Origin": "http://localhost:5175"})
     assert trusted.status_code == 200
+
+
+@pytest.mark.web
+def test_admin_assigns_quality_reviewer_and_dependency_gates(auth_client):
+    from careercrew_api.auth.dependencies import require_quality_reviewer
+
+    _bootstrap(auth_client)
+    admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
+
+    # 普通 user
+    member = auth_client.post(
+        "/api/auth/users", json={"username": "member", "password": USER_PASSWORD}, headers=admin_headers
+    )
+    assert member.status_code == 201
+    member_id = member.json()["id"]
+
+    # admin 将其设为 quality_reviewer（写审计 + token_version 递增沿用 update_user）
+    patched = auth_client.patch(
+        f"/api/auth/users/{member_id}", json={"role": "quality_reviewer"}, headers=admin_headers
+    )
+    assert patched.status_code == 200
+    assert patched.json()["role"] == "quality_reviewer"
+
+    # 该用户登录后，access token role claim == quality_reviewer
+    login = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD})
+    assert login.status_code == 200
+    assert login.json()["user"]["role"] == "quality_reviewer"
+
+    # reviewer 访问 require_admin 端点 → 403
+    reviewer_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert auth_client.get("/api/auth/users", headers=reviewer_headers).status_code == 403
+
+    # 普通 user 访问 reviewer 依赖 → 403（直接用依赖函数验证，Phase 5 才建端点）
+    with pytest.raises(Exception) as user_err:
+        require_quality_reviewer({"id": "u", "username": "u", "role": "user"})
+    assert getattr(user_err.value, "status_code", None) == 403
+
+    # reviewer 通过自己的依赖 → 200（依赖函数直接返回 user dict，不抛异常）
+    assert require_quality_reviewer({"id": member_id, "username": "member", "role": "quality_reviewer"}) \
+        == {"id": member_id, "username": "member", "role": "quality_reviewer"}
 
 
 @pytest.mark.web

@@ -2,7 +2,9 @@ import { useEffect, useState } from "react"
 import { X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Tooltip } from "@/components/ui/tooltip"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface CreateUserDialogProps {
   open: boolean
@@ -63,12 +65,14 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password: password || null, role }),
       })
-      const data = await resp.json()
       if (!resp.ok) {
-        setError(data.detail || `HTTP ${resp.status}`)
+        setError(await apiErrorText(resp, "创建账号失败，请重试"))
         return
       }
+      const data = await resp.json()
       onCreated(data.username)
+    } catch (e) {
+      setError(networkErrorText(e, "网络连接失败，请检查网络后重试"))
     } finally {
       setSubmitting(false)
     }
@@ -83,28 +87,30 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
         if (e.target === e.currentTarget && !submitting) onClose()
       }}
     >
-      <div className="w-full max-w-md overflow-hidden rounded-xl border bg-card shadow-2xl stream-fade-in">
-        <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
+      <div className="w-full max-w-md overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace shadow-popover stream-fade-in">
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--border-soft)] px-5 py-4">
           <div className="min-w-0">
-            <h3 className="font-display text-base font-semibold">新建账号</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">创建后首次登录需修改密码</p>
+            <h3 className="text-[15px] font-medium text-ink">新建账号</h3>
+            <p className="mt-0.5 text-[12px] text-ink-faint">创建后首次登录需修改密码</p>
           </div>
-          <button
-            onClick={onClose}
-            disabled={submitting}
-            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-            title="关闭"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <Tooltip label="关闭">
+            <button
+              onClick={onClose}
+              disabled={submitting}
+              aria-label="关闭"
+              className="shrink-0 rounded-[7px] p-1 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:opacity-50"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </Tooltip>
         </div>
 
         <div className="space-y-3 px-5 py-4">
           {error && (
-            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+            <p className="rounded-[7px] border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>
           )}
           <label className="block">
-            <span className="mb-1 flex items-center gap-1 text-xs font-medium">
+            <span className="mb-1 flex items-center gap-1 text-[12.5px] font-medium text-ink">
               用户名 <span className="text-destructive">*</span>
             </span>
             <Input
@@ -116,7 +122,7 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
             />
           </label>
           <label className="block">
-            <span className="mb-1 flex items-center gap-1 text-xs font-medium">密码（可选）</span>
+            <span className="mb-1 flex items-center gap-1 text-[12.5px] font-medium text-ink">密码（可选）</span>
             <Input
               aria-label="密码"
               type="password"
@@ -126,11 +132,11 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
             />
           </label>
           <label className="block">
-            <span className="mb-1 flex items-center gap-1 text-xs font-medium">角色</span>
+            <span className="mb-1 flex items-center gap-1 text-[12.5px] font-medium text-ink">角色</span>
             <select
               value={role}
               onChange={(e) => setRole(e.target.value as "user" | "admin")}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              className="h-9 w-full rounded-[7px] border border-input bg-workspace px-3 text-[13px] outline-none transition-colors duration-100 focus-visible:ring-2 focus-visible:ring-ring/40"
             >
               <option value="user">普通用户</option>
               <option value="admin">管理员</option>
@@ -138,7 +144,7 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
           </label>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--border-soft)] px-5 py-3">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>
             取消
           </Button>

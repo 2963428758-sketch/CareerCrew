@@ -11,18 +11,21 @@ import re
 import threading
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.schemas import ConsultRequest
 from careercrew_api.sse import (
     STREAM_IDLE_TIMEOUT_SECONDS,
     CancellationEvent,
     StreamCancelled,
+    friendly_error,
     put_guaranteed,
+    turn_done_fields,
 )
 from careercrew_core.tracing.langsmith import attach_run_metadata, traced_call
 
@@ -120,6 +123,18 @@ def consult(
 ) -> StreamingResponse:
     """会诊总调度官：自动编排顾问 -> 多轮并行调度 -> 最终答案。"""
 
+    # T3.4 §15.2：mentions 服务端二次校验（拒绝越权引用 → 422）。
+    mentions: list[dict] = []
+    if req.mentions:
+        try:
+            mentions = rt.resolve_mentions(
+                current_user["id"], [m.model_dump() for m in req.mentions]
+            )
+        except MentionRejected as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except RuntimeInitError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
     def gen() -> Generator[str, None, None]:
         q: queue.Queue = queue.Queue(maxsize=512)
         err: dict[str, BaseException] = {}
@@ -140,6 +155,20 @@ def consult(
         def _worker_impl():
             user_id = current_user["id"]
             attach_run_metadata(user_id=user_id, thread_id=req.thread_id, stage="consult")
+            from careercrew_api.runtime import _capture_langsmith_run_id
+
+            ls_run_id = _capture_langsmith_run_id()
+            # T3.5：会诊各顾问按各自 kind 构造工具；effective 由 consult 模块 allowlist
+            # 计算后下发给 new_consult_agent，逐顾问再由 `_make_tools(kind, allowed=…)`
+            # 裁剪到其实际注册集合。
+            effective = rt.compute_effective_tools("consult", req.tools)
+            hitl = rt._hitl_requires()
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="consult",
+                agent_id="consult_orchestrator", user_text=req.question,
+                user_metadata={"mentions": mentions} if mentions else None,
+                effective_tools=effective,
+            )
             try:
                 from careercrew_core.supervisor.consult_orchestrator import (
                     USER_INPUT_FIELDS,
@@ -216,6 +245,7 @@ def consult(
                     rt.llm,
                     lambda name, cb: rt.new_consult_agent(
                         name, cb, episodic=rt._get_episodic(req.thread_id, user_id),
+                        allowed=effective, hitl_requires=hitl,
                     ),
                     emit=_safe_emit,
                 )
@@ -267,10 +297,34 @@ def consult(
                     )
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
-                _safe_emit({"type": "done", "content": final, "opinions": opinions, "calls": calls})
+                # T3.5：会诊顾问被 HITL 拦截的调用（blocked_tool_calls）汇总后落
+                # awaiting_confirmation 行，与会诊调度过程一并可视化（block-and-record）。
+                from careercrew_api.runtime import _observability_from_result
+
+                obs_tool_calls: list[dict] = []
+                for call in calls:
+                    blocked = call.get("blocked_tool_calls") or []
+                    if blocked:
+                        synth = type("R", (), {
+                            "input_tokens": None, "output_tokens": None,
+                            "tool_call_details": [],
+                            "blocked_tool_calls": blocked,
+                        })()
+                        obs_tool_calls.extend(_observability_from_result(synth)["tool_calls"])
+                rt._finish_chat_turn(
+                    ctx, final, metadata={"opinions": opinions, "calls": calls},
+                    langsmith_run_id=ls_run_id,
+                    tool_calls=obs_tool_calls or None,
+                )
+                _safe_emit({
+                    "type": "done", "content": final, "opinions": opinions, "calls": calls,
+                    **turn_done_fields(ctx),
+                })
             except StreamCancelled:
+                rt._cancel_chat_turn(ctx)
                 pass  # 客户端断开/停止生成：不再投递任何事件
             except Exception as e:
+                rt._fail_chat_turn(ctx, e)
                 err["exc"] = e
             finally:
                 put_guaranteed(q, _SENTINEL, cancel)
@@ -297,16 +351,16 @@ def consult(
                 except queue.Empty:
                     yield _ndjson_line({
                         "type": "error",
-                        "message": f"stream timeout after {STREAM_IDLE_TIMEOUT_SECONDS}s",
+                        "message": f"回答生成超时（等待超过 {STREAM_IDLE_TIMEOUT_SECONDS:g} 秒无响应），请重试",
                     })
                     break
                 if item is _SENTINEL:
                     break
                 yield _ndjson_line(item)
             if "exc" in err:
-                yield _ndjson_line({"type": "error", "message": str(err["exc"])})
+                yield _ndjson_line({"type": "error", "message": friendly_error(err["exc"])})
         except RuntimeInitError as e:
-            yield _ndjson_line({"type": "error", "message": str(e)})
+            yield _ndjson_line({"type": "error", "message": friendly_error(e)})
         finally:
             cancel.set()  # 生成器关闭（客户端断开/停止）→ 通知 worker 协作式取消
         t.join(timeout=1)

@@ -67,7 +67,7 @@ def test_timeout_message_uses_configured_seconds():
         time.sleep(0.5)
 
     lines = _lines(stream_agent(run_fn, timeout=0.05))
-    assert any("stream timeout after 0.05s" in l for l in lines)
+    assert any("回答生成超时" in l and "0.05" in l for l in lines)
 
 
 def test_cancel_stops_further_callback_emission():
@@ -111,7 +111,7 @@ def test_chat_endpoint_passes_cancel_to_runtime(client, fake_runtime):
 
     state = {"checks": 0}
 
-    def slow_match(thread_id, user_id, intent, cb=None, cancel_check=None):
+    def slow_match(thread_id, user_id, intent, cb=None, cancel_check=None, **kwargs):
         for _ in range(1000):
             if cancel_check is not None:
                 state["checks"] += 1

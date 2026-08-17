@@ -19,7 +19,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-from careercrew_api.auth.store import AccountExistsError, AccountStore, hash_token
+from careercrew_api.auth.store import ROLES, STATUSES, AccountExistsError, AccountStore, hash_token
 
 
 def _now() -> datetime:
@@ -65,6 +65,11 @@ class FakeChatModel(BaseChatModel):
             yield ChatGenerationChunk(
                 message=AIMessageChunk(content="", tool_call_chunks=chunks)
             )
+        # 真实流式模型会在流末以 usage chunk 回传 token 计量（T1.4 观测依赖此字段）
+        if getattr(resp, "usage_metadata", None):
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content="", usage_metadata=resp.usage_metadata)
+            )
 
     def _next(self) -> AIMessage:
         i = self._i
@@ -107,6 +112,8 @@ class FakeAccountStore(AccountStore):
 
     def create_account(self, username: str, password_hash: str, role: str,
                        must_change: bool = False) -> dict:
+        if role not in ROLES:
+            raise ValueError(f"invalid role: {role}")
         if any(a["username"] == username for a in self.accounts.values()):
             raise AccountExistsError("username already exists")
         user_id = f"u_{uuid4().hex}"
@@ -134,6 +141,10 @@ class FakeAccountStore(AccountStore):
 
     def update_account(self, user_id: str, *, role: str | None = None,
                        status: str | None = None) -> dict:
+        if role is not None and role not in ROLES:
+            raise ValueError(f"invalid role: {role}")
+        if status is not None and status not in STATUSES:
+            raise ValueError(f"invalid status: {status}")
         if user_id not in self.accounts:
             raise KeyError(user_id)
         if role is not None:
@@ -145,6 +156,18 @@ class FakeAccountStore(AccountStore):
 
     def update_password_hash(self, user_id: str, password_hash: str) -> None:
         self.accounts[user_id]["password_hash"] = password_hash
+        self.accounts[user_id]["updated_at"] = _now().isoformat()
+
+    def update_avatar(self, user_id: str, avatar_ref: str) -> None:
+        if user_id not in self.accounts:
+            raise KeyError(user_id)
+        self.accounts[user_id]["avatar"] = avatar_ref
+        self.accounts[user_id]["updated_at"] = _now().isoformat()
+
+    def update_display_name(self, user_id: str, name: str) -> None:
+        if user_id not in self.accounts:
+            raise KeyError(user_id)
+        self.accounts[user_id]["display_name"] = name
         self.accounts[user_id]["updated_at"] = _now().isoformat()
 
     def set_must_change_password(self, user_id: str, value: bool) -> None:

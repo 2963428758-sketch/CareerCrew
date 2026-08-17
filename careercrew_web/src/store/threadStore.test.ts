@@ -124,4 +124,32 @@ describe("threadStore retrieval_scope", () => {
       type: "private", category_id: "resume",
     })
   })
+
+  it("remapLegacyThread 把旧 legacy id 替换为新 UUID（线程条目 + currentThreadByModule + unread）", () => {
+    useThreadStore.setState({
+      threadsByModule: {
+        chat: [{ thread_id: "t-legacy", title: "旧", module: "chat", pinned: false, persisted: true }],
+      },
+      currentThreadByModule: { chat: "t-legacy" },
+      completedUnread: { "t-legacy": true },
+    })
+    useThreadStore.getState().remapLegacyThread("t-legacy", "uuid-new")
+    const st = useThreadStore.getState()
+    expect(st.currentThreadByModule.chat).toBe("uuid-new")
+    expect(st.threadsByModule.chat[0].thread_id).toBe("uuid-new")
+    expect(st.completedUnread["uuid-new"]).toBe(true)
+    expect(st.completedUnread["t-legacy"]).toBeUndefined()
+  })
+
+  it("remapLegacyThread 对非当前 id 的 legacy 不误改", () => {
+    useThreadStore.setState({
+      threadsByModule: {
+        chat: [{ thread_id: "other", title: "o", module: "chat", pinned: false, persisted: true }],
+      },
+      currentThreadByModule: { chat: "other" },
+    })
+    useThreadStore.getState().remapLegacyThread("t-missing", "uuid-new")
+    const st = useThreadStore.getState()
+    expect(st.currentThreadByModule.chat).toBe("other")
+  })
 })

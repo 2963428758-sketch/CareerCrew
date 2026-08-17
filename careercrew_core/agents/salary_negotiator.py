@@ -19,6 +19,12 @@ _DEFAULT_PROMPT = (
 )
 
 
+def prompt_source(prompt_path: Path | None = None) -> str:
+    """返回本 agent 实际使用的 prompt 文本（与 __init__ 读取逻辑完全一致）。"""
+    path = prompt_path or _PROMPT_PATH
+    return path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
+
+
 class SalaryNegotiator(BaseAgent):
     """薪资谈判师：rag_query 薪资数据 -> 谈薪策略 + 话术。"""
 
@@ -32,6 +38,7 @@ class SalaryNegotiator(BaseAgent):
         memory_injector=None,
         history_loader=None,
         compaction=None,
+        hitl_requires=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
@@ -45,4 +52,5 @@ class SalaryNegotiator(BaseAgent):
             memory_injector=memory_injector,
             history_loader=history_loader,
             compaction=compaction,
+            hitl_requires=hitl_requires,
         )

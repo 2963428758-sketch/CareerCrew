@@ -8,22 +8,37 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.schemas import MatchRequest, ResumeRequest
 from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
+    turn_done_fields,
 )
 
 router = APIRouter()
+
+
+def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dict]:
+    """T3.4 §15.2：mentions 服务端二次校验；拒绝越权引用 → 422。"""
+    if not mentions:
+        return []
+    try:
+        return rt.resolve_mentions(user_id, [m.model_dump() for m in mentions])
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -43,31 +58,43 @@ def match(
 ) -> StreamingResponse:
     """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
-            result["content"] = rt.run_match_stream(
+            res = rt.run_match_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
+                **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
-            ) or ""
+                tools=req.tools,
+            )
+            result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["turn"] = getattr(res, "turn", None)
 
+        failed = False
         try:
             yield stage_event("match")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(result["content"] or "".join(content_parts))
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            # 出错时不补发 done，避免前端错误提示被空回答覆盖
+            if not failed:
+                yield done_event(
+                    result["content"] or "".join(content_parts),
+                    **turn_done_fields(result["turn"]),
+                )
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -80,31 +107,42 @@ def resume(
 ) -> StreamingResponse:
     """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
-            result["content"] = rt.run_resume_stream(
+            res = rt.run_resume_stream(
                 req.thread_id, current_user["id"], req.jd_text, cb,
+                **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
-            ) or ""
+                tools=req.tools,
+            )
+            result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["turn"] = getattr(res, "turn", None)
 
+        failed = False
         try:
             yield stage_event("resume")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准
-            yield done_event(result["content"] or "".join(content_parts))
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            if not failed:
+                yield done_event(
+                    result["content"] or "".join(content_parts),
+                    **turn_done_fields(result["turn"]),
+                )
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -117,30 +155,41 @@ def plan(
 ) -> StreamingResponse:
     """求职对话：职业规划师主理（一站式画像/规划/匹配/简历/薪资），流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
             nonlocal result
-            result["content"] = rt.run_planner_chat_stream(
+            res = rt.run_planner_chat_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
+                **({"mentions": mentions} if mentions else {}),
                 cancel_check=cancel.check,
-            ) or ""
+                tools=req.tools,
+            )
+            result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["turn"] = getattr(res, "turn", None)
 
+        failed = False
         try:
             yield stage_event("planning")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(result["content"] or "".join(content_parts))
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            if not failed:
+                yield done_event(
+                    result["content"] or "".join(content_parts),
+                    **turn_done_fields(result["turn"]),
+                )
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())

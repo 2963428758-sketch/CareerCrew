@@ -98,14 +98,14 @@ memory:
 # ── 工具层 ──
 tools:
   registry:
-    internal: [rag_query, memory_search, memory_write, profile_update]
+    # internal 须与 `_make_tools(kind)` 实际构造的工具集对齐：search_jobs(matcher) /
+    # salary_query(planner+salary) / read_image(knowledge) 均真实落入 bound tools，
+    # 必须登记在此，否则默认路径（未传 tools）会把它们从 bound 集合裁剪掉以致功能回归。
+    internal: [rag_query, memory_search, memory_write, profile_update, search_jobs, salary_query, read_image, submit_application]
     mcp: [mcp_jobs, google_mcp]
   hitl:
     requires_confirmation:
       - submit_application
-      - send_greeting
-      - accept_offer
-      - salary_talk_script
 
 # ── HITL 默认策略 ──
 hitl:
@@ -119,12 +119,20 @@ langsmith:
   masking: true              # 默认脱敏：截断 + 打码手机号/邮箱/薪资
   max_chars: 2000            # 单条字符串上传上限（超出截断）
 
+# ── 阿里云 OSS（头像等文件存储；未配置时回退本地 data/uploads） ──
+oss:
+  endpoint: "${OSS_ENDPOINT}"
+  access_key_id: "${OSS_ACCESS_KEY_ID}"
+  access_key_secret: "${OSS_ACCESS_KEY_SECRET}"
+  bucket_name: "${OSS_BUCKET_NAME}"
+  dir_prefix: uploads             # 对象键前缀：头像落在 {dir_prefix}/avatars/{user_id}/...
+
 # ── 本地账号认证 ──
 # 账号/刷新会话存 Postgres（唯一后端；AUTH_DATABASE_URL 未设置时回退 DATABASE_URL）。
 auth:
   environment: development   # 可用 CAREERCREW_ENV 覆盖为 production
   database_url: "${AUTH_DATABASE_URL}"
-  trusted_origins: ["http://localhost:5175", "http://127.0.0.1:5175"]
+  trusted_origins: ["http://localhost:5175", "http://127.0.0.1:5175", "http://localhost:8000", "http://127.0.0.1:8000"]
   login_max_failures: 5
   login_failure_window_minutes: 15
   login_lock_minutes: 15

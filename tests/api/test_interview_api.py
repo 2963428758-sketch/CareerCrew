@@ -101,3 +101,20 @@ def test_done_uses_final_answer_not_streamed_preamble(client, fake_runtime):
     assert done["type"] == "done"
     assert done["content"] == fake_runtime.interview_output
     assert "我先检索知识库" not in done["content"]
+
+
+@pytest.mark.web
+def test_interview_tools_outside_allowlist_clipped(client, fake_runtime):
+    """Important 2：interview 请求 tools 含 server 不允许的 id → effective_tools 不含它。"""
+    resp = client.post("/api/interview/questions", json={
+        "topic": "RAG",
+        "tools": ["rag_query", "evil_tool", "memory_search"],
+    })
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    run_id = events[-1]["run_id"]
+    run = fake_runtime.conversation_store._db.get_run("u_001", run_id)
+    eff = run.get("effective_tools")
+    assert "evil_tool" not in eff
+    assert "rag_query" in eff
+    assert "memory_search" in eff

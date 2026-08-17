@@ -209,10 +209,55 @@ def compare_baseline(metrics: dict, baseline: dict) -> list[str]:
     return regressions
 
 
+# §32 发布门禁阈值：率指标允许相对下降，延迟/成本允许相对上升。
+BAD_CASE_DROP_LIMIT = 0.02
+RELEASE_GATE = {
+    "bad_case_pass_rate": ("drop", BAD_CASE_DROP_LIMIT),
+    "route_accuracy": ("drop", 0.01),
+    "citation_coverage": ("drop", 0.03),
+    "tool_success": ("drop", 0.01),
+    "consult_avg_latency_s": ("rise", 0.20),
+    "consult_avg_tokens": ("rise", 0.25),
+}
+
+
+def case_passes(obs: dict, rubric: dict) -> bool:
+    """Rubric 启发式判定：must_include 全含、must_not_contain 全不含。"""
+    answer = obs.get("answer", "") or ""
+    for term in rubric.get("must_include", []) or []:
+        if term not in answer:
+            return False
+    for term in rubric.get("must_not_contain", []) or []:
+        if term in answer:
+            return False
+    return True
+
+
+def bad_case_pass_rate(cases: list[dict], obs: dict[str, dict]) -> float:
+    if not cases:
+        return 1.0
+    return sum(case_passes(obs.get(c["id"], {}), c.get("rubric") or {}) for c in cases) / len(cases)
+
+
+def gate_regressions(metrics: dict, baseline: dict) -> list[str]:
+    """按 §32 相对阈值检查发布门禁，返回未通过项。"""
+    failures = []
+    for key, (direction, tolerance) in RELEASE_GATE.items():
+        if key not in metrics or key not in baseline or baseline[key] == 0:
+            continue
+        ratio = metrics[key] / baseline[key]
+        if direction == "drop" and ratio < 1 - tolerance:
+            failures.append(f"{key}: {metrics[key]:.4f} vs 基线 {baseline[key]:.4f}（相对下降 {(1 - ratio):.1%} > {tolerance:.0%}）")
+        elif direction == "rise" and ratio > 1 + tolerance:
+            failures.append(f"{key}: {metrics[key]:.4f} vs 基线 {baseline[key]:.4f}（相对上升 {(ratio - 1):.1%} > {tolerance:.0%}）")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agent/RAG 评估 runner")
     parser.add_argument("--offline", action="store_true", help="用 fixtures 观测计算指标")
     parser.add_argument("--real", action="store_true", help="真实模型/服务观测（nightly/manual）")
+    parser.add_argument("--bad-cases", default="", help="bad-case 数据集 JSONL 路径（导出脚本产物，§29/§30）")
     parser.add_argument("--update-baseline", action="store_true", help="把本次指标写入 baseline.json")
     parser.add_argument("--compare", default="", help="对比基线文件路径")
     parser.add_argument("--fail-on-regression", action="store_true", help="任一指标低于基线时非零退出")
@@ -220,7 +265,8 @@ def main() -> int:
     args = parser.parse_args()
 
     cases = load_cases()
-    if not cases:
+    bad_case_cases = load_cases(Path(args.bad_cases)) if args.bad_cases else []
+    if not cases and not bad_case_cases:
         print("data/eval/cases.jsonl 为空或不存在")
         return 2
 
@@ -228,7 +274,7 @@ def main() -> int:
         obs = load_offline_observations()
     elif args.real:
         try:
-            obs = {c["id"]: collect_real(c) for c in cases}
+            obs = {c["id"]: collect_real(c) for c in cases + bad_case_cases}
         except RuntimeError as e:
             print(f"[real eval skipped] {e}")
             return 0
@@ -236,6 +282,8 @@ def main() -> int:
         parser.error("必须指定 --offline 或 --real")
 
     metrics = compute_metrics(cases, obs)
+    if bad_case_cases:
+        metrics["bad_case_pass_rate"] = bad_case_pass_rate(bad_case_cases, obs)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
     if args.update_baseline:
@@ -257,6 +305,15 @@ def main() -> int:
                 return 1
         else:
             print("无回归（全部指标不低于基线）")
+        gate = gate_regressions(metrics, baseline)
+        if gate:
+            print("发布门禁未通过（§32）:")
+            for r in gate:
+                print(f"  - {r}")
+            if args.fail_on_regression:
+                return 1
+        else:
+            print("发布门禁通过（§32 阈值内）")
     return 0
 
 

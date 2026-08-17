@@ -1,21 +1,32 @@
-import { useEffect, useRef, useState } from "react"
-import { BookOpen, ChevronDown, Plus, X } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { BookOpen, ChevronDown, X } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
-import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
+import { Tooltip } from "@/components/ui/tooltip"
+import { ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
-import { AgentMessage, UserMessage } from "@/components/agent/AgentThread"
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
-import { EmptyState } from "@/components/workspace/EmptyState"
+import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import KnowledgePanel from "@/components/KnowledgePanel"
 import { JumpToLatest } from "@/components/JumpToLatest"
+import { AssistantMessage } from "@/components/conversation/AssistantMessage"
+import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
+import { ConversationRail } from "@/components/conversation/ConversationRail"
+import { ConversationHeader, HeaderIconAction } from "@/components/conversation/ConversationHeader"
+import { ConversationMenu } from "@/components/conversation/ConversationMenu"
+import { ConversationSearchBar } from "@/components/conversation/ConversationSearch"
+import { useConversationSearch } from "@/components/conversation/useConversationSearch"
+import { TurnSection } from "@/components/conversation/TurnSection"
+import { ToastBubble } from "@/components/conversation/ToastBubble"
+import { groupTurns } from "@/components/conversation/turn"
+import { useConversationNavigation } from "@/hooks/useConversationNavigation"
+import { useToast } from "@/hooks/useToast"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore, type ThreadItem } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, KB_SCOPE_LABELS, type KnowledgeSource } from "@/types"
+import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, KB_SCOPE_LABELS, type KnowledgeSource, type MessageFeedback } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/auth"
+import { restoreHistory } from "@/lib/historyRestore"
 
 interface KnowledgeMessage {
   id: string
@@ -23,6 +34,9 @@ interface KnowledgeMessage {
   content: string
   streaming?: boolean
   sources?: KnowledgeSource[]
+  messageId?: string
+  turnId?: string
+  runId?: string
 }
 
 let msgId = 0
@@ -102,6 +116,10 @@ export default function KnowledgePage() {
   const [panelOpen, setPanelOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.knowledge)
+  // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
+  const threadTitle = useThreadStore((s) =>
+    s.threadsByModule.knowledge?.find((t) => t.thread_id === s.currentThreadByModule.knowledge)?.title
+  )
   // 检索范围：存于会话元数据（retrieval_scope），切换会话自动恢复，修改即时 PATCH 持久化
   const threads = useThreadStore((s) => s.threadsByModule.knowledge ?? EMPTY_THREADS)
   const setThreadScope = useThreadStore((s) => s.setThreadScope)
@@ -118,10 +136,20 @@ export default function KnowledgePage() {
   // 每会话独立流：切换会话不影响其他会话正在进行的回答
   const stream = useStreamStore((s) => s.sessions[currentThreadId] ?? IDLE_SESSION)
   const startStream = useStreamStore((s) => s.start)
+  const regenerateStream = useStreamStore((s) => s.regenerate)
   const stopStream = useStreamStore((s) => s.stop)
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
-  const meta = AGENT_META.knowledge_advisor
+
+  // ── Turn 分组 + Anchor Rail 导航 ──
+  const turns = useMemo(() => groupTurns(messages), [messages])
+  const turnIds = useMemo(() => turns.map((t) => t.user.id), [turns])
+  const { activeId, selectTurn, highlightId } = useConversationNavigation(turnIds, scrollRef)
+  const { toast, showToast } = useToast()
+  const [versionSelections, setVersionSelections] = useState<Record<string, number>>({})
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const search = useConversationSearch(messages, scrollRef, workspaceRef)
 
   useEffect(() => {
     if (stream.status === "error") {
@@ -136,45 +164,54 @@ export default function KnowledgePage() {
         const msgs = [...prev]
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i].role === "assistant" && msgs[i].streaming) {
-            msgs[i] = { ...msgs[i], content: stream.doneContent, sources: stream.doneSources, streaming: false }
+            msgs[i] = {
+              ...msgs[i],
+              content: stream.doneContent,
+              sources: stream.doneSources,
+              streaming: false,
+              messageId: stream.doneIds?.messageId,
+              turnId: stream.doneIds?.turnId,
+              runId: stream.doneIds?.runId,
+            }
             break
           }
         }
         return msgs
       })
     }
-  }, [stream.status, stream.doneContent, stream.doneSources])
+  }, [stream.status, stream.doneContent, stream.doneSources, stream.doneIds])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
     const tid = currentThreadId
+    setVersionSelections({})
     setMessages([])
     setPreviewUrl(null)
-    apiFetch(`/api/memory?thread_id=${tid}`)
-      .then((r) => r.json())
-      .then((entries: Record<string, unknown>[]) => {
-        const msgs: KnowledgeMessage[] = []
-        for (const entry of entries) {
-          const type = String(entry.type || "")
-          const content = String(entry.content || "")
-          const sources = Array.isArray(entry.sources)
-            ? (entry.sources as KnowledgeSource[])
+    void restoreHistory(tid).then((restored) => {
+      const msgs: KnowledgeMessage[] = restored.map((r) => {
+        const sources = Array.isArray(r.metadata?.sources)
+          ? (r.metadata.sources as KnowledgeSource[])
+          : Array.isArray(r.raw?.sources)
+            ? (r.raw.sources as KnowledgeSource[])
             : undefined
-          if (type === "user_message" && content) msgs.push({ id: nextId(), role: "user", content })
-          else if (type === "agent_response" && content) {
-            const msg: KnowledgeMessage = { id: nextId(), role: "assistant", content }
-            if (sources) msg.sources = sources
-            msgs.push(msg)
-          }
+        const msg: KnowledgeMessage = {
+          id: nextId(),
+          role: r.role,
+          content: r.content,
+          messageId: r.messageId,
+          turnId: r.turnId,
+          runId: r.runId,
         }
-        // 切回一个仍在流式回答的会话：补一个流式占位气泡（状态从 store 实时读）
-        const live = useStreamStore.getState().sessions[tid]
-        setMessages(live && live.status === "streaming"
-          ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
-          : msgs)
-        jumpToLatest()
+        if (sources && r.role === "assistant") msg.sources = sources
+        return msg
       })
-      .catch(() => {})
+      // 切回一个仍在流式回答的会话：补一个流式占位气泡（状态从 store 实时读）
+      const live = useStreamStore.getState().sessions[tid]
+      setMessages(live && live.status === "streaming"
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        : msgs)
+      jumpToLatest()
+    })
   }, [currentThreadId, jumpToLatest])
 
   const handleAsk = async () => {
@@ -192,6 +229,24 @@ export default function KnowledgePage() {
     await startStream(currentThreadId, "/knowledge/ask", { question, thread_id: currentThreadId, category, scope })
   }
 
+  /** 重新生成保留旧版本；稳定 ID 走后端 regenerate，遗留无 ID 消息保留兼容重发。 */
+  const handleRegenerate = async (turnId: string, messageId?: string) => {
+    if (stream.status === "streaming") return
+    const turn = groupTurns(messages).find((t) => t.id === turnId)
+    if (!turn?.assistant || !turn.user.content) return
+    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
+    jumpToLatest()
+    if (messageId) await regenerateStream(currentThreadId, messageId)
+    else await startStream(currentThreadId, "/knowledge/ask", {
+      question: turn.user.content, thread_id: currentThreadId, category, scope,
+    })
+  }
+
+  const handleEdit = (text: string) => {
+    setInput(text)
+    requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
   const handleNew = () => {
     setMessages([])
     setPreviewUrl(null)
@@ -202,101 +257,152 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        title="知识库问答"
+      <ConversationHeader
+        parent="知识库问答"
+        title={threadTitle ?? "新对话"}
         subtitle="基于知识库文档检索回答，点击来源可查看原文"
-        actions={
+        threadId={currentThreadId}
+        onNew={handleNew}
+        onSearch={search.openSearch}
+extra={
           <>
-            <Button variant="outline" size="sm" onClick={handleNew}>
-              <Plus className="mr-1 h-3.5 w-3.5" strokeWidth={1.7} />新对话
-            </Button>
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPanelOpen((v) => !v)}>
-              <BookOpen className="h-3.5 w-3.5 text-primary" strokeWidth={1.7} />
-              知识库管理
-            </Button>
+            <HeaderIconAction label="知识库面板" onClick={() => setPanelOpen((v) => !v)}>
+              <BookOpen className="h-4 w-4" strokeWidth={1.7} />
+            </HeaderIconAction>
+            <ConversationMenu
+              threadId={currentThreadId}
+              title={threadTitle ?? "新对话"}
+              module="knowledge"
+              onAfterClear={() => void restoreHistory(currentThreadId)}
+            />
           </>
         }
       />
 
-      <div className="relative flex-1 overflow-hidden">
-        <div className="flex h-full flex-col">
-          <div className="relative flex-1 overflow-hidden">
-            <div ref={scrollRef} className="h-full overflow-y-auto">
-              <div className="mx-auto w-full max-w-[820px] px-6 pb-8 pt-8">
-                {messages.length === 0 && (
-                  <EmptyState
-                    title="向知识库提问"
-                    description={
-                      <>
-                        输入问题后，自动检索知识库并生成回答；
-                        <br />
-                        回答会标注数据来源，点击即可查看对应片段。
-                      </>
-                    }
-                    accent={
-                      <span className="flex h-9 w-9 items-center justify-center rounded-[9px] bg-surface-2">
-                        <BookOpen className="h-4 w-4" style={{ color: meta.color }} strokeWidth={1.7} />
-                      </span>
-                    }
-                  />
+      <div
+        ref={workspaceRef}
+        onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
+        onMouseLeave={search.workspaceHoverHandlers.onMouseLeave}
+        className="relative flex-1 overflow-hidden"
+      >
+        <ConversationSearchBar
+          open={search.open}
+          keyword={search.keyword}
+          currentIndex={search.currentIndex}
+          total={search.total}
+          onKeyword={search.setKeyword}
+          onPrev={search.prev}
+          onNext={search.next}
+          onClose={search.close}
+        />
+        <div ref={scrollRef} className="h-full overflow-y-auto">
+          <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
+            {messages.length === 0 ? (
+              <EmptyState
+                title="向知识库提问"
+                description={
+                  <>
+                    输入问题后，自动检索知识库并生成回答；
+                    <br />
+                    回答会标注数据来源，点击即可查看对应片段。
+                  </>
+                }
+                accent={<AgentDots colors={["#16A34A", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
+              />
+            ) : (
+              <div className="flex flex-col gap-10">
+                {turns.map((turn, i) => {
+                  const isLast = i === turns.length - 1
+                  const versions = turn.versions ?? (turn.assistant ? [turn.assistant] : [])
+                  const selectedVersion = Math.min(versionSelections[turn.id] ?? versions.length - 1, versions.length - 1)
+                  const asst = versions[selectedVersion]
+                  const isNewestVersion = selectedVersion === versions.length - 1
+                  const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isLast
+                  return (
+                    <TurnSection
+                      key={turn.id}
+                      turnId={turn.id}
+                      userContent={turn.user.content}
+                      isUser={turn.user.role === "user"}
+                      highlighted={highlightId === turn.id}
+                      onEdit={handleEdit}
+                    >
+                      {asst && (
+                        <KnowledgeAssistant
+                          msg={asst}
+                          threadId={currentThreadId}
+                          isStreaming={asstStreaming}
+                          streamingText={stream.streamingText}
+                          thinking={stream.thinking}
+                          initializing={initializing}
+                          onPreview={setPreviewUrl}
+                          versionSwitcher={<VersionSwitcher
+                            index={selectedVersion + 1}
+                            total={versions.length}
+                            onPrev={() => setVersionSelections((prev) => ({ ...prev, [turn.id]: Math.max(0, selectedVersion - 1) }))}
+                            onNext={() => setVersionSelections((prev) => ({ ...prev, [turn.id]: Math.min(versions.length - 1, selectedVersion + 1) }))}
+                          />}
+                          onRegenerate={
+                            isLast && isNewestVersion && !asstStreaming && Boolean(asst.content) && Boolean(turn.user.content)
+                            ? () => handleRegenerate(turn.id, asst.messageId)
+                              : undefined
+                          }
+                          onFeedback={() => showToast("感谢你的反馈")}
+                        />
+                      )}
+                    </TurnSection>
+                  )
+                })}
+
+                {stream.errorMsg && (
+                  <Card className="border-destructive/40">
+                    <CardContent className="p-4 text-[13px] text-destructive">{stream.errorMsg}</CardContent>
+                  </Card>
                 )}
-                <div className="space-y-7">
-                  {messages.map((msg) => (
-                    <MessageRow
-                      key={msg.id}
-                      msg={msg}
-                      isStreaming={lastIsStreaming && msg.role === "assistant" && (msg.streaming ?? false)}
-                      streamingText={stream.streamingText}
-                      thinking={stream.thinking}
-                      initializing={initializing}
-                      onPreview={setPreviewUrl}
-                    />
-                  ))}
-
-                  {stream.errorMsg && (
-                    <Card className="border-destructive/40">
-                      <CardContent className="p-4 text-[13px] text-destructive">{stream.errorMsg}</CardContent>
-                    </Card>
-                  )}
-                </div>
               </div>
-            </div>
-            <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} />
-          </div>
-
-          <div className="shrink-0 px-6 pb-4 pt-2">
-            <PromptComposer
-              value={input}
-              onChange={setInput}
-              onSend={handleAsk}
-              disabled={stream.status === "streaming"}
-              streaming={stream.status === "streaming"}
-              onStop={() => stopStream(currentThreadId)}
-              placeholder="输入问题，将自动检索知识库后回答"
-              hint="知识库图片会自动内嵌显示"
-              header={
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  <span className="mr-0.5 text-[11px] font-medium text-ink-faint">范围</span>
-                  {KB_SCOPE.map((s) => (
-                    <Chip key={s.id} active={scope === s.id} onClick={() => changeScope(s.id)}>
-                      {s.label}
-                    </Chip>
-                  ))}
-                  <span aria-hidden className="mx-1 h-3 w-px bg-[var(--border-normal)]" />
-                  <span className="mr-0.5 text-[11px] font-medium text-ink-faint">分类</span>
-                  {KB_CATEGORIES.map((c) => (
-                    <Chip key={c.id || "all"} active={category === c.id} onClick={() => changeCategory(c.id)}>
-                      {c.label}
-                    </Chip>
-                  ))}
-                  <span className="ml-auto text-[11px] text-ink-faint">
-                    当前：{KB_SCOPE_LABELS[scope]} · {KB_CATEGORY_LABELS[category] ?? "全部分类"}
-                  </span>
-                </div>
-              }
-            />
+            )}
           </div>
         </div>
+
+        <ConversationRail turns={turns} activeTurnId={activeId} onSelect={selectTurn} />
+        <div className="composer-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[150px]" />
+        <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} className="bottom-[110px]" />
+        <div className="absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-3 sm:px-6 sm:pb-4">
+          <PromptComposer
+            value={input}
+            onChange={setInput}
+            onSend={handleAsk}
+            disabled={lastIsStreaming}
+            streaming={lastIsStreaming}
+            onStop={() => stopStream(currentThreadId)}
+            placeholder="输入问题，将自动检索知识库后回答"
+            hint="知识库图片会自动内嵌显示"
+            toolbar
+            textareaRef={composerRef}
+            className="w-full"
+            header={
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                <span className="mr-0.5 text-[11px] font-medium text-ink-faint">范围</span>
+                {KB_SCOPE.map((s) => (
+                  <Chip key={s.id} active={scope === s.id} onClick={() => changeScope(s.id)}>
+                    {s.label}
+                  </Chip>
+                ))}
+                <span aria-hidden className="mx-1 h-3 w-px bg-[var(--border-normal)]" />
+                <span className="mr-0.5 text-[11px] font-medium text-ink-faint">分类</span>
+                {KB_CATEGORIES.map((c) => (
+                  <Chip key={c.id || "all"} active={category === c.id} onClick={() => changeCategory(c.id)}>
+                    {c.label}
+                  </Chip>
+                ))}
+                <span className="ml-auto text-[11px] text-ink-faint">
+                  当前：{KB_SCOPE_LABELS[scope]} · {KB_CATEGORY_LABELS[category] ?? "全部分类"}
+                </span>
+              </div>
+            }
+          />
+        </div>
+        <ToastBubble message={toast} />
 
         {/* 右上角知识库管理抽屉 */}
         {panelOpen && (
@@ -327,42 +433,53 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   )
 }
 
-function MessageRow({ msg, isStreaming, streamingText, thinking, initializing, onPreview }: {
+function KnowledgeAssistant({ msg, threadId, isStreaming, streamingText, thinking, initializing, onPreview, versionSwitcher, onRegenerate, onFeedback }: {
   msg: KnowledgeMessage
+  threadId: string
   isStreaming: boolean
   streamingText: string
   thinking: boolean
   initializing: boolean
   onPreview: (url: string) => void
+  versionSwitcher?: ReactNode
+  onRegenerate?: () => void
+  onFeedback?: (fb: MessageFeedback) => void
 }) {
-  const isUser = msg.role === "user"
   const meta = AGENT_META.knowledge_advisor
   const content = isStreaming ? streamingText : msg.content
-  const images = useAuthenticatedImages(isUser ? [] : imagePathsIn(content))
-
-  if (isUser) return <UserMessage content={content} />
+  const images = useAuthenticatedImages(isStreaming ? imagePathsIn(streamingText) : imagePathsIn(msg.content))
+  const rendered = renderKnowledgeText(content, images)
 
   return (
-    <AgentMessage
+    <AssistantMessage
+      messageId={msg.id}
+      stableMessageId={msg.messageId}
+      threadId={threadId}
+      content={content}
       label={meta.label}
       color={meta.color}
-      working={isStreaming}
+      streaming={isStreaming}
+      completed={!isStreaming}
+      thinking={thinking}
+      initializing={isStreaming && !content && initializing}
+      initText="正在检索知识库"
       workingText="正在检索知识库…"
-    >
-      {isStreaming && !content && initializing ? (
-        <InitIndicator text="正在检索知识库" />
-      ) : (
+      versionSwitcher={versionSwitcher}
+      contentNode={
         <>
           <MarkdownContent className={cn(isStreaming && content && !thinking && "typing-cursor")}>
-            {renderKnowledgeText(content || "", images)}
+            {rendered}
           </MarkdownContent>
           {isStreaming && content && thinking && <ThinkingPulse />}
-          {!isStreaming && msg.sources && msg.sources.length > 0 && (
-            <SourceList sources={msg.sources} onPreview={onPreview} />
-          )}
         </>
+      }
+      onRegenerate={onRegenerate}
+      onFeedback={onFeedback}
+    >
+      {!isStreaming && msg.sources && msg.sources.length > 0 && (
+        <SourceList sources={msg.sources} onPreview={onPreview} />
       )}
-    </AgentMessage>
+    </AssistantMessage>
   )
 }
 
@@ -424,18 +541,19 @@ function SourceList({ sources, onPreview }: { sources: KnowledgeSource[]; onPrev
                   ) : image?.status !== "ready" || !image.url ? (
                     <p className="mb-1.5 text-[10.5px] text-ink-faint">图片加载中…</p>
                   ) : (
-                    <button
-                      onClick={() => onPreview(image.url!)}
-                      className="mb-2 block w-full"
-                      title="点击查看大图（滚轮缩放）"
-                    >
-                      <img
-                        src={image.url}
-                        alt={name}
-                        className="max-h-44 w-full rounded-[7px] bg-surface-2 object-contain transition-opacity duration-100 hover:opacity-90"
-                        onError={() => setFailedImgs((prev) => new Set(prev).add(imgPath))}
-                      />
-                    </button>
+                    <Tooltip label="点击查看大图（滚轮缩放）">
+                      <button
+                        onClick={() => onPreview(image.url!)}
+                        className="mb-2 block w-full"
+                      >
+                        <img
+                          src={image.url}
+                          alt={name}
+                          className="max-h-44 w-full rounded-[7px] bg-surface-2 object-contain transition-opacity duration-100 hover:opacity-90"
+                          onError={() => setFailedImgs((prev) => new Set(prev).add(imgPath))}
+                        />
+                      </button>
+                    </Tooltip>
                   )
                 )}
                 <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-ink-soft">{s.text}</p>
@@ -543,13 +661,15 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
       className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black/85 p-6"
       onClick={onClose}
     >
-      <button
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors duration-100 hover:bg-white/20"
-        onClick={onClose}
-        title="关闭"
-      >
-        <X className="h-5 w-5" />
-      </button>
+      <Tooltip label="关闭">
+        <button
+          className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors duration-100 hover:bg-white/20"
+          onClick={onClose}
+          aria-label="关闭"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </Tooltip>
       <img
         ref={imgRef}
         src={src}
@@ -576,7 +696,6 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
         <button
           className="rounded-[5px] bg-white/15 px-2 py-0.5 transition-colors duration-100 hover:bg-white/25"
           onClick={resetZoom}
-          title="重置缩放"
         >
           重置
         </button>

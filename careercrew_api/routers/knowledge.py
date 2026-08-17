@@ -15,12 +15,15 @@ from careercrew_api.auth.dependencies import CurrentUser, require_admin
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
+    turn_done_fields,
 )
 from careercrew_api import storage
 
@@ -88,16 +91,11 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
             job = _jobs.get(job_id)
             if job is not None:
                 job.update(status="done", stage="done", progress=1.0, result=result)
-    except RuntimeInitError as e:
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if job is not None:
-                job.update(status="error", error=str(e))
     except Exception as e:  # noqa: BLE001 - 用户可见的解析/入库错误统一收口
         with _jobs_lock:
             job = _jobs.get(job_id)
             if job is not None:
-                job.update(status="error", error=f"解析入库失败：{e}")
+                job.update(status="error", error=friendly_error(e))
 
 
 @router.post("/upload", status_code=202)
@@ -237,35 +235,63 @@ def ask_knowledge(
     sources 为 agent 实际检索到的结构化片段，前端标注来源并可点击查看。
     """
 
+    # T3.4 §15.2：mentions 服务端二次校验（ownership/visibility），拒绝越权引用。
+    mention_dicts = [m.model_dump() for m in req.mentions]
+    try:
+        resolved_mentions = rt.resolve_mentions(current_user["id"], mention_dicts)
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
     def gen():
-        result: dict = {"content": "", "sources": []}
+        result: dict = {"content": "", "sources": [], "turn": None}
         cancel = CancellationEvent()
 
         def _run(cb):
             nonlocal result
-            result = rt.run_knowledge_ask_stream(
+            res = rt.run_knowledge_ask_stream(
                 req.question, current_user["id"], thread_id=req.thread_id, cb=cb,
-                category=req.category, scope=req.scope, cancel_check=cancel.check,
+                category=req.category, scope=req.scope, mentions=resolved_mentions,
+                cancel_check=cancel.check, tools=req.tools,
             )
+            if hasattr(res, "content"):
+                result = {
+                    "content": res.content,
+                    "sources": getattr(res, "sources", []),
+                    "turn": getattr(res, "turn", None),
+                }
+            else:
+                result = {
+                    "content": res.get("content", ""),
+                    "sources": res.get("sources", []),
+                    "turn": None,
+                }
 
+        failed = False
         try:
             yield stage_event("knowledge")
             content_parts: list[str] = []
             # agentic 检索 + VLM 读图可能长时间无文本 chunk，统一空闲超时（与会诊一致）
             for line in stream_agent(_run, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
             # 最终内容以 agent 最后一轮回答为准（流式 chunk 可能含中间轮开头话）
-            yield done_event(
-                result.get("content") or "".join(content_parts),
-                sources=result.get("sources", []),
-            )
+            # 出错时不补发 done，避免前端错误提示被空回答覆盖
+            if not failed:
+                yield done_event(
+                    result.get("content") or "".join(content_parts),
+                    sources=result.get("sources", []),
+                    **turn_done_fields(result.get("turn")),
+                )
         except RuntimeInitError as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return StreamingResponse(
         gen(),

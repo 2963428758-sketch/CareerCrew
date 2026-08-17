@@ -25,6 +25,12 @@ _DEFAULT_PROMPT = (
 )
 
 
+def prompt_source(prompt_path: Path | None = None) -> str:
+    """返回本 agent 实际使用的 prompt 文本（与 __init__ 读取逻辑完全一致）。"""
+    path = prompt_path or _PROMPT_PATH
+    return path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
+
+
 def score_jd_match(jd_text: str, profile: dict) -> float:
     """确定性 JD-画像匹配打分（0-1）：技能关键词重合 + 方向命中。
 
@@ -99,6 +105,7 @@ class JobMatcher(BaseAgent):
         memory_injector=None,
         history_loader=None,
         compaction=None,
+        hitl_requires=None,
     ) -> None:
         path = prompt_path or _PROMPT_PATH
         prompt = path.read_text(encoding="utf-8") if path.exists() else _DEFAULT_PROMPT
@@ -112,4 +119,5 @@ class JobMatcher(BaseAgent):
             memory_injector=memory_injector,
             history_loader=history_loader,
             compaction=compaction,
+            hitl_requires=hitl_requires,
         )

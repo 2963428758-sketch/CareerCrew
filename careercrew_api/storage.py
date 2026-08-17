@@ -4,6 +4,7 @@
 
     data/uploads/resumes_raw/{user_id}/{uuid}.{ext}     简历原件
     data/uploads/knowledge_raw/{user_id}/{uuid}.{ext}   知识库原件
+    data/uploads/attachments/{user_id}/{thread_id}/{attachment_uuid}  会话附件
     data/uploads/resume_threads/{user_id}/{sha256}.txt  对话式简历线程存储
     data/parsed/resumes/{user_id}/{uuid}/               简历解析产物（content.txt + meta.json）
     data/parsed/knowledge/{user_id}/{document_uuid}/    知识库解析产物（MinerU）
@@ -26,6 +27,7 @@ def layout(data_root: Path) -> SimpleNamespace:
         uploads=up,
         resumes_raw=up / "resumes_raw",
         knowledge_raw=up / "knowledge_raw",
+        attachments=up / "attachments",
         resume_threads=up / "resume_threads",
         parsed_resumes=parsed / "resumes",
         parsed_knowledge=parsed / "knowledge",

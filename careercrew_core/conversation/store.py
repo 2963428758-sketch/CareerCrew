@@ -1,0 +1,748 @@
+"""ConversationStore 领域服务：对话核心存储的业务编排。
+
+不直接写 SQL，全部通过 ConversationDb 契约；所有带 user_id 的方法先校验
+所有权，不匹配抛 OwnershipError。方法集对齐 T1.1 brief 的绑定决策，
+供 T1.2（streaming 接线）与 T1.6（feedback/eval）调用。
+
+UUIDv7 生成 id；legacy `t-${Date.now()}` 线程 ID 通过 conversations.legacy_thread_id
+映射到 UUID（现状前端兼容）。
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+from typing import Any
+
+from careercrew_core.conversation.db import (
+    ConversationDb,
+    SequenceCollision,
+    _now,
+)
+from careercrew_core.conversation.uuid7 import uuid7
+from careercrew_core.feedback.snapshots import build_snapshot
+
+
+class OwnershipError(Exception):
+    """资源不属于该用户（user_id 不匹配）时抛出。"""
+
+
+REVIEW_ROOT_CAUSES = frozenset({
+    "llm", "prompt", "rag_retrieval", "reranker", "tool",
+    "context", "ambiguous_question", "product_bug", "unknown",
+})
+_REVIEW_STATUSES = ("new", "triaged", "fixed", "ignored", "promoted_to_eval")
+# §27 状态机：promoted_to_eval 仅由 Promote API 设置，人工接口不可直接迁入。
+_REVIEW_TRANSITIONS = {
+    "new": {"triaged", "fixed", "ignored"},
+    "triaged": {"fixed", "ignored", "new"},
+    "fixed": {"triaged", "ignored"},
+    "ignored": {"triaged", "fixed"},
+    "promoted_to_eval": set(),
+}
+
+
+def _is_uuid(value: Any) -> bool:
+    if isinstance(value, UUID):
+        return True
+    try:
+        UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+class ConversationStore:
+    def __init__(self, db: ConversationDb) -> None:
+        self._db = db
+
+    # ── helpers ──
+
+    def _require_conversation(self, thread_id: str, user_id: str) -> dict | None:
+        """按 UUID 或 legacy id 解析会话，校验所有权。
+
+        存在且属于该用户 → 返回会话行；存在但属于他人 → OwnershipError；
+        不存在 → None。
+        """
+        if _is_uuid(thread_id):
+            conv = self._db.get_conversation(user_id, thread_id)
+            if conv is not None:
+                return conv
+            if self._db.conversation_exists(thread_id):
+                raise OwnershipError(
+                    f"conversation {thread_id!r} 不属于用户 {user_id!r}"
+                )
+            return None
+        conv = self._db.get_conversation_by_legacy(user_id, thread_id)
+        if conv is not None:
+            return conv
+        if self._db.legacy_exists(thread_id):
+            raise OwnershipError(
+                f"conversation (legacy) {thread_id!r} 不属于用户 {user_id!r}"
+            )
+        return None
+
+    def _require_owned(self, thread_id: str, user_id: str) -> dict:
+        conv = self._require_conversation(thread_id, user_id)
+        if conv is None:
+            # 不存在也按所有权拒绝：不泄露资源是否存在
+            raise OwnershipError(f"conversation {thread_id!r} 不存在或不属于用户 {user_id!r}")
+        return conv
+
+    # ── conversations ──
+
+    def ensure_conversation(
+        self,
+        thread_id: str,
+        user_id: str,
+        module: str,
+        title: str | None = None,
+        retrieval_scope: dict | None = None,
+    ) -> dict:
+        """幂等创建/复用会话。thread_id 为 UUID 直接用；否则走 legacy 映射。
+
+        返回会话行（含 id=UUID、legacy_thread_id）。
+        """
+        if _is_uuid(thread_id):
+            conversation_id = thread_id
+            legacy = None
+            conv = self._db.get_conversation(user_id, conversation_id)
+            if conv is not None:
+                return conv
+        else:
+            legacy = thread_id
+            conv = self._db.get_conversation_by_legacy(user_id, legacy)
+            if conv is not None:
+                return conv
+            conversation_id = str(uuid7())
+
+        return self._db.upsert_conversation(
+            conversation_id, user_id, module, title, legacy, retrieval_scope
+        )
+
+    def get_conversation(self, thread_id: str, user_id: str) -> dict | None:
+        """按 UUID 或 legacy id 查会话。
+
+        存在但属于其他用户 → OwnershipError；不存在 → None。
+        """
+        return self._require_conversation(thread_id, user_id)
+
+    # ── turns ──
+
+    def next_turn(self, thread_id: str, user_id: str) -> dict:
+        """为会话分配下一个 turn（sequence_no = MAX+1，UNIQUE 冲突重试一次）。"""
+        conv = self._require_owned(thread_id, user_id)
+        seq = self._db.max_sequence_no(user_id, conv["id"]) + 1
+        turn_id = str(uuid7())
+        try:
+            return self._db.insert_turn(turn_id, conv["id"], user_id, seq)
+        except SequenceCollision:
+            # UNIQUE(thread_id, sequence_no) 冲突：重试一次（并发 MAX+1 撞车）
+            seq = self._db.max_sequence_no(user_id, conv["id"]) + 1
+            turn_id = str(uuid7())
+            return self._db.insert_turn(turn_id, conv["id"], user_id, seq)
+
+    def get_turn(self, user_id: str, turn_id: str) -> dict | None:
+        """按 user_id 取 turn 行（含 sequence_no）；不存在 / 所有权不匹配返回 None。"""
+        return self._db.get_turn(user_id, turn_id)
+
+    # ── messages ──
+
+    def add_user_message(
+        self, turn_id: str, thread_id: str, user_id: str, content: str, status: str,
+        metadata: dict | None = None,
+    ) -> dict:
+        conv = self._require_owned(thread_id, user_id)
+        msg_id = str(uuid7())
+        return self._db.insert_message(
+            msg_id, conv["id"], turn_id, user_id, "user", content, None, None,
+            status, metadata,
+        )
+
+    def add_assistant_message(
+        self,
+        turn_id: str,
+        thread_id: str,
+        user_id: str,
+        content: str,
+        run_id: str | None,
+        regenerated_from_message_id: str | None,
+    ) -> dict:
+        conv = self._require_owned(thread_id, user_id)
+        msg_id = str(uuid7())
+        return self._db.insert_message(
+            msg_id, conv["id"], turn_id, user_id, "assistant", content,
+            run_id, regenerated_from_message_id, "pending",
+        )
+
+    def set_message_status(self, user_id: str, message_id: str, status: str) -> dict:
+        """按 user_id + message_id 更新状态；所有权不匹配抛 OwnershipError，
+        找不到时返回 {}。"""
+        if self._db.get_message(user_id, message_id) is None:
+            raise OwnershipError(
+                f"message {message_id!r} 不属于或不存在于用户 {user_id!r}"
+            )
+        return self._db.update_message_status(user_id, message_id, status)
+
+    def set_message_content(
+        self, user_id: str, message_id: str, content: str, status: str = "completed",
+        metadata: dict | None = None,
+    ) -> dict:
+        """流式结束写入 assistant 消息最终内容，并同步更新状态与 completed_at。
+
+        metadata（assistant 富结构，如 sources/opinions）可选：None=不动。所有权
+        不匹配抛 OwnershipError，找不到返回 {}。
+        """
+        if self._db.get_message(user_id, message_id) is None:
+            raise OwnershipError(
+                f"message {message_id!r} 不属于或不存在于用户 {user_id!r}"
+            )
+        return self._db.update_message_content(user_id, message_id, content, status, metadata)
+
+    def set_message_run_id(self, user_id: str, message_id: str, run_id: str) -> dict:
+        """回填 assistant message 的 run_id（message 先于 run 创建，run 生成后再关联）。
+
+        所有权不匹配抛 OwnershipError，找不到返回 {}。
+        """
+        if self._db.get_message(user_id, message_id) is None:
+            raise OwnershipError(
+                f"message {message_id!r} 不属于或不存在于用户 {user_id!r}"
+            )
+        return self._db.update_message_run_id(user_id, message_id, run_id)
+
+    def list_messages(self, thread_id: str, user_id: str) -> list[dict]:
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.list_messages(user_id, conv["id"])
+
+    # ── rename / clear / delete / list runs ──
+
+    def rename_title(self, thread_id: str, user_id: str, title: str) -> dict:
+        """更新会话标题（按 UUID 或 legacy id）；所有权不匹配/不存在抛 OwnershipError。"""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.update_title(user_id, conv["id"], title)
+
+    def clear_conversation(self, thread_id: str, user_id: str) -> int:
+        """清空会话消息（保留 conversation / title / retrieval_scope）。
+
+        删除该会话全部 turns（级联 messages）与 runs/retrievals/tool_calls；
+        返回删除的 turn 数。
+        """
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.clear_conversation(user_id, conv["id"])
+
+    def delete_conversation(self, thread_id: str, user_id: str) -> bool:
+        """删除会话行及其全部子表（turns/messages/runs/retrievals/tool_calls）。"""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.delete_conversation(user_id, conv["id"])
+
+    def list_runs(self, thread_id: str, user_id: str) -> list[dict]:
+        """按会话返回全部 agent_runs（按 created_at 升序）。"""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.list_runs(user_id, conv["id"])
+
+
+    def get_message(self, user_id: str, message_id: str) -> dict | None:
+        """按 user_id 取单条消息；不存在 / 所有权不匹配返回 None（跨用户视为不存在）。"""
+        return self._db.get_message(user_id, message_id)
+
+    def list_message_versions(self, message_id: str, user_id: str) -> list[dict]:
+        """同一 turn 的 assistant 版本链（root -> leaf，沿 regenerated_from 回溯）。"""
+        msg = self._db.get_message(user_id, message_id)  # 校验所有权
+        if msg is None:
+            raise OwnershipError(f"message {message_id!r} 不属于或不存在于用户 {user_id!r}")
+        turn_messages = [
+            m for m in self._db.list_messages(user_id, msg["thread_id"])
+            if m["turn_id"] == msg["turn_id"] and m["role"] == "assistant"
+        ]
+        by_id = {m["id"]: m for m in turn_messages}
+        # 沿链回溯到根，再正向返回
+        chain: list[dict] = []
+        cur = msg
+        seen: set[str] = set()
+        while cur and cur["id"] not in seen:
+            chain.append(cur)
+            seen.add(cur["id"])
+            parent = cur.get("regenerated_from_message_id")
+            cur = by_id.get(parent) if parent else None
+        chain.reverse()
+        return chain
+
+    # ── runs ──
+
+    def start_run(
+        self,
+        thread_id: str,
+        turn_id: str,
+        message_id: str,
+        user_id: str,
+        module: str,
+        agent_id: str,
+        model: str,
+        prompt_version: str = "unversioned",
+        agent_version: str = "unversioned",
+        status: str = "pending",
+        effective_tools: list[str] | None = None,
+    ) -> dict:
+        conv = self._require_owned(thread_id, user_id)
+        run_id = str(uuid7())
+        return self._db.insert_run(
+            run_id, user_id, conv["id"], turn_id, message_id, module, agent_id,
+            model, prompt_version, agent_version, status,
+            effective_tools=effective_tools,
+        )
+
+    def finish_run(
+        self,
+        user_id: str,
+        run_id: str,
+        status: str,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+        latency_ms: int | None = None,
+        langsmith_run_id: str | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        error_summary: str | None = None,
+    ) -> dict:
+        run = self._db.get_run(user_id, run_id)
+        if run is None:
+            raise OwnershipError(f"run {run_id!r} 不属于或不存在于用户 {user_id!r}")
+        fields: dict[str, Any] = {"status": status}
+        if status in ("completed", "failed", "cancelled"):
+            fields["finished_at"] = _now()
+        if input_tokens is not None:
+            fields["input_tokens"] = input_tokens
+        if output_tokens is not None:
+            fields["output_tokens"] = output_tokens
+        if total_tokens is not None:
+            fields["total_tokens"] = total_tokens
+        if latency_ms is not None:
+            fields["latency_ms"] = latency_ms
+        if langsmith_run_id is not None:
+            fields["langsmith_run_id"] = langsmith_run_id
+        if error_type is not None:
+            fields["error_type"] = error_type
+        if error_code is not None:
+            fields["error_code"] = error_code
+        if error_summary is not None:
+            fields["error_summary"] = error_summary
+        return self._db.update_run(user_id, run_id, fields)
+
+    def get_run(self, user_id: str, run_id: str) -> dict | None:
+        """按 user_id 取 run 行；不存在 / 所有权不匹配返回 None（跨用户视为不存在）。"""
+        return self._db.get_run(user_id, run_id)
+
+    # ── feedback / privacy snapshots ──
+
+    def _feedback_target(self, user_id: str, message_id: str) -> dict:
+        """Resolve an eligible assistant result without revealing foreign messages."""
+        try:
+            message_id = str(UUID(message_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise OwnershipError("feedback target is not available") from exc
+        message = self._db.get_message(user_id, message_id)
+        if (message is None or message.get("role") != "assistant"
+                or message.get("status") != "completed" or not message.get("run_id")):
+            raise OwnershipError("feedback target is not available")
+        run = self._db.get_run(user_id, message["run_id"])
+        if (run is None or run.get("thread_id") != message["thread_id"]
+                or run.get("turn_id") != message["turn_id"]
+                or run.get("message_id") != message["id"]):
+            raise OwnershipError("feedback target is not available")
+        return message
+
+    def put_feedback(self, user_id: str, message_id: str, *, rating: str,
+                     reason: str | None, comment: str | None, share_context: bool) -> dict:
+        """Upsert feedback, deriving every relationship from the owned assistant message."""
+        message = self._feedback_target(user_id, message_id)
+        snapshot_fields = None
+        if rating == "negative" and share_context:
+            messages = self._db.list_messages(user_id, message["thread_id"])
+            snapshot, count, version = build_snapshot(messages, message)
+            snapshot_fields = {
+                "id": str(uuid7()), "snapshot_json": snapshot, "redaction_version": version,
+                "redaction_count": count,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
+            }
+        return self._db.replace_feedback_with_snapshot(user_id, {
+            "id": str(uuid7()), "thread_id": message["thread_id"], "turn_id": message["turn_id"],
+            "message_id": message["id"], "run_id": message["run_id"], "rating": rating,
+            "reason": reason, "comment": comment, "share_context": share_context,
+        }, snapshot_fields)
+
+    def list_feedback(self, user_id: str, thread_id: str) -> list[dict]:
+        """List the current user's metadata-only feedback for an owned conversation."""
+        conv = self._require_owned(thread_id, user_id)
+        return self._db.list_feedback(user_id, conv["id"])
+
+    def delete_feedback(self, user_id: str, message_id: str) -> bool:
+        """Hard-delete feedback/snapshot and record content-free deletion metadata."""
+        message = self._feedback_target(user_id, message_id)
+        return self._db.delete_feedback_with_audit(user_id, message["id"], {"deleted": None})
+
+    # ── quality reviewer read models ──
+
+    @staticmethod
+    def _quality_feedback_id(feedback_id: str) -> str | None:
+        try:
+            return str(UUID(feedback_id))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def list_quality_feedback(self) -> list[dict]:
+        """Return only the reviewer-safe metadata view for negative feedback."""
+        return self._db.list_quality_feedback()
+
+    def get_quality_feedback(self, feedback_id: str) -> dict | None:
+        normalized = self._quality_feedback_id(feedback_id)
+        return self._db.get_quality_feedback(normalized) if normalized else None
+
+    def get_quality_snapshot(self, feedback_id: str, reviewer_id: str) -> dict | None:
+        """Read one still-authorized redacted snapshot and append a content-free audit event."""
+        normalized = self._quality_feedback_id(feedback_id)
+        if not normalized:
+            return None
+        snapshot = self._db.get_quality_snapshot(normalized)
+        if snapshot is None:
+            return None
+        self._db.insert_audit(
+            reviewer_id, "quality.snapshot.viewed", "feedback_snapshot", str(snapshot["snapshot_id"]),
+            {"feedback_id": normalized, "redaction_version": snapshot["redaction_version"]},
+        )
+        return snapshot
+
+    def get_quality_diagnostics(self, feedback_id: str) -> dict | None:
+        normalized = self._quality_feedback_id(feedback_id)
+        return self._db.get_quality_diagnostics(normalized) if normalized else None
+
+    def compute_quality_metrics(self, filters: dict) -> dict:
+        """Aggregate dashboard metrics within a single run scope (§25.2 / T5.5)."""
+        return self._db.compute_quality_metrics(filters)
+
+    # ── feedback reviews（人工归因，T5.4）──
+
+    def get_quality_review(self, feedback_id: str) -> dict | None:
+        """Return the review row for a negative-feedback record, or None."""
+        normalized = self._quality_feedback_id(feedback_id)
+        if not normalized or self._db.get_quality_feedback(normalized) is None:
+            return None
+        return self._db.get_feedback_review(normalized)
+
+    def update_quality_review(self, reviewer_id: str, feedback_id: str, *,
+                              root_cause: str | None, status: str, note: str | None,
+                              allow_promote: bool = False) -> dict:
+        """Apply one reviewed attribution change atomically with events and audit rows.
+
+        - ``root_cause=None`` keeps the previous value; ``""`` clears it.
+        - ``note=None`` keeps the previous note; ``""`` clears it.
+        - Raises ``ValueError`` on an illegal status transition (mapped to 409).
+        - Raises ``OwnershipError`` when the feedback record is not reviewable.
+        - ``allow_promote`` is an internal escape hatch: only the Promote API
+          may move a review into ``promoted_to_eval`` (§27).
+        """
+        normalized = self._quality_feedback_id(feedback_id)
+        if not normalized or self._db.get_quality_feedback(normalized) is None:
+            raise OwnershipError("quality target is not available")
+        existing = self._db.get_feedback_review(normalized)
+        old_status = (existing or {}).get("review_status") or "new"
+        old_cause = (existing or {}).get("root_cause")
+        old_note = (existing or {}).get("reviewer_note")
+        allowed = _REVIEW_TRANSITIONS.get(old_status, set())
+        if allow_promote and status == "promoted_to_eval":
+            allowed = allowed | {"promoted_to_eval"}
+        if status != old_status and status not in allowed:
+            raise ValueError(f"illegal review status transition: {old_status} -> {status}")
+        if root_cause is not None and root_cause not in REVIEW_ROOT_CAUSES:
+            raise ValueError(f"invalid root cause: {root_cause}")
+        new_cause = root_cause if root_cause is not None else old_cause
+        new_note = note if note is not None else old_note
+        now = _now()
+        review_id = (existing or {}).get("id") or str(uuid7())
+        events: list[dict] = []
+        audits: list[dict] = []
+        if status != old_status:
+            events.append({
+                "id": str(uuid7()), "reviewer_user_id": reviewer_id, "event_type": "status_changed",
+                "old_value": {"status": old_status}, "new_value": {"status": status}, "created_at": now,
+            })
+            audits.append({
+                "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.review.status_changed",
+                "resource_type": "feedback_review", "resource_id": review_id,
+                "metadata": {"feedback_id": normalized, "old_status": old_status, "new_status": status},
+                "created_at": now,
+            })
+        if new_cause != old_cause:
+            events.append({
+                "id": str(uuid7()), "reviewer_user_id": reviewer_id, "event_type": "root_cause_changed",
+                "old_value": {"root_cause": old_cause}, "new_value": {"root_cause": new_cause}, "created_at": now,
+            })
+            audits.append({
+                "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.review.root_cause_changed",
+                "resource_type": "feedback_review", "resource_id": review_id,
+                "metadata": {"feedback_id": normalized, "old_root_cause": old_cause, "new_root_cause": new_cause},
+                "created_at": now,
+            })
+        if new_note != old_note:
+            events.append({
+                "id": str(uuid7()), "reviewer_user_id": reviewer_id, "event_type": "note_changed",
+                "old_value": {"note": old_note}, "new_value": {"note": new_note}, "created_at": now,
+            })
+        fields = {
+            "id": review_id, "feedback_id": normalized, "reviewer_user_id": reviewer_id,
+            "root_cause": new_cause, "status": status, "reviewer_note": new_note,
+            "created_at": now, "updated_at": now,
+        }
+        return self._db.upsert_feedback_review(fields, events, audits)
+
+    # ── eval cases（Phase 6：Bad Case → Eval Dataset，§29）──
+
+    _EVAL_EDITABLE = ("input_text", "context", "expected_behavior", "failure_reason", "target_agent")
+    _EVAL_STATUSES = ("draft", "approved", "deprecated")
+
+    def promote_to_eval(self, reviewer_id: str, feedback_id: str) -> dict:
+        """Promote a shared-context negative feedback into an eval case draft (§29).
+
+        Preconditions: negative rating, ``share_context=True``, an unexpired
+        redacted snapshot, and a review that has not already been promoted.
+        Moves the review to ``promoted_to_eval`` and audits the draft creation.
+        """
+        normalized = self._quality_feedback_id(feedback_id)
+        feedback = self._db.get_quality_feedback(normalized) if normalized else None
+        if feedback is None:
+            raise OwnershipError("quality target is not available")
+        if feedback.get("share_context") is not True:
+            raise ValueError("only shared-context cases can be promoted to eval")
+        existing = self._db.get_feedback_review(normalized)
+        if (existing or {}).get("review_status") == "promoted_to_eval":
+            raise ValueError("feedback is already promoted to eval")
+        snapshot = self._db.get_quality_snapshot(normalized)
+        if snapshot is None:
+            raise ValueError("missing context snapshot; share_context feedback is required")
+        messages = (snapshot.get("snapshot_json") or {}).get("messages") or []
+        user_input = next((m.get("content", "") for m in messages if m.get("role") == "user"), "")
+        now = _now()
+        case = {
+            "id": str(uuid7()),
+            "source_feedback_id": normalized,
+            "status": "draft",
+            "target_agent": feedback.get("agent_id") or "unknown",
+            "input_text": user_input,
+            "context": snapshot.get("snapshot_json"),
+            "expected_behavior": None,
+            "rubric": {},
+            "failure_reason": feedback.get("reason"),
+            "source_model": feedback.get("model"),
+            "source_prompt_version": feedback.get("prompt_version"),
+            "source_agent_version": feedback.get("agent_version"),
+            "created_by": reviewer_id,
+            "approved_by": None,
+            "created_at": now,
+            "approved_at": None,
+        }
+        audits = [{
+            "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.eval_draft_created",
+            "resource_type": "eval_case", "resource_id": case["id"],
+            "metadata": {
+                "feedback_id": normalized, "target_agent": case["target_agent"],
+                "source_prompt_version": case["source_prompt_version"],
+                "source_agent_version": case["source_agent_version"], "source_model": case["source_model"],
+            },
+            "created_at": now,
+        }]
+        inserted = self._db.insert_eval_case(case, audits)
+        self.update_quality_review(reviewer_id, normalized, root_cause=None,
+                                   status="promoted_to_eval", note=None, allow_promote=True)
+        return inserted
+
+    def list_eval_cases(self, status: str | None = None) -> list[dict]:
+        if status is not None and status not in self._EVAL_STATUSES:
+            raise ValueError(f"invalid eval case status: {status}")
+        return self._db.list_eval_cases(status)
+
+    def get_eval_case(self, case_id: str) -> dict | None:
+        return self._db.get_eval_case(case_id)
+
+    def update_eval_case(self, reviewer_id: str, case_id: str, *, fields: dict) -> dict:
+        """Edit a draft eval case (or deprecate an approved one)."""
+        existing = self._db.get_eval_case(case_id)
+        if existing is None:
+            raise OwnershipError("eval case not found")
+        now = _now()
+        updates: dict[str, Any] = {}
+        for key in self._EVAL_EDITABLE:
+            if key in fields:
+                updates[key] = fields[key]
+        if "rubric" in fields:
+            rubric = fields["rubric"]
+            if not isinstance(rubric, dict):
+                raise ValueError("rubric must be a JSON object")
+            updates["rubric"] = rubric
+        new_status = fields.get("status")
+        if new_status is not None:
+            if new_status not in self._EVAL_STATUSES:
+                raise ValueError(f"invalid eval case status: {new_status}")
+            allowed = {
+                "draft": {"draft"},
+                "approved": {"approved", "deprecated"},
+                "deprecated": {"deprecated"},
+            }[existing["status"]]
+            if new_status not in allowed:
+                raise ValueError(
+                    f"illegal eval case status transition: {existing['status']} -> {new_status}")
+            updates["status"] = new_status
+        if not updates:
+            raise ValueError("no updatable fields")
+        updates["updated_at"] = now
+        audits: list[dict] = []
+        if updates.get("status") and updates["status"] != existing["status"]:
+            audits.append({
+                "id": str(uuid7()), "actor_user_id": reviewer_id,
+                "action": "quality.eval_case.status_changed",
+                "resource_type": "eval_case", "resource_id": case_id,
+                "metadata": {"old_status": existing["status"], "new_status": updates["status"]},
+                "created_at": now,
+            })
+        return self._db.update_eval_case(case_id, updates, audits)
+
+    def approve_eval_case(self, reviewer_id: str, case_id: str) -> dict:
+        """Approve a draft eval case: requires expected_behavior and rubric (§29.2)."""
+        existing = self._db.get_eval_case(case_id)
+        if existing is None:
+            raise OwnershipError("eval case not found")
+        if existing["status"] != "draft":
+            raise ValueError(f"only draft eval cases can be approved (current: {existing['status']})")
+        if not existing.get("expected_behavior") or not existing.get("rubric"):
+            raise ValueError("expected_behavior and rubric are required before approval")
+        now = _now()
+        audits = [{
+            "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.eval_case.approved",
+            "resource_type": "eval_case", "resource_id": case_id,
+            "metadata": {"source_feedback_id": existing.get("source_feedback_id")},
+            "created_at": now,
+        }]
+        return self._db.update_eval_case(case_id, {
+            "status": "approved", "approved_by": reviewer_id, "approved_at": now, "updated_at": now,
+        }, audits)
+
+    def export_eval_cases(self, status: str = "approved") -> list[dict]:
+        """Versioned JSONL export payload（§30）：仅 approved 可导出。"""
+        rows = self._db.list_eval_cases(status)
+        return [{
+            "id": row["id"],
+            "agent": row["target_agent"],
+            "input": row["input_text"],
+            "context": row["context"],
+            "expected_behavior": row["expected_behavior"],
+            "rubric": row["rubric"],
+            "source": {
+                "feedback_id": row["source_feedback_id"], "failure_reason": row["failure_reason"],
+                "prompt_version": row["source_prompt_version"],
+                "agent_version": row["source_agent_version"], "model": row["source_model"],
+            },
+        } for row in rows]
+
+    # ── regeneration idempotency ──
+
+    def get_regeneration(self, user_id: str, key: str) -> str | None:
+        """取某 (user_id, key) 首次 regenerate 生成的 message_id；无则 None。"""
+        return self._db.get_regeneration(user_id, key)
+
+    def create_regeneration(self, user_id: str, key: str, message_id: str) -> str | None:
+        """登记一次 regenerate 的幂等键；已存在返回 None（调用方复用首次结果）。"""
+        return self._db.create_regeneration(user_id, key, message_id)
+
+    def reserve_regeneration(self, user_id: str, key: str) -> tuple[str, str | None]:
+        """原子预留幂等键（上游预留，杜绝并发同 key 双跑；三态契约）。
+
+        返回 (state, message_id)：
+        - (\"reserved\", None)：本次成功预留，应 dispatch。
+        - (\"exists\", <message_id>)：已存在且已完成，应 replay 该 message。
+        - (\"exists\", None)：已存在但进行中（首个请求未回填），应 409。
+        """
+        return self._db.reserve_regeneration(user_id, key)
+
+    def complete_regeneration(self, user_id: str, key: str, message_id: str) -> str | None:
+        """预留成功后回填最终 message_id。"""
+        return self._db.complete_regeneration(user_id, key, message_id)
+
+    def release_regeneration(self, user_id: str, key: str) -> bool:
+        """释放未完成的预留（流中途失败不污名化该 key）。"""
+        return self._db.release_regeneration(user_id, key)
+
+    # ── retrievals / tool calls ──
+
+    def add_retrieval(
+        self,
+        user_id: str,
+        run_id: str,
+        query_index: int,
+        query_text_redacted: str | None = None,
+        scope: str | None = None,
+        document_id: str | None = None,
+        chunk_id: str | None = None,
+        recall_score: float | None = None,
+        rerank_score: float | None = None,
+        rank_before: int | None = None,
+        rank_after: int | None = None,
+        used_in_final_context: bool = False,
+        retrieval_source: str = "auto",
+    ) -> dict:
+        self._require_run_owned(user_id, run_id)
+        fields: dict[str, Any] = {
+            "used_in_final_context": used_in_final_context,
+            "retrieval_source": retrieval_source,
+        }
+        for key, val in (
+            ("query_text_redacted", query_text_redacted),
+            ("scope", scope),
+            ("document_id", document_id),
+            ("chunk_id", chunk_id),
+            ("recall_score", recall_score),
+            ("rerank_score", rerank_score),
+            ("rank_before", rank_before),
+            ("rank_after", rank_after),
+        ):
+            if val is not None:
+                fields[key] = val
+        return self._db.insert_retrieval(str(uuid7()), run_id, query_index, fields)
+
+    def add_tool_call(
+        self,
+        user_id: str,
+        run_id: str,
+        tool_name: str,
+        input_redacted: dict | None = None,
+        output_summary: str | None = None,
+        status: str = "completed",
+        duration_ms: int | None = None,
+        requires_hitl: bool = False,
+        hitl_status: str | None = None,
+        error_type: str | None = None,
+        error_summary: str | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict:
+        self._require_run_owned(user_id, run_id)
+        fields: dict[str, Any] = {
+            "status": status,
+            "requires_hitl": requires_hitl,
+        }
+        for key, val in (
+            ("input_redacted", input_redacted),
+            ("output_summary", output_summary),
+            ("duration_ms", duration_ms),
+            ("hitl_status", hitl_status),
+            ("error_type", error_type),
+            ("error_summary", error_summary),
+            ("started_at", started_at),
+            ("finished_at", finished_at),
+        ):
+            if val is not None:
+                fields[key] = val
+        return self._db.insert_tool_call(str(uuid7()), run_id, tool_name, fields)
+
+    def _require_run_owned(self, user_id: str, run_id: str) -> dict:
+        run = self._db.get_run(user_id, run_id)
+        if run is None:
+            raise OwnershipError(f"run {run_id!r} 不属于或不存在于用户 {user_id!r}")
+        return run

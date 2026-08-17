@@ -5,12 +5,17 @@ import json
 from collections.abc import Generator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
-from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.runtime import (
+    CareerCrewRuntime,
+    RuntimeInitError,
+    _observability_from_result,
+)
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.schemas import (
     InterviewChatMessage,
     InterviewChatRequest,
@@ -24,8 +29,10 @@ from careercrew_api.sse import (
     CancellationEvent,
     done_event,
     error_event,
+    friendly_error,
     stage_event,
     stream_agent,
+    turn_done_fields,
 )
 
 router = APIRouter()
@@ -33,6 +40,34 @@ router = APIRouter()
 _CHAT_PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "interviewer_chat.txt"
 )
+
+
+def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dict]:
+    """T3.4 §15.2：mentions 服务端二次校验；拒绝越权引用 → 422。"""
+    if not mentions:
+        return []
+    try:
+        return rt.resolve_mentions(user_id, [m.model_dump() for m in mentions])
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+def _interview_obs(lr) -> dict:
+    """从 agent.last_result 抽观测字段，供 _finish_chat_turn 落库（含 rag_query 检索行）。"""
+    from careercrew_api.runtime import _rag_query_retrievals
+
+    obs = _observability_from_result(lr)
+    details = getattr(lr, "tool_call_details", None) if lr is not None else None
+    obs["retrievals"] = _rag_query_retrievals(details or [])
+    return {
+        "input_tokens": obs["input_tokens"],
+        "output_tokens": obs["output_tokens"],
+        "total_tokens": obs["total_tokens"],
+        "retrievals": obs["retrievals"],
+        "tool_calls": obs["tool_calls"],
+    }
 
 
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
@@ -51,8 +86,12 @@ def questions(
 ) -> StreamingResponse:
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    effective = rt.compute_effective_tools("interview", req.tools)
+    hitl = rt._hitl_requires()
+
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
@@ -61,8 +100,15 @@ def questions(
 
             user_id = current_user["id"]
             episodic = rt._get_episodic(req.thread_id, user_id)
-            agent = rt.new_interviewer(cb, episodic=episodic)
+            agent = rt.new_interviewer(
+                cb, episodic=episodic, allowed=effective, hitl_requires=hitl,
+            )
             prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="interview", agent_id="interviewer",
+                user_text=prompt, user_metadata={"mentions": mentions} if mentions else None,
+                effective_tools=effective,
+            )
             try:
                 pending_id = rt.record_user_message(
                     user_id, req.thread_id, prompt, module="interview"
@@ -77,19 +123,30 @@ def questions(
                 "pending_user_entry_id": pending_id,
             }
             cancel.check()
-            agent.run(state)
+            try:
+                agent.run(state)
+            except Exception as e:
+                rt._fail_chat_turn(ctx, e)
+                raise
             cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+            result["turn"] = ctx
+            result["lr"] = lr  # T1.4：观测字段随收尾一起落（token / tool_call）
 
+        failed = False
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
+            if failed:
+                return
             # 最终内容以 agent 最后一轮回答为准：流式 chunk 会包含多轮迭代的
             # "好的，我先检索…"开头话，全部拼接会重复（回归：分布式锁开头重复 3 次）
             content = result["content"] or "".join(content_parts)
@@ -100,11 +157,10 @@ def questions(
                 )
             except Exception:
                 pass
-            yield done_event(content)
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            rt._finish_chat_turn(result["turn"], content, **_interview_obs(result.get("lr")))
+            yield done_event(content, **turn_done_fields(result["turn"]))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 
@@ -126,8 +182,12 @@ def chat(
 ) -> StreamingResponse:
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    effective = rt.compute_effective_tools("interview", req.tools)
+    hitl = rt._hitl_requires()
+
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
+        result: dict = {"content": "", "turn": None}
         cancel = CancellationEvent()
 
         def run_fn(cb):
@@ -138,11 +198,18 @@ def chat(
             episodic = rt._get_episodic(req.thread_id, user_id)
             agent = rt.new_interviewer(
                 cb, episodic=episodic, prompt_path=_CHAT_PROMPT_PATH,
+                allowed=effective, hitl_requires=hitl,
             )
             # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
             last_user = next(
                 (m.content for m in reversed(req.messages) if m.role == "user"),
                 "",
+            )
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="interview", agent_id="interviewer_chat",
+                user_text=last_user or (req.topic or "请开始模拟面试"),
+                user_metadata={"mentions": mentions} if mentions else None,
+                effective_tools=effective,
             )
             try:
                 pending_id = rt.record_user_message(
@@ -163,19 +230,30 @@ def chat(
                 "pending_user_entry_id": pending_id,
             }
             cancel.check()
-            agent.run(state)
+            try:
+                agent.run(state)
+            except Exception as e:
+                rt._fail_chat_turn(ctx, e)
+                raise
             cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+            result["turn"] = ctx
+            result["lr"] = lr  # T1.4：观测字段随收尾一起落（token / tool_call）
 
+        failed = False
         try:
             yield stage_event("questions")
             content_parts: list[str] = []
             for line in stream_agent(run_fn, cancel=cancel):
                 evt = json.loads(line)
-                if evt["type"] == "chunk":
+                if evt["type"] == "error":
+                    failed = True
+                elif evt["type"] == "chunk":
                     content_parts.append(evt["text"])
                 yield line
+            if failed:
+                return
             # 最终内容以最后一轮回答为准（流式 chunk 含中间轮开头话，会重复）
             content = result["content"] or "".join(content_parts)
             extra: dict = {}
@@ -195,11 +273,10 @@ def chat(
                 )
             except Exception:
                 pass
-            yield done_event(content, **extra)
-        except RuntimeInitError as e:
-            yield error_event(str(e))
+            rt._finish_chat_turn(result["turn"], content, **_interview_obs(result.get("lr")))
+            yield done_event(content, **extra, **turn_done_fields(result["turn"]))
         except Exception as e:
-            yield error_event(str(e))
+            yield error_event(friendly_error(e))
 
     return _ndjson_response(gen())
 

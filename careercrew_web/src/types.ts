@@ -2,12 +2,21 @@
 
 /** NDJSON 事件（所有流式端点统一协议）。 */
 export type StreamEvent =
-  | { type: "stage"; stage: "match" | "resume" | "questions" | "consult" | "synthesis" | "knowledge" }
+  | { type: "stage"; stage: "match" | "resume" | "questions" | "consult" | "synthesis" | "knowledge" | "regenerate" }
   | { type: "chunk"; text: string; agent?: string }
   | { type: "dispatch"; round: number; agents: string[]; tasks?: Record<string, string> }
   | { type: "agent_start"; agent: string; round?: number }
   | { type: "agent_end"; agent: string; round?: number }
-  | { type: "done"; content: string; opinions?: Record<string, string>; calls?: ConsultCall[]; sources?: KnowledgeSource[]; score?: number; feedback?: string }
+  | {
+      type: "done"; content: string; opinions?: Record<string, string>; calls?: ConsultCall[];
+      sources?: KnowledgeSource[]; score?: number; feedback?: string;
+      /** §9 稳定 ID：thread_id/turn_id/message_id/run_id/model/prompt_version/agent_version/status */
+      thread_id?: string; turn_id?: string; message_id?: string; run_id?: string;
+      model?: string; prompt_version?: string; agent_version?: string; status?: string;
+      legacy_thread_id?: string;
+      /** §19 regenerate：本消息重新生成自哪条 message_id。 */
+      regenerated_from_message_id?: string;
+    }
   | { type: "error"; message: string }
   | { type: "input_request"; message: string; fields: ConsultInputField[] }
 
@@ -15,11 +24,36 @@ export type StreamStatus = "idle" | "streaming" | "done" | "error"
 
 /** 聊天消息。 */
 export interface ChatMessage {
+  /** UI key（turn 分组/React key/anchor 用；非后端稳定 message_id）。 */
   id: string
   role: "user" | "assistant"
   content: string
   agent?: string
   streaming?: boolean
+  /** 后端稳定 ID（§2.2 / §9）：message_id / turn_id / run_id。 */
+  messageId?: string
+  turnId?: string
+  runId?: string
+  /** §19 regenerate：本消息重新生成自哪条 message_id（版本链）。 */
+  regeneratedFromMessageId?: string
+}
+
+/** 单条回答反馈（绑定 assistant message id）。 */
+export interface MessageFeedback {
+  messageId: string
+  rating: "positive" | "negative"
+  reason?:
+    | "incorrect"
+    | "not_relevant"
+    | "incomplete"
+    | "too_verbose"
+    | "unclear"
+    | "instruction_failure"
+    | "tool_failure"
+    | "citation_failure"
+    | "other"
+  comment?: string
+  shareContext?: boolean
 }
 
 /** 面试 QA。 */
@@ -45,9 +79,14 @@ export interface KnowledgeSource {
 
 /** 会诊总调度官一次顾问调用记录。 */
 export interface ConsultCall {
-  round: number
+  /**
+   * round/task 在存储的原始 consult_calls 字典里可能缺失（如 agent 异常兜底只写
+   * {@code {content: ""}}，或首轮调度未带上 task），故二者为可选；agent 是 opinions 的 key
+   * 必填。渲染时对缺省值做兜底（分组/文案跳过）。
+   */
+  round?: number
   agent: string
-  task: string
+  task?: string
   content: string
 }
 

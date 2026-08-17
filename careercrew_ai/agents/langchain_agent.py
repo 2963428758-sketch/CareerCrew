@@ -16,6 +16,7 @@ max_iterations 用 middleware 实现（``before_model`` 计数 + ``wrap_model_ca
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -57,12 +58,22 @@ class ReactIteration:
 
 @dataclass
 class AgentResult:
-    """ReAct 循环产出（契约不变）。"""
+    """ReAct 循环产出（契约不变）。
+
+    新增观测字段（T1.4，可 None / 空，向后兼容）：
+    - input_tokens/output_tokens：LLM usage_metadata 累计（无 usage 时为 None）
+    - tool_call_details：per-tool 明细 [{name, args, duration_ms, error}, ...]
+    """
 
     content: str
     iterations: list[ReactIteration]
     tool_calls_total: int
     stopped_reason: str  # final_answer | max_iterations | error
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tool_call_details: list[dict] = field(default_factory=list)
+    # T3.5 HITL：被拦截（awaiting_confirmation）的工具调用明细
+    blocked_tool_calls: list[dict] = field(default_factory=list)
 
 
 class MaxIterationsMiddleware(AgentMiddleware):
@@ -96,6 +107,122 @@ class MaxIterationsMiddleware(AgentMiddleware):
                 tool_call_id=request.tool_call["id"],
                 name=request.tool_call.get("name"),
             )
+
+
+class HitlMiddleware(AgentMiddleware):
+    """HITL 拦截（T3.5 §16.4 MVP）：requires_hitl 工具不执行，改为回喂 ToolMessage。
+
+    wrap_tool_call 最先短路命中：对 ``requires_hitl`` 集合内的工具调用**不执行**，
+    回喂 ToolMessage（内容说明"需要用户确认，本轮未执行"），并在观测层记为
+    status=awaiting_confirmation + hitl_status=pending。
+
+    MVP 边界（见 brief §16.4 + report）：本任务只做 block-and-record，不做交互式
+    approve/reject 恢复执行。恢复需流中暂停协议（LangGraph interrupt 接入聊天流），
+    属后续阶段；此处只保证有副作用工具未经授权绝不执行。
+    """
+
+    def __init__(self, requires_hitl: set[str] | None = None) -> None:
+        super().__init__()
+        self.requires_hitl = set(requires_hitl or [])
+        # 供 run_agent 落库：被拦截的工具调用明细（status=awaiting_confirmation）。
+        self.blocked_tool_calls: list[dict] = []
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        tc = getattr(request, "tool_call", {}) or {}
+        name = tc.get("name", "") if isinstance(tc, dict) else ""
+        if name in self.requires_hitl:
+            self.blocked_tool_calls.append({
+                "name": name,
+                "args": (tc.get("args", {}) if isinstance(tc, dict) else {}),
+            })
+            return ToolMessage(
+                content=f"工具 {name} 需要用户确认，本轮未执行（HITL）",
+                tool_call_id=request.tool_call["id"],
+                name=name,
+            )
+        return handler(request)
+
+
+class UsageAccumulatorMiddleware(AgentMiddleware):
+    """累计 LLM token 用量（T1.4）。
+
+    wrap_model_call 里 handler 返回 ModelResponse（result[0] 为 AIMessage）或直接
+    AIMessage；从 ``usage_metadata`` 读 input_tokens/output_tokens 累加。缺失键静默
+    降级（不阻塞对话），模型不吐 usage 时累计值保持 0。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self._seen = False
+
+    @staticmethod
+    def _usage_of(msg: BaseMessage) -> dict | None:
+        usage = getattr(msg, "usage_metadata", None)
+        return usage if isinstance(usage, dict) else None
+
+    def _add_usage(self, usage: dict | None) -> None:
+        if not usage:
+            return
+        self._seen = True
+        try:
+            self.input_tokens += int(usage.get("input_tokens") or 0)
+            self.output_tokens += int(usage.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            return  # 异常 usage 值静默忽略，不阻塞
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        response = handler(request)
+        # ModelResponse(result=[...]) 或直接 AIMessage（短路中间件返回形态）
+        msgs = getattr(response, "result", None)
+        if msgs is None:
+            msgs = [response]
+        for m in msgs or []:
+            if isinstance(m, AIMessage):
+                self._add_usage(self._usage_of(m))
+        return response
+
+    def snapshot(self) -> tuple[int | None, int | None]:
+        """返回 (input_tokens, output_tokens) 累计快照，供 run_agent 落 AgentResult。
+
+        从未观测到 usage 时返回 (None, None)；观测到但累计为 0 时返回 (0, 0)。
+        """
+        if not self._seen:
+            return None, None
+        return self.input_tokens, self.output_tokens
+
+
+class ObservabilityMiddleware(AgentMiddleware):
+    """工具调用计时与错误记录（T1.4）。
+
+    wrap_tool_call 记 started/finished 毫秒、name/args，异常记录 error 文本后原样
+    上抛（工具错误仍由 MaxIterationsMiddleware 负责回喂 ToolMessage；此处只观测）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tool_call_details: list[dict] = []
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        tc = getattr(request, "tool_call", {}) or {}
+        name = tc.get("name", "") if isinstance(tc, dict) else ""
+        args = tc.get("args", {}) if isinstance(tc, dict) else {}
+        started = time.perf_counter()
+        error: str | None = None
+        try:
+            return handler(request)
+        except Exception as e:  # noqa: BLE001 - 观测层不吞异常，记录后上抛
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            self.tool_call_details.append({
+                "name": name,
+                "args": args,
+                "duration_ms": duration_ms,
+                "error": error,
+            })
 
 
 class ContextCompactionMiddleware(AgentMiddleware):
@@ -216,18 +343,38 @@ def build_agent(
     system_prompt: str,
     max_iterations: int = 10,
     extra_middleware: list[AgentMiddleware] | None = None,
+    hitl_requires: set[str] | None = None,
 ):
-    """编译 create_agent 图（tools=None 时等效单模型节点）。"""
-    middleware = [MaxIterationsMiddleware(max_iterations)]
+    """编译 create_agent 图（tools=None 时等效单模型节点）。
+
+    观测中间件（UsageAccumulator / Observability）总是装配，并把实例挂在
+    返回图的 ``_observability`` 属性上供 run_agent 读取（不污染 AgentResult 契约）。
+    hitl_requires 非空时装配 HitlMiddleware（T3.5 HITL 拦截），实例挂 ``_hitl``。
+    """
+    usage_mw = UsageAccumulatorMiddleware()
+    obs_mw = ObservabilityMiddleware()
+    middleware: list[AgentMiddleware] = [
+        MaxIterationsMiddleware(max_iterations),
+        usage_mw,
+        obs_mw,
+    ]
+    hitl_mw = HitlMiddleware(hitl_requires) if hitl_requires else None
+    if hitl_mw is not None:
+        # HITL 拦截须先于 Observability（先短路，Observability 记录被拦截的调用；
+        # 顺序：Hitl -> Obs -> ...），放在 Obs 之前以便被拦截调用也被计时/记录。
+        middleware.insert(len(middleware) - 1, hitl_mw)
     if extra_middleware:
         middleware.extend(extra_middleware)
-    return create_agent(
+    agent = create_agent(
         model=llm,
         tools=tools or None,
         system_prompt=system_prompt,
         state_schema=AgentExecState,
         middleware=middleware,
     )
+    agent._observability = (usage_mw, obs_mw)  # type: ignore[attr-defined]
+    agent._hitl = hitl_mw  # type: ignore[attr-defined]
+    return agent
 
 
 def _msg_text(msg: BaseMessage) -> str:
@@ -317,9 +464,30 @@ def run_agent(
         stopped_reason = "max_iterations"
     else:
         stopped_reason = "final_answer"
+
+    # T1.4 观测字段：从 build_agent 挂载的观测中间件读取累计值
+    usage_mw, obs_mw = getattr(agent, "_observability", (None, None))
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tool_call_details: list[dict] = []
+    blocked_tool_calls: list[dict] = []
+    if usage_mw is not None:
+        in_tok, out_tok = usage_mw.snapshot()
+        input_tokens = in_tok
+        output_tokens = out_tok
+    if obs_mw is not None:
+        tool_call_details = list(obs_mw.tool_call_details)
+    hitl_mw = getattr(agent, "_hitl", None)
+    if hitl_mw is not None:
+        blocked_tool_calls = list(hitl_mw.blocked_tool_calls)
+
     return AgentResult(
         content=content,
         iterations=iterations,
         tool_calls_total=tool_calls_total,
         stopped_reason=stopped_reason,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        tool_call_details=tool_call_details,
+        blocked_tool_calls=blocked_tool_calls,
     )

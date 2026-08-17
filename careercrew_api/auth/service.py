@@ -32,6 +32,10 @@ class AuthenticationError(Exception):
     """凭据、访问令牌或刷新 Cookie 无效。"""
 
 
+class AccountDisabledError(Exception):
+    """账号已被管理员禁用，拒绝登录。"""
+
+
 class LoginLockedError(Exception):
     """登录失败过多，账号按用户名/来源 IP 被短期锁定。"""
 
@@ -88,6 +92,9 @@ class AuthService:
             if locked:
                 raise LoginLockedError(self._retry_after(locked_until))
         account = self.store.account_by_username(username)
+        if account and account.get("status") != "active":
+            # 账号被禁用：直接告知锁定原因，不计入失败次数、不泄露密码是否匹配
+            raise AccountDisabledError("你的账号已被锁定，请联系管理员")
         valid = False
         if account and account.get("status") == "active":
             try:
@@ -103,13 +110,14 @@ class AuthService:
                 )
                 if locked:
                     raise LoginLockedError(self._retry_after(locked_until))
-            raise AuthenticationError("invalid username or password")
+            raise AuthenticationError("用户名或密码不正确")
         for key in locked_keys:
             self.store.clear_login_failures(key)
         if self.password_hasher.check_needs_rehash(account["password_hash"]):
             self.store.update_password_hash(account["id"], self.password_hasher.hash(password))
         user = {
-            key: account[key] for key in ("id", "username", "role")
+            key: account.get(key) for key in ("id", "username", "role", "display_name")
+            if account.get(key) is not None
         }
         user["must_change_password"] = bool(account.get("must_change_password", False))
         return self._token_response(user)
@@ -175,7 +183,7 @@ class AuthService:
             except (VerificationError, InvalidHashError):
                 valid = False
             if not valid:
-                raise AuthenticationError("invalid password")
+                raise AuthenticationError("当前密码不正确")
         self.store.update_password_hash(user["id"], self.password_hasher.hash(new_password))
         self.store.set_must_change_password(user["id"], False)
         self.store.bump_token_version(user["id"])
@@ -183,6 +191,16 @@ class AuthService:
             self.store.revoke_other_refresh_sessions(user["id"], current_refresh_token)
         else:
             self.store.revoke_all_refresh_sessions(user["id"])
+
+    def update_own_display_name(self, user: dict[str, str], name: str) -> dict[str, Any]:
+        """修改自己的显示名：去空格、1-30 字符；登录用户名保持不变。"""
+        trimmed = name.strip()
+        if not trimmed:
+            raise ValueError("名字不能为空")
+        if len(trimmed) > 30:
+            raise ValueError("名字最长 30 个字符")
+        self.store.update_display_name(user["id"], trimmed)
+        return self.store.account_by_id(user["id"])
 
     def admin_reset_password(self, actor: dict[str, str], user_id: str,
                              new_password: str | None = None) -> None:
@@ -205,7 +223,7 @@ class AuthService:
         if not target:
             raise KeyError(user_id)
         if role is None and status is None:
-            raise ValueError("nothing to update")
+            raise ValueError("没有需要修改的内容")
         new_role = role if role is not None else target["role"]
         new_status = status if status is not None else target["status"]
         # 系统级不变量优先：任何操作都不能让系统失去最后一名有效管理员

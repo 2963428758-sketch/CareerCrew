@@ -31,20 +31,22 @@ class CredentialsRequest(BaseModel):
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，首次登录强制改密
-    role: Literal["user", "admin"] = "user"
+    role: Literal["user", "admin", "quality_reviewer"] = "user"
 
 
 class PublicUser(BaseModel):
     id: str
     username: str
-    role: Literal["user", "admin"]
+    role: Literal["user", "admin", "quality_reviewer"]
     must_change_password: bool = False
+    # 显示名（可修改，用于界面展示）；为空时前端回退显示 username
+    display_name: str | None = None
 
 
 class AccountListItem(BaseModel):
     id: str
     username: str
-    role: Literal["user", "admin"]
+    role: Literal["user", "admin", "quality_reviewer"]
     status: Literal["active", "disabled"]
     token_version: int
     must_change_password: bool = False
@@ -60,7 +62,7 @@ class UserListResponse(BaseModel):
 
 
 class UserPatchRequest(BaseModel):
-    role: Literal["user", "admin"] | None = None
+    role: Literal["user", "admin", "quality_reviewer"] | None = None
     status: Literal["active", "disabled"] | None = None
 
     @model_validator(mode="after")
@@ -72,6 +74,18 @@ class UserPatchRequest(BaseModel):
 
 class PasswordResetRequest(BaseModel):
     password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，下次登录强制改密
+
+
+class UpdateDisplayNameRequest(BaseModel):
+    name: str = Field(max_length=30)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("名字不能为空")
+        return value
 
 
 class ChangePasswordRequest(BaseModel):
@@ -96,14 +110,30 @@ class TokenResponse(BaseModel):
 # ── Chat（M1 对话闭环）──
 
 
+class Mention(BaseModel):
+    """@ 引用资源。type ∈ {knowledge_document, resume}；不支持 @Agent。
+
+    id 不可信：服务端必须再次校验 ownership / visibility，逐条 resolve。
+    """
+
+    type: Literal["knowledge_document", "resume"]
+    id: str = Field(min_length=1, max_length=255)
+
+
 class MatchRequest(BaseModel):
     intent: str
     thread_id: str = "m1"
+    mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 class ResumeRequest(BaseModel):
     jd_text: str
     thread_id: str = "m1"
+    mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 # ── Interview ──
@@ -112,6 +142,9 @@ class ResumeRequest(BaseModel):
 class QuestionRequest(BaseModel):
     topic: str = ""
     thread_id: str = "interview"
+    mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 class InterviewChatMessage(BaseModel):
@@ -123,6 +156,9 @@ class InterviewChatRequest(BaseModel):
     topic: str = ""
     messages: list[InterviewChatMessage] = []
     thread_id: str = "interview"
+    mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 class ScoreRequest(BaseModel):
@@ -175,6 +211,9 @@ class ConsultRequest(BaseModel):
     # 前端"资料填写框"提交的结构化用户画像（current_position / experience_years /
     # skills / target_direction / city / salary / target_companies），后端并入会诊上下文。
     profile: dict[str, str] = Field(default_factory=dict)
+    mentions: list[Mention] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 # ── Knowledge（知识库问答）──
@@ -185,3 +224,6 @@ class KnowledgeAskRequest(BaseModel):
     thread_id: str = "knowledge"
     category: str = ""  # resume / knowledge / interview，空串=全部
     scope: str = "all"  # all（公共+本人私有）| public | private
+    mentions: list[Mention] = Field(default_factory=list)  # 强制上下文（§15）
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None

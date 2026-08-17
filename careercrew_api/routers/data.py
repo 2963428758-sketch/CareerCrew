@@ -43,13 +43,6 @@ class RetrievalScopeRequest(BaseModel):
         return self
 
 
-class ThreadCreateRequest(BaseModel):
-    thread_id: str
-    module: str = "chat"
-    title: str = ""
-    retrieval_scope: RetrievalScopeRequest | None = None
-
-
 class ThreadPatchRequest(BaseModel):
     title: str | None = None
     pinned: bool | None = None
@@ -127,16 +120,6 @@ def threads(current_user: CurrentUser, module: str | None = Query(None),
     return rt.get_threads(current_user["id"], module=module)
 
 
-@router.post("/threads")
-def create_thread(req: ThreadCreateRequest, current_user: CurrentUser,
-                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
-    """登记新会话线程。"""
-    return rt.register_thread(
-        req.thread_id, current_user["id"], module=req.module, title=req.title,
-        retrieval_scope=req.retrieval_scope.model_dump(exclude_none=True) if req.retrieval_scope else None,
-    )
-
-
 @router.patch("/threads/{thread_id}")
 def patch_thread(thread_id: str, req: ThreadPatchRequest, current_user: CurrentUser,
                  rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
@@ -149,7 +132,7 @@ def patch_thread(thread_id: str, req: ThreadPatchRequest, current_user: CurrentU
             retrieval_scope=req.retrieval_scope.model_dump(exclude_none=True) if req.retrieval_scope else None,
         )
     except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail="thread not found") from e
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
 
 
 @router.delete("/threads/{thread_id}")
@@ -159,7 +142,7 @@ def delete_thread(thread_id: str, current_user: CurrentUser,
     try:
         return rt.delete_thread(thread_id, current_user["id"])
     except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail="thread not found") from e
+        raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
 
 
 @router.get("/memory")

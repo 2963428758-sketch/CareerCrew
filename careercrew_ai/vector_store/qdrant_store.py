@@ -113,15 +113,16 @@ class QdrantStore(BaseVectorStore):
             Filter,
             MatchAny,
             MatchValue,
+            MinShould,
         )
 
         if not filters:
             return None
         must = []
-        should = None
+        access_should = None
         for k, v in filters.items():
             if k == ACCESS_USER_KEY:
-                should = [
+                access_should = [
                     FieldCondition(key="visibility", match=MatchValue(value="public")),
                     FieldCondition(key="owner_user_id", match=MatchValue(value=str(v))),
                 ]
@@ -130,7 +131,20 @@ class QdrantStore(BaseVectorStore):
                 must.append(FieldCondition(key=k, match=MatchAny(any=list(v))))
             elif isinstance(v, (str, int, float, bool)):
                 must.append(FieldCondition(key=k, match=MatchValue(value=v)))
-        return Filter(must=must, should=should) if (must or should) else None
+        # 访问控制是强制约束。当访问条件与其它 must 条件（如 doc 白名单）同时存在时，
+        # 若把访问条件放在 Filter.should（无 min_should），它会被 Qdrant 视为可选
+        # （optional OR），等于访问控制被短路、只剩上游 resolve_mentions 兜底。
+        # 因此：有其它 must 时把「public OR 本人 owner」作为嵌套 Filter（min_should=1）
+        # 并入 must，保证它和 doc 白名单做 AND；仅有访问条件时保持原样走 should。
+        if access_should:
+            if must:
+                must.append(Filter(
+                    should=access_should,
+                    min_should=MinShould(conditions=access_should, min_count=1),
+                ))
+            else:
+                return Filter(must=must, should=access_should)
+        return Filter(must=must) if must else None
 
     @staticmethod
     def _to_result(hit) -> QueryResult:

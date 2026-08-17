@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tooltip } from "@/components/ui/tooltip"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { cn } from "@/lib/utils"
 import {
   fetchResumeContent,
@@ -12,6 +14,7 @@ import {
   type ResumeUploadJob,
 } from "@/lib/resumeUpload"
 import { apiFetch } from "@/lib/auth"
+import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -51,9 +54,12 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
     setLoading(true)
     setError("")
     apiFetch("/api/resume/library")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await apiErrorText(r, "加载简历列表失败"))
+        return r.json()
+      })
       .then((d: { resumes: ResumeLibraryItem[] }) => setResumes(d.resumes))
-      .catch((e) => setError((e as Error).message))
+      .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
   }
 
@@ -127,11 +133,11 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
     fd.append("file", files[0])
     try {
       const resp = await apiFetch("/api/resume/upload", { method: "POST", body: fd })
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "上传失败，请重试"))
       const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
       setJob(data as ResumeUploadJob)
     } catch (e) {
-      setUploadError((e as Error).message)
+      setUploadError(networkErrorText(e, "上传失败，请检查网络后重试"))
     }
   }
 
@@ -148,39 +154,50 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
         content,
       })
     } catch (e) {
-      setUploadError(`读取简历失败：${(e as Error).message}`)
+      setUploadError(`读取简历失败：${networkErrorText(e, "网络连接失败，请重试")}`)
     } finally {
       setActivatingId(null)
     }
   }
 
+  /** 待删除确认的简历（自定义 Codex 确认框，替代 window.confirm） */
+  const [confirmItem, setConfirmItem] = useState<ResumeLibraryItem | null>(null)
+
   const handleDelete = async (item: ResumeLibraryItem) => {
-    if (!window.confirm(`确定从简历库删除「${item.filename}」吗？删除后需重新上传才能恢复。`)) return
     try {
       const resp = await apiFetch(`/api/resume/library/${encodeURIComponent(item.resume_id)}`, {
         method: "DELETE",
       })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "删除简历失败"))
       refresh()
     } catch (e) {
-      setUploadError(`删除失败：${(e as Error).message}`)
+      setUploadError(`删除失败：${networkErrorText(e, "网络连接失败，请重试")}`)
     }
   }
 
   return (
     <div className="space-y-4">
+      <ConfirmDialog
+        open={confirmItem !== null}
+        title="从简历库删除？"
+        message={`「${confirmItem?.filename ?? ""}」删除后需重新上传才能恢复。`}
+        onConfirm={() => confirmItem && void handleDelete(confirmItem)}
+        onClose={() => setConfirmItem(null)}
+      />
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-semibold">上传简历</CardTitle>
+            <CardTitle className="text-[13px] font-medium">上传简历</CardTitle>
             {onClose && (
-              <button
-                className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                onClick={onClose}
-                title="关闭"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <Tooltip label="关闭">
+                <button
+                  className="rounded-[5px] p-1 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+                  onClick={onClose}
+                  aria-label="关闭"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </Tooltip>
             )}
           </div>
         </CardHeader>
@@ -190,24 +207,24 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
               type="file"
               accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.webp,.txt,.md,.markdown,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
               onChange={(e) => setFiles(e.target.files)}
-              className="h-9 max-w-sm text-sm"
+              className="h-9 max-w-sm text-[13px]"
             />
             <Button size="sm" className="gap-1.5" onClick={handleUpload} disabled={uploading || !files || files.length === 0}>
               <Upload className="h-3.5 w-3.5" />
               {uploading ? "解析中…" : "上传解析"}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-[12px] text-ink-soft">
             支持 PDF / 图片 / TXT / MD / DOCX 等 · 最大 20MB。PDF 与图片会先经 MinerU
             抽取文本，约需 1-2 分钟，请耐心等待。
           </p>
           {job && job.status !== "error" && (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <div className="flex items-center justify-between text-[12px] text-ink-soft">
                 <span>{job.status === "done" ? "完成" : STAGE_LABELS[job.stage] ?? job.stage}</span>
                 <span className="tabular-nums">{Math.round(displayPct)}%</span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
                 <div
                   className={
                     job.status === "done"
@@ -218,53 +235,55 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
                 />
               </div>
               {job.status !== "done" && job.stage === "parse" && (
-                <p className="text-xs text-muted-foreground">PDF / 图片解析较慢，期间进度条会缓慢推进，请勿关闭页面…</p>
+                <p className="text-[12px] text-ink-faint">PDF / 图片解析较慢，期间进度条会缓慢推进，请勿关闭页面…</p>
               )}
             </div>
           )}
           {job?.status === "done" && displayPct >= 99 && job.result && (
-            <p className="text-xs font-medium text-green-600">
+            <p className="text-[12px] font-medium text-green-600">
               ✓ 解析成功：{job.result.filename}（{job.result.doc_type} · {job.result.char_count} 字符）
             </p>
           )}
-          {job?.status === "error" && <p className="text-xs font-medium text-destructive">解析失败：{job.error}</p>}
-          {uploadError && <p className="text-xs font-medium text-destructive">操作失败：{uploadError}</p>}
+          {job?.status === "error" && <p className="text-[12px] font-medium text-destructive">解析失败：{job.error}</p>}
+          {uploadError && <p className="text-[12px] font-medium text-destructive">操作失败：{uploadError}</p>}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-semibold">
+            <CardTitle className="text-[13px] font-medium">
               我的简历
-              {resumes && <span className="ml-1 font-normal text-muted-foreground">（{resumes.length} 份）</span>}
+              {resumes && <span className="ml-1 font-normal text-ink-faint">（{resumes.length} 份）</span>}
             </CardTitle>
-            <button
-              className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              onClick={refresh}
-              title="刷新"
-            >
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-            </button>
+            <Tooltip label="刷新">
+              <button
+                className="rounded-[5px] p-1 text-ink-faint transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink"
+                onClick={refresh}
+                aria-label="刷新"
+              >
+                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              </button>
+            </Tooltip>
           </div>
         </CardHeader>
         <CardContent>
           {loading ? (
             <Skeleton className="h-32 w-full" />
           ) : error ? (
-            <p className="text-sm text-destructive">加载失败：{error}</p>
+            <p className="text-[13px] text-destructive">加载失败：{error}</p>
           ) : !resumes || resumes.length === 0 ? (
-            <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+            <p className="rounded-[8px] border border-dashed border-[var(--border-normal)] px-3 py-6 text-center text-[13px] text-ink-faint">
               还没有上传过简历，先上传一份吧
             </p>
           ) : (
             <div className="space-y-1.5">
               {resumes.map((item) => (
-                <div key={item.resume_id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-2">
-                  <FileText className="h-4 w-4 shrink-0 text-primary" />
+                <div key={item.resume_id} className="flex items-center gap-2 rounded-[8px] border border-[var(--border-soft)] bg-workspace px-3 py-2">
+                  <FileText className="h-4 w-4 shrink-0 text-primary" strokeWidth={1.7} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{item.filename}</p>
-                    <p className="truncate text-[11px] text-muted-foreground">
+                    <p className="truncate text-[13px] font-medium text-ink">{item.filename}</p>
+                    <p className="truncate text-[11px] text-ink-faint">
                       {item.doc_type} · {item.char_count} 字符
                     </p>
                   </div>
@@ -282,13 +301,15 @@ export default function ResumePanel({ onClose, onActive }: ResumePanelProps) {
                     )}
                     用于当前对话
                   </Button>
-                  <button
-                    className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                    onClick={() => handleDelete(item)}
-                    title={`删除 ${item.filename}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <Tooltip label={`删除 ${item.filename}`}>
+                    <button
+                      className="shrink-0 rounded-[5px] p-1 text-ink-faint transition-colors duration-100 hover:text-destructive"
+                      onClick={() => setConfirmItem(item)}
+                      aria-label={`删除 ${item.filename}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </Tooltip>
                 </div>
               ))}
             </div>

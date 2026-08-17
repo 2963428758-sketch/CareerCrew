@@ -123,7 +123,7 @@ def stream_agent(
             except queue.Empty:
                 yield (
                     json.dumps(
-                        {"type": "error", "message": f"stream timeout after {idle}s"},
+                        {"type": "error", "message": f"回答生成超时（等待超过 {idle:g} 秒无响应），请重试"},
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -133,7 +133,7 @@ def stream_agent(
                 break
             yield json.dumps(item, ensure_ascii=False) + "\n"
         if "exc" in err:
-            yield json.dumps({"type": "error", "message": str(err["exc"])}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "error", "message": friendly_error(err["exc"])}, ensure_ascii=False) + "\n"
     except GeneratorExit:
         cev.set()
         raise
@@ -156,3 +156,47 @@ def done_event(content: str, **extra: Any) -> str:
 def error_event(message: str) -> str:
     """构造 error 事件 NDJSON 行。"""
     return json.dumps({"type": "error", "message": message}, ensure_ascii=False) + "\n"
+
+
+def friendly_error(exc: BaseException) -> str:
+    """把底层异常转成用户可读的中文提示（保留原始信息便于排查）。
+
+    覆盖常见故障类：网络连接、超时、API Key、额度/限流、模型不可用、上下文过长；
+    已是中文的业务异常原样返回，其余统一加「生成失败：」前缀。
+    """
+    msg = str(exc).strip() or type(exc).__name__
+    if any("\u4e00" <= ch <= "\u9fff" for ch in msg):
+        return msg
+    lowered = msg.lower()
+    if any(k in lowered for k in ("connection", "connect", "refused", "network",
+                                   "name or service not known", "unreachable")):
+        return f"无法连接到 AI 服务，请检查网络或服务配置：{msg}"
+    if "timeout" in lowered or "timed out" in lowered:
+        return f"AI 服务响应超时，请稍后重试：{msg}"
+    if any(k in lowered for k in ("api key", "apikey", "unauthorized", "authentication",
+                                  "invalid token", "credentials")) or "401" in msg:
+        return f"AI 服务密钥无效或已过期，请检查配置：{msg}"
+    if any(k in lowered for k in ("quota", "rate limit", "too many requests")) or "429" in msg:
+        return f"AI 服务额度不足或请求过于频繁，请稍后重试：{msg}"
+    if "model" in lowered and any(k in lowered for k in ("not found", "not exist",
+                                                         "not available", "does not exist")):
+        return f"AI 模型不可用，请检查模型配置：{msg}"
+    if any(k in lowered for k in ("maximum context", "context length", "out of memory",
+                                  "token limit")):
+        return f"对话内容过长，请新开一个会话再试：{msg}"
+    return f"生成失败：{msg}"
+
+
+def turn_done_fields(turn) -> dict:
+    """把 TurnContext（或有 done_fields 方法的对象）转为 §9 done 事件附加字段。
+
+    turn 为 None（生命周期未接线 / 存储降级）时返回空 dict，done 事件退化为仅 content，
+    兼容 FakeRuntime 无对话存储的场景。
+    """
+    if turn is None:
+        return {}
+    if hasattr(turn, "done_fields"):
+        return turn.done_fields()
+    if isinstance(turn, dict):
+        return dict(turn)
+    return {}

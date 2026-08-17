@@ -2,14 +2,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import KnowledgePage from "@/pages/KnowledgePage"
+import { resetFeedbackStateForTest } from "@/lib/feedbackState"
 import { useThreadStore } from "@/store/threadStore"
 import { useStreamStore } from "@/store/streamStore"
 
 const apiFetch = vi.fn()
 vi.mock("@/lib/auth", () => ({ apiFetch: (...a: unknown[]) => apiFetch(...a) }))
 
+const jsonResponse = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
+
 describe("KnowledgePage 检索范围", () => {
   beforeEach(() => {
+    resetFeedbackStateForTest()
     apiFetch.mockReset()
     apiFetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => [] }))
     useStreamStore.setState({ sessions: {} })
@@ -77,5 +81,67 @@ describe("KnowledgePage 检索范围", () => {
   it("无保存范围的历史会话回退为全部", async () => {
     render(<KnowledgePage />)
     await waitFor(() => expect(screen.getByText(/当前：全部 · 全部分类/)).toBeTruthy())
+  })
+
+  it("稳定 ID 的再生成保留版本，并把反馈按每个版本独立渲染", async () => {
+    const regenerate = vi.fn().mockResolvedValue(undefined)
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/threads/k-a/messages") {
+        return jsonResponse([
+          { id: "question-1", role: "user", content: "如何准备面试？", turn_id: "turn-1" },
+          { id: "answer-v1", role: "assistant", content: "旧版本", turn_id: "turn-1", run_id: "run-1" },
+          { id: "answer-v2", role: "assistant", content: "新版本", turn_id: "turn-1", run_id: "run-2" },
+        ])
+      }
+      if (url === "/api/threads/k-a/feedback") {
+        return jsonResponse([{ id: "feedback-v1", message_id: "answer-v1", rating: "positive", share_context: false }])
+      }
+      return jsonResponse([])
+    })
+    useStreamStore.setState({ sessions: {}, regenerate })
+
+    render(<KnowledgePage />)
+
+    await waitFor(() => expect(screen.getByText("新版本")).toBeTruthy())
+    expect(screen.getByText("2 / 2")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "有帮助" })).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "重新生成" }))
+    await waitFor(() => expect(regenerate).toHaveBeenCalledWith("k-a", "answer-v2"))
+
+    fireEvent.click(screen.getByRole("button", { name: "上一个版本" }))
+    expect(screen.getByText("旧版本")).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole("button", { name: "取消反馈" })).toBeTruthy())
+
+    fireEvent.click(screen.getByRole("button", { name: "下一个版本" }))
+    expect(screen.getByText("新版本")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "有帮助" })).toBeTruthy()
+  })
+
+  it("遗留无稳定 ID 的回答隐藏反馈但保留复制和兼容再生成", async () => {
+    const start = vi.fn().mockResolvedValue(undefined)
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/threads/k-a/messages") {
+        return jsonResponse([
+          { id: "question-legacy", role: "user", content: "旧问题", turn_id: "turn-legacy" },
+          { role: "assistant", content: "旧回答", turn_id: "turn-legacy" },
+        ])
+      }
+      return jsonResponse([])
+    })
+    useStreamStore.setState({ sessions: {}, start })
+
+    render(<KnowledgePage />)
+
+    await waitFor(() => expect(screen.getByText("旧回答")).toBeTruthy())
+    expect(screen.getByRole("button", { name: "复制回答" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "重新生成" })).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "有帮助" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "不满意" })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "重新生成" }))
+    await waitFor(() => expect(start).toHaveBeenCalledWith(
+      "k-a",
+      "/knowledge/ask",
+      { question: "旧问题", thread_id: "k-a", category: "", scope: "all" },
+    ))
   })
 })

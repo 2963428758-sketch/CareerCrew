@@ -25,7 +25,6 @@ from careercrew_core.tracing.langsmith import (
     configure_langsmith,
     traced_call,
 )
-
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
@@ -34,6 +33,106 @@ if TYPE_CHECKING:
 
 def _norm_path(p: str) -> str:
     return str(p).replace("\\", "/").lower()
+
+
+def _capture_langsmith_run_id() -> str | None:
+    """取当前 LangSmith 根 run id（tracing 关闭时为 None）。
+
+    仅在 traced 上下文内有效：traced_call 包住 impl 后，get_current_run_tree()
+    返回当前 run 树；tracing 未启用 get_current_run_tree() 仍可安全调用（返回 None）。
+    """
+    try:
+        from langsmith import get_current_run_tree
+
+        tree = get_current_run_tree()
+        return str(tree.id) if tree is not None else None
+    except Exception:  # noqa: BLE001 - 埋点失败不影响主链路
+        return None
+
+
+def _observability_from_result(result) -> dict:
+    """从 AgentResult 抽取观测字段（tokens + tool_call 明细）。
+
+    返回 {input_tokens, output_tokens, total_tokens, tool_calls}；result 为 None
+    或缺新字段时相应值为 None / []（静默降级，不阻塞收尾）。
+    """
+    if result is None:
+        return {
+            "input_tokens": None, "output_tokens": None, "total_tokens": None,
+            "tool_calls": [],
+        }
+    input_tokens = getattr(result, "input_tokens", None)
+    output_tokens = getattr(result, "output_tokens", None)
+    total_tokens = None
+    if input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    details = getattr(result, "tool_call_details", None) or []
+    tool_calls = []
+    for d in details:
+        err = d.get("error")
+        error_type = None
+        if err:
+            error_type = str(err).split(":", 1)[0] or None
+        tool_calls.append({
+            "tool_name": str(d.get("name") or ""),
+            "input_redacted": d.get("args"),
+            "output_summary": None,
+            "status": "failed" if err else "completed",
+            "duration_ms": d.get("duration_ms"),
+            "error_type": error_type,
+            "error_summary": err,
+        })
+    # T3.5 §16.4 HITL：被拦截（未执行）的调用作为独立 tool_call 行落库，
+    # status=awaiting_confirmation + hitl_status=pending（block-and-record，无恢复执行）。
+    # 这些调用在 HitlMiddleware.wrap_tool_call 被短路，未进入 Observability 明细，
+    # 改由 AgentResult.blocked_tool_calls 承载。
+    for b in getattr(result, "blocked_tool_calls", None) or []:
+        tool_calls.append({
+            "tool_name": str(b.get("name") or ""),
+            "input_redacted": b.get("args"),
+            "output_summary": None,
+            "status": "awaiting_confirmation",
+            "duration_ms": None,
+            "requires_hitl": True,
+            "hitl_status": "pending",
+            "error_type": None,
+            "error_summary": None,
+        })
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "tool_calls": tool_calls,
+    }
+
+
+def _rag_query_retrievals(tool_call_details: list[dict], start_index: int = 0) -> list[dict]:
+    """从 tool_call_details 里 name=="rag_query" 的条目生成 retrieval 行（尽力而为）。
+
+    无法从工具结果拿到 doc/chunk id 与 score（rag_query 返回纯文本），此处只落
+    query_text_redacted（args 摘要）+ scope；document_id/chunk_id/recall_score 为空。
+    """
+    retrievals: list[dict] = []
+    idx = start_index
+    for d in tool_call_details or []:
+        if d.get("name") != "rag_query":
+            continue
+        args = d.get("args") or {}
+        q = args.get("query") if isinstance(args, dict) else None
+        retrievals.append({
+            "query_index": idx,
+            "query_text_redacted": str(q) if q else None,
+            "scope": None,
+            "document_id": None,
+            "chunk_id": None,
+            "recall_score": None,
+            "used_in_final_context": False,
+            # 非 sink 观测路径的 rag_query 均为 Agent 自动检索（无强制上下文），
+            # 显式标 'auto'，不依赖 finish_turn 的默认值兜底。
+            "retrieval_source": "auto",
+        })
+        idx += 1
+    return retrievals
 
 
 def _read_image_paths(result) -> set[str]:
@@ -80,6 +179,13 @@ class ResourceNotFoundError(LookupError):
     """Authenticated tenant does not own the requested resource."""
 
 
+class RegenerateConflictError(Exception):
+    """regenerate 前置校验失败（非 assistant / 非 completed / 非最后一条 / 不支持的模块）。
+
+    路由映射为 409（区别于 ResourceNotFoundError 的 404）。
+    """
+
+
 class CareerCrewRuntime:
     """进程级重组件单例 + 会话级 agent/JobCycle 工厂。"""
 
@@ -109,6 +215,8 @@ class CareerCrewRuntime:
         self.memory_router = None     # LLM 记忆路由
         self.memory_injector = None   # 自动注入
         self._episodic_vector_store = None
+        self.conversation_store = None  # 对话核心存储（Phase 1 Source of Truth）
+        self.attachment_store = None   # 会话附件存储（Phase 3）
 
     # ── 重组件初始化 ──
 
@@ -199,6 +307,18 @@ class CareerCrewRuntime:
             self.reranker = rr
             self.multimodal_search = hs
             self.memory_db = memory_db
+            # 对话核心存储（conversation 表 Source of Truth，Postgres/Fake）
+            from careercrew_core.conversation.db import create_conversation_db
+            from careercrew_core.conversation.store import ConversationStore
+
+            self.conversation_store = ConversationStore(create_conversation_db(settings))
+            # 会话附件存储（chat_attachments 表，与 conversation 同库）
+            from careercrew_core.conversation.attachments import (
+                AttachmentStore,
+                create_attachment_db,
+            )
+
+            self.attachment_store = AttachmentStore(create_attachment_db(settings))
             self.episodic = episodic
             self.fact_store = fact_store
             self.policy_store = policy_store
@@ -214,6 +334,93 @@ class CareerCrewRuntime:
         from careercrew_core.memory.episodic import EpisodicMemory
 
         return EpisodicMemory(self.memory_db, user_id=user_id, thread_id=thread_id)
+
+    # ── 对话 run 生命周期（Phase 1：conversation 表 Source of Truth）──
+
+    def _conversation_model(self) -> str:
+        """当前 run 的 model（settings.llm.model；未初始化时退化空串）。"""
+        if self.settings is None:
+            return ""
+        return getattr(self.settings.llm, "model", "") or ""
+
+    def _begin_chat_turn(self, thread_id: str, user_id: str, module: str,
+                         agent_id: str, user_text: str, title: str | None = None,
+                         user_metadata: dict | None = None,
+                         effective_tools: list[str] | None = None):
+        """开启一轮对话（conversation 表四件套），失败不阻断主流程（返回 None）。
+
+        prompt_version / agent_version 由 versioning 按 agent_id 计算（T1.5）：
+        - 有单一 agent prompt 的入口写 sha256:<64hex>
+        - 编排类入口（consult_orchestrator 无单一 prompt）→ agent_id 未注册 → unversioned，
+          Phase 2/3 补编排级版本时再换。
+        user_metadata（T1.6）：写入 user 消息 metadata，供 regenerate 忠实重跑。
+        """
+        from careercrew_api.chat_lifecycle import begin_turn
+        from careercrew_core.versioning import agent_version, prompt_version_for_agent
+
+        self._ensure_heavy()
+        try:
+            return begin_turn(
+                self.conversation_store,
+                thread_id=thread_id, user_id=user_id, module=module,
+                agent_id=agent_id, user_text=user_text,
+                model=self._conversation_model(), title=title,
+                prompt_version=prompt_version_for_agent(agent_id),
+                agent_version=agent_version(),
+                user_metadata=user_metadata,
+                effective_tools=effective_tools,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("begin_chat_turn failed")
+            return None
+
+    def _finish_chat_turn(self, ctx, content: str, status: str = "completed",
+                          metadata: dict | None = None,
+                          input_tokens: int | None = None,
+                          output_tokens: int | None = None,
+                          total_tokens: int | None = None,
+                          langsmith_run_id: str | None = None,
+                          retrievals: list[dict] | None = None,
+                          tool_calls: list[dict] | None = None) -> None:
+        """收尾一轮对话（写 assistant content + 状态 + 可选 metadata 富结构 + run latency
+        + T1.4 观测字段）；ctx 为 None 时跳过。"""
+        from careercrew_api.chat_lifecycle import finish_turn
+
+        if ctx is None:
+            return
+        try:
+            finish_turn(
+                self.conversation_store, ctx, content, status=status, metadata=metadata,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                total_tokens=total_tokens, langsmith_run_id=langsmith_run_id,
+                retrievals=retrievals, tool_calls=tool_calls,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("finish_chat_turn failed")
+
+    def _fail_chat_turn(self, ctx, exc: BaseException) -> None:
+        from careercrew_api.chat_lifecycle import fail_turn
+
+        if ctx is None:
+            return
+        try:
+            fail_turn(self.conversation_store, ctx, exc)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("fail_chat_turn failed")
+
+    def _cancel_chat_turn(self, ctx) -> None:
+        from careercrew_api.chat_lifecycle import cancel_turn
+
+        if ctx is None:
+            return
+        try:
+            cancel_turn(self.conversation_store, ctx)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("cancel_chat_turn failed")
 
     def _ensure_thread(self, thread_id: str, user_id: str, module: str = "chat",
                        title: str = "") -> None:
@@ -358,8 +565,13 @@ class CareerCrewRuntime:
 
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
-                         cancel_check: Callable[[], None] | None = None) -> str:
-        """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。"""
+                         mentions: list[dict] | None = None,
+                         cancel_check: Callable[[], None] | None = None,
+                         tools: list[str] | None = None) -> "StreamResult":
+        """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。
+
+        返回 StreamResult（content + turn 上下文）；转交 traced_call 透传。
+        """
         return traced_call(
             self._run_match_stream_impl,
             name="careercrew.match",
@@ -369,15 +581,31 @@ class CareerCrewRuntime:
             user_id=user_id,
             intent=intent,
             cb=cb,
+            mentions=mentions,
             cancel_check=cancel_check,
+            tools=tools,
         )
 
     def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                cb: Callable[[str], None] | None = None,
-                               cancel_check: Callable[[], None] | None = None) -> str:
+                               mentions: list[dict] | None = None,
+                               cancel_check: Callable[[], None] | None = None,
+                               tools: list[str] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
+        ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
             cancel_check()
+        user_meta: dict | None = None
+        if mentions:
+            user_meta = {"mentions": mentions}
+        effective = self.compute_effective_tools("matcher", tools)
+        hitl = self._hitl_requires()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="matcher", agent_id="job_matcher",
+            user_text=intent, user_metadata=user_meta, effective_tools=effective,
+        )
         cycle = self.get_cycle(thread_id, user_id)
         try:
             # 先落库用户消息：即使后续 agent 运行挂起/失败，问题也不丢
@@ -389,10 +617,14 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         ep = self._get_episodic(thread_id, user_id)
-        cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
+        cycle.job_matcher = self.new_job_matcher(cb, episodic=ep, allowed=effective, hitl_requires=hitl)
         if cancel_check:
             cancel_check()
-        result = cycle.run_match(intent)
+        try:
+            result = cycle.run_match(intent)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         # 超轮次兜底：agent 搜索轮次耗尽时补一段结论，避免以"我再搜一下"截断
@@ -409,13 +641,23 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        obs = _observability_from_result(lr)
+        obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        self._finish_chat_turn(
+            ctx, result, langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
-        return result
+        return StreamResult(content=result, turn=ctx)
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
-                          cancel_check: Callable[[], None] | None = None) -> str:
+                          mentions: list[dict] | None = None,
+                          cancel_check: Callable[[], None] | None = None,
+                          tools: list[str] | None = None) -> "StreamResult":
         """流式 resume：用带 callback 的 agent 替换 cycle 中的 advisor，保留对话历史。"""
         return traced_call(
             self._run_resume_stream_impl,
@@ -426,17 +668,41 @@ class CareerCrewRuntime:
             user_id=user_id,
             jd_text=jd_text,
             cb=cb,
+            mentions=mentions,
             cancel_check=cancel_check,
+            tools=tools,
         )
 
     def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
                                 cb: Callable[[str], None] | None = None,
-                                cancel_check: Callable[[], None] | None = None) -> str:
+                                mentions: list[dict] | None = None,
+                                cancel_check: Callable[[], None] | None = None,
+                                tools: list[str] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
+        ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
             cancel_check()
-        cycle = self.get_cycle(thread_id, user_id)
         user_text = f"按这个 JD 定制简历：{jd_text[:200]}"
+        # 注意（绑定的决策，勿改动）：conversation 表用 module="resume"（canonical，
+        # 对齐前端模块分类 sidebar/threadStore），而下方 episodic 双写
+        # （record_user_message / record_thread_messages）沿用遗留值 module="matcher"。
+        # 二者有意不一致，T1.5/T1.6 请勿把 episodic 的 "matcher" 迁移到 conversation。
+        user_meta: dict = {"jd_text": jd_text[:5000]}
+        if mentions:
+            user_meta["mentions"] = mentions
+        effective = self.compute_effective_tools("resume", tools)
+        hitl = self._hitl_requires()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="resume", agent_id="resume_advisor",
+            user_text=user_text,
+            # T1.6：user content 是截断摘要，完整 jd_text 存 metadata 供 regenerate
+            # 忠实重跑（截断至 5000 字符）。
+            user_metadata=user_meta,
+            effective_tools=effective,
+        )
+        cycle = self.get_cycle(thread_id, user_id)
         try:
             cycle.pending_user_entry_id = self.record_user_message(
                 user_id, thread_id, user_text, module="matcher"
@@ -446,10 +712,14 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         ep = self._get_episodic(thread_id, user_id)
-        cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
+        cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep, allowed=effective, hitl_requires=hitl)
         if cancel_check:
             cancel_check()
-        result = cycle.run_resume(jd_text)
+        try:
+            result = cycle.run_resume(jd_text)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         try:
@@ -461,13 +731,24 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass
+        lr = getattr(cycle.resume_advisor, "last_result", None)
+        obs = _observability_from_result(lr)
+        obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        self._finish_chat_turn(
+            ctx, result, langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
-        return result
+        return StreamResult(content=result, turn=ctx)
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
-                                cancel_check: Callable[[], None] | None = None) -> str:
+                                mentions: list[dict] | None = None,
+                                cancel_check: Callable[[], None] | None = None,
+                                tools: list[str] | None = None) -> "StreamResult":
         """求职对话：职业规划师主理（聚焦求职规划：画像/目标公司池/阶段规划与复盘）。"""
         return traced_call(
             self._run_planner_chat_stream_impl,
@@ -478,19 +759,35 @@ class CareerCrewRuntime:
             user_id=user_id,
             intent=intent,
             cb=cb,
+            mentions=mentions,
             cancel_check=cancel_check,
+            tools=tools,
         )
 
     def _run_planner_chat_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                       cb: Callable[[str], None] | None = None,
-                                      cancel_check: Callable[[], None] | None = None) -> str:
+                                      mentions: list[dict] | None = None,
+                                      cancel_check: Callable[[], None] | None = None,
+                                      tools: list[str] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
+        ls_run_id = _capture_langsmith_run_id()
         from langchain_core.messages import HumanMessage
 
         if cancel_check:
             cancel_check()
+        user_meta: dict | None = None
+        if mentions:
+            user_meta = {"mentions": mentions}
+        effective = self.compute_effective_tools("chat", tools)
+        hitl = self._hitl_requires()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="chat", agent_id="career_planner",
+            user_text=intent, user_metadata=user_meta, effective_tools=effective,
+        )
         ep = self._get_episodic(thread_id, user_id)
-        agent = self.new_career_planner(cb, episodic=ep)
+        agent = self.new_career_planner(cb, episodic=ep, allowed=effective, hitl_requires=hitl)
         try:
             # 先落库用户消息：长工具链（搜岗位/查薪资）中断也不丢问题
             pending_id = self.record_user_message(
@@ -509,7 +806,11 @@ class CareerCrewRuntime:
         }
         if cancel_check:
             cancel_check()
-        agent.run(state)
+        try:
+            agent.run(state)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         result = (agent.last_result.content or "").strip() if agent.last_result else ""
@@ -521,15 +822,26 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞主流程
+        lr = agent.last_result
+        obs = _observability_from_result(lr)
+        obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        self._finish_chat_turn(
+            ctx, result, langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
-        return result
+        return StreamResult(content=result, turn=ctx)
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
                                  category: str = "",
                                  scope: str = "all",
-                                 cancel_check: Callable[[], None] | None = None) -> str:
+                                 mentions: list[dict] | None = None,
+                                 cancel_check: Callable[[], None] | None = None,
+                                 tools: list[str] | None = None) -> "StreamResult":
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
 
         返回 ``{"content": str, "sources": list[dict]}``：
@@ -537,6 +849,7 @@ class CareerCrewRuntime:
         供前端标注来源并点击查看原文。
         category: 检索范围（resume / knowledge / interview），空串检索全部。
         scope: 可见范围（all=公共+本人私有 / public / private）。
+        mentions: @ 引用（强制上下文）；由路由层调用 resolve_mentions 后传入 resolved 列表。
         """
         return traced_call(
             self._run_knowledge_ask_stream_impl,
@@ -549,7 +862,9 @@ class CareerCrewRuntime:
             cb=cb,
             category=category,
             scope=scope,
+            mentions=mentions,
             cancel_check=cancel_check,
+            tools=tools,
         )
 
     def _run_knowledge_ask_stream_impl(self, question: str, user_id: str,
@@ -557,12 +872,36 @@ class CareerCrewRuntime:
                                        cb: Callable[[str], None] | None = None,
                                        category: str = "",
                                        scope: str = "all",
-                                       cancel_check: Callable[[], None] | None = None) -> str:
+                                       mentions: list[dict] | None = None,
+                                       cancel_check: Callable[[], None] | None = None,
+                                       tools: list[str] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult
+
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
+        ls_run_id = _capture_langsmith_run_id()
         from langchain_core.messages import HumanMessage
 
         if cancel_check:
             cancel_check()
+        # T3.4 §15.3：mention 文档 id 计入强制上下文；resolved mentions 一并写入 user metadata。
+        mentions = mentions or []
+        forced_doc_ids: list[str] = [
+            str(m.get("id") or "") for m in mentions
+            if m.get("type") == "knowledge_document" and m.get("id")
+        ]
+        user_meta: dict = {"category": category, "scope": scope}
+        if mentions:
+            user_meta["mentions"] = mentions
+        effective = self.compute_effective_tools("knowledge", tools)
+        hitl = self._hitl_requires()
+        ctx = self._begin_chat_turn(
+            thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
+            user_text=question,
+            # T1.6：category/scope 存 user metadata，供 regenerate 忠实重跑（同检索范围）。
+            # T3.4：mentions 一并记录，供 regenerate 与审计（强制上下文 vs auto 区分）。
+            user_metadata=user_meta,
+            effective_tools=effective,
+        )
         sources: list[dict] = []
         seen: set[str] = set()
 
@@ -586,6 +925,8 @@ class CareerCrewRuntime:
         agent = self.new_knowledge_advisor(
             cb, episodic=ep, rag_sink=_sink, category=category,
             knowledge_access_filters=self._knowledge_scope_filters(user_id, scope),
+            forced_doc_ids=forced_doc_ids or None,
+            allowed=effective, hitl_requires=hitl,
         )
         try:
             # 先落库用户消息：知识库 agentic 检索 + VLM 读图可能耗时很长，
@@ -608,7 +949,11 @@ class CareerCrewRuntime:
         }
         if cancel_check:
             cancel_check()
-        agent.run(state)
+        try:
+            agent.run(state)
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
         if cancel_check:
             cancel_check()
         content = (agent.last_result.content or "").strip()
@@ -625,12 +970,326 @@ class CareerCrewRuntime:
             )
         except Exception:
             pass  # transcript 写入失败不阻塞问答
+        # T1.4：检索行来自 _sink 收集的 sources（doc/score 可直接取），正文不落库。
+        # T3.4 §15.3：retrieval_source 区分 mention（命中强制上下文 doc）与 auto（自动检索）。
+        capped_docs = {_norm_path(s.get("image_path") or "") or s.get("source"): s for s in capped}
+        forced_doc_set = set(forced_doc_ids)
+        retrievals: list[dict] = []
+        for i, s in enumerate(sources):
+            key = _norm_path(s.get("image_path") or "") or s.get("source")
+            doc = str(s.get("doc") or "")
+            retrievals.append({
+                "query_index": i,
+                "query_text_redacted": question,
+                "scope": scope,
+                "document_id": doc or None,
+                "chunk_id": None,
+                "recall_score": float(s.get("score") or 0.0),
+                "used_in_final_context": key in capped_docs,
+                # 命中 mention 文档 → 'mention'；否则 'auto'（无 mentions 时全 auto）
+                "retrieval_source": "mention" if forced_doc_set and doc in forced_doc_set else "auto",
+            })
+        lr = agent.last_result
+        obs = _observability_from_result(lr)
+        self._finish_chat_turn(
+            ctx, content, metadata={"sources": capped},
+            langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=retrievals,
+            tool_calls=obs["tool_calls"],
+        )
         if cancel_check:
             cancel_check()
-        return {
-            "content": content,
-            "sources": capped,
-        }
+        return StreamResult(content=content, sources=capped, turn=ctx)
+
+    # ── regenerate（§2.3 / §19 / §34 / §38）──
+
+    def run_regenerate_stream(self, message_id: str, user_id: str,
+                              cb: Callable[[str], None] | None = None,
+                              cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        """重新生成线程最后一条完整 assistant 消息（复用 turn，新 run + 新 message）。
+
+        校验矩阵（失败映射 404/409，见路由）：
+        - 非本人 / 不存在 → ResourceNotFoundError（404）
+        - role != assistant / status != completed / 非版本链最新者 → RegenerateConflictError（409）
+        - module ∈ consult / interview → RegenerateConflictError（第一版不支持，409）
+
+        稳定 ID：turn_id 不变；run_id / assistant_message_id 变；
+        新 message 的 regenerated_from_message_id = 旧 message id（版本链追加）。
+        module/agent_id/model/prompt_version/agent_version 从旧 run 行复用，保证可比性。
+        """
+        return traced_call(
+            self._run_regenerate_stream_impl,
+            name="careercrew.regenerate",
+            run_type="chain",
+            run_metadata={"endpoint": "regenerate"},
+            message_id=message_id,
+            user_id=user_id,
+            cb=cb,
+            cancel_check=cancel_check,
+        )
+
+    def _run_regenerate_stream_impl(self, message_id: str, user_id: str,
+                                    cb: Callable[[str], None] | None = None,
+                                    cancel_check: Callable[[], None] | None = None) -> "StreamResult":
+        from careercrew_api.chat_lifecycle import StreamResult, begin_regeneration
+
+        store = self.conversation_store
+        self._ensure_heavy()
+
+        msg, thread_id, turn_id, old_run, module, user_msg = self.validate_regenerate(
+            message_id, user_id
+        )
+        ctx = begin_regeneration(
+            store, thread_id=thread_id, turn_id=turn_id, user_id=user_id,
+            module=module or "chat",
+            agent_id=(old_run or {}).get("agent_id") or "unversioned",
+            model=(old_run or {}).get("model") or self._conversation_model(),
+            regenerated_from_message_id=message_id,
+            prompt_version=(old_run or {}).get("prompt_version") or "unversioned",
+            agent_version=(old_run or {}).get("agent_version") or "unversioned",
+        )
+
+        attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="regenerate")
+        ls_run_id = _capture_langsmith_run_id()
+        if cancel_check:
+            cancel_check()
+
+        # ── 6. 按 module 分派 agent 重跑 ──
+        content = ""
+        sources: list[dict] = []
+        try:
+            content, sources, obs = self._dispatch_regenerate(
+                module, thread_id, user_id, user_msg, cb, cancel_check
+            )
+        except Exception as e:
+            self._fail_chat_turn(ctx, e)
+            raise
+        if cancel_check:
+            cancel_check()
+
+        metadata = {"sources": sources} if sources else None
+        self._finish_chat_turn(
+            ctx, content, metadata=metadata,
+            langsmith_run_id=ls_run_id,
+            input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+        )
+        if cancel_check:
+            cancel_check()
+        return StreamResult(content=content, sources=sources, turn=ctx)
+
+    def validate_regenerate(self, message_id: str, user_id: str):
+        """regenerate 前置校验（供路由同步 404/409 映射与 run 复用）。
+        
+        返回 (msg, thread_id, turn_id, old_run, module, user_msg)；
+        失败抛 ResourceNotFoundError（404）或 RegenerateConflictError（409）。
+        """
+        store = self.conversation_store
+        self._ensure_heavy()
+
+        msg = store.get_message(user_id, message_id)
+        if msg is None:
+            raise ResourceNotFoundError(f"message {message_id} not found")
+        if msg.get("role") != "assistant":
+            raise RegenerateConflictError("只能重新生成 assistant 消息")
+        if msg.get("status") != "completed":
+            raise RegenerateConflictError("只能重新生成已完成（completed）的消息")
+        if msg.get("deleted_at"):
+            raise RegenerateConflictError("该消息已删除，不可重新生成")
+
+        thread_id = msg["thread_id"]
+        turn_id = msg["turn_id"]
+
+        old_run = store.get_run(user_id, msg.get("run_id") or "") if msg.get("run_id") else None
+        module = (old_run or {}).get("module") or ""
+        if module in ("consult", "interview"):
+            raise RegenerateConflictError(
+                f"「{module}」模块暂不支持重新生成（第一版仅支持 matcher/resume/chat/knowledge）"
+            )
+
+        if not self._is_latest_assistant_version(store, user_id, thread_id, turn_id, message_id):
+            raise RegenerateConflictError(
+                "只能重新生成当前 turn 的最新 assistant 消息（旧版本不可重新生成）"
+            )
+
+        # §19：regenerate 仅限线程最后一条完整 assistant 消息。除版本链最新判定外，
+        # 追加线程级判定：不允许存在更晚 turn（更大 sequence_no）或同一 turn 更晚
+        # created_at 的其他 assistant 消息。
+        if not self._is_last_assistant_in_thread(store, user_id, thread_id, turn_id, message_id):
+            raise RegenerateConflictError(
+                "只能重新生成线程最后一条 assistant 消息（后续轮次已存在）"
+            )
+
+        msgs = store.list_messages(thread_id, user_id)
+        user_msg = next(
+            (m for m in msgs if m["turn_id"] == turn_id and m["role"] == "user"), None
+        )
+        if user_msg is None:
+            raise RegenerateConflictError("该 turn 缺少用户消息，无法重跑")
+
+        return msg, thread_id, turn_id, old_run, module, user_msg
+
+    def _is_latest_assistant_version(self, store, user_id, thread_id, turn_id, message_id) -> bool:
+        """判定 message_id 是否为该 turn 版本链的最新 assistant（无后继指向它）。"""
+        msgs = store.list_messages(thread_id, user_id)
+        for m in msgs:
+            if m["turn_id"] == turn_id and m["role"] == "assistant" \
+                    and m.get("regenerated_from_message_id") == message_id:
+                return False
+        return True
+
+    def _is_last_assistant_in_thread(self, store, user_id, thread_id, turn_id, message_id) -> bool:
+        """判定 message_id 是否为线程级最后一条 assistant 消息。
+
+        以 turn 的 sequence_no 为主序、消息 created_at 为次序：任何其他 assistant
+        消息若处于更晚 turn（sequence_no 更大）或同一 turn 但 created_at 更晚，
+        都视为“存在后续消息”，message_id 即非最后一条。
+        """
+        my_turn = store.get_turn(user_id, turn_id)
+        my_seq = (my_turn or {}).get("sequence_no", 0)
+        my_created = self._msg_created_at_ts(store, user_id, message_id)
+        for m in store.list_messages(thread_id, user_id):
+            if m["id"] == message_id or m["role"] != "assistant":
+                continue
+            t = store.get_turn(user_id, m["turn_id"])
+            seq = (t or {}).get("sequence_no", 0)
+            created = self._msg_created_at_ts(store, user_id, m["id"])
+            if seq > my_seq or (seq == my_seq and created > my_created):
+                return False
+        return True
+
+    @staticmethod
+    def _msg_created_at_ts(store, user_id, message_id) -> str:
+        msg = store.get_message(user_id, message_id)
+        return (msg or {}).get("created_at") or ""
+
+    def _dispatch_regenerate(self, module: str, thread_id: str, user_id: str,
+                             user_msg: dict, cb, cancel_check):
+        """按 module 重跑 agent，返回 (content, sources, obs)。"""
+        question = user_msg["content"]
+        meta = user_msg.get("metadata") or {}
+        ep = self._get_episodic(thread_id, user_id)
+
+        if module == "matcher":
+            cycle = self.get_cycle(thread_id, user_id)
+            cycle.job_matcher = self.new_job_matcher(cb, episodic=ep)
+            cycle.run_match(question)
+            lr = getattr(cycle.job_matcher, "last_result", None)
+            content = (getattr(lr, "content", "") or "").strip()
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            return content, [], obs
+
+        if module == "resume":
+            # 绑定决策：resume 重跑依赖 metadata 里的完整 jd_text 保真重建输入。
+            # conversational /chat 路径（legacy 行）没有 jd_text → 无法忠实重跑，
+            # 409 拒绝（而非静默退化为截断摘要/提问原文）。
+            jd_text = meta.get("jd_text")
+            if not jd_text:
+                raise RegenerateConflictError(
+                    "该消息缺少原始 JD 元数据（jd_text），无法忠实重建输入，请重新发起简历定制"
+                )
+            cycle = self.get_cycle(thread_id, user_id)
+            cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep)
+            cycle.run_resume(jd_text)
+            lr = getattr(cycle.resume_advisor, "last_result", None)
+            content = (getattr(lr, "content", "") or "").strip()
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            return content, [], obs
+
+        if module == "chat":
+            from langchain_core.messages import HumanMessage
+
+            agent = self.new_career_planner(cb, episodic=ep)
+            state = {
+                "thread_id": thread_id, "user_id": user_id, "stage": "planning",
+                "user_intent": question,
+                "messages": [HumanMessage(content=question)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            }
+            agent.run(state)
+            lr = agent.last_result
+            content = (getattr(lr, "content", "") or "").strip() if lr else ""
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            return content, [], obs
+
+        if module == "knowledge":
+            from langchain_core.messages import HumanMessage
+
+            category = meta.get("category") or ""
+            scope = meta.get("scope") or "all"
+            # 绑定决策：category/scope 缺失时回退到端点自身默认值（""/"all"），
+            # 这仍是忠实重跑（等价于首次无参调用），但记录警告便于排查 legacy 行。
+            if not meta.get("category") or not meta.get("scope"):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "regenerate: knowledge turn %s missing category/scope metadata, "
+                    "falling back to endpoint defaults (category=%r scope=%r)",
+                    user_msg.get("turn_id"), category, scope,
+                )
+            sources: list[dict] = []
+            seen: set[str] = set()
+
+            def _sink(r):
+                if cancel_check:
+                    cancel_check()
+                if r.id in seen:
+                    return
+                seen.add(r.id)
+                sources.append({
+                    "doc": str(r.metadata.get("doc", "")),
+                    "source": str(r.metadata.get("source", "")),
+                    "score": round(float(r.score), 3),
+                    "text": r.text,
+                    "image_path": r.image_path or "",
+                    "page": r.page,
+                    "category": str(r.metadata.get("category", "")),
+                })
+
+            agent = self.new_knowledge_advisor(
+                cb, episodic=ep, rag_sink=_sink, category=category,
+                knowledge_access_filters=self._knowledge_scope_filters(user_id, scope),
+            )
+            state = {
+                "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
+                "user_intent": question,
+                "messages": [HumanMessage(content=question)],
+                "pending_action": None, "agent_outputs": {}, "target_companies": [],
+            }
+            agent.run(state)
+            lr = agent.last_result
+            content = (getattr(lr, "content", "") or "").strip()
+            capped = _cap_sources(
+                sources, limit=3, min_score=0.1,
+                keep_paths=_read_image_paths(lr),
+            )
+            # 观测检索行（与首次路径一致）
+            capped_docs = {_norm_path(s.get("image_path") or "") or s.get("source"): s for s in capped}
+            retrievals = []
+            for i, s in enumerate(sources):
+                key = _norm_path(s.get("image_path") or "") or s.get("source")
+                retrievals.append({
+                    "query_index": i,
+                    "query_text_redacted": question,
+                    "scope": scope,
+                    "document_id": str(s.get("doc") or "") or None,
+                    "chunk_id": None,
+                    "recall_score": float(s.get("score") or 0.0),
+                    "used_in_final_context": key in capped_docs,
+                    # 重跑无强制上下文（mentions 未透传），检索均为自动 'auto'。
+                    "retrieval_source": "auto",
+                })
+            obs = _observability_from_result(lr)
+            obs["retrievals"] = retrievals
+            return content, capped, obs
+
+        raise RegenerateConflictError(
+            f"「{module}」模块暂不支持重新生成（第一版仅支持 matcher/resume/chat/knowledge）"
+        )
 
     def _thread_history_messages(self, user_id: str, thread_id: str,
                                  max_rounds: int = 10,
@@ -718,8 +1377,45 @@ class CareerCrewRuntime:
         except Exception:
             return []
 
+    def _hitl_requires(self) -> set[str]:
+        """本轮需 HITL 确认的工具名集合（settings.tools.hitl.requires_confirmation）。"""
+        tools = getattr(self.settings, "tools", None)
+        hitl = getattr(tools, "hitl", None) if tools is not None else None
+        return set(getattr(hitl, "requires_confirmation", None) or [])
+
+    def _server_allowlist(self, module: str) -> list[str]:
+        """服务端 module allowlist（单一事实来源，与 capabilities 一致）。
+
+        = settings.tools.registry（internal+mcp 全量）∩ module 声明（MODULE_TOOLS）。
+        module 未在 MODULE_TOOLS 声明时视为不约束（全量 registry）。
+        """
+        from careercrew_core.tools.capabilities import MODULE_TOOLS
+
+        reg = getattr(getattr(self.settings, "tools", None), "registry", None)
+        if reg is None:
+            return []
+        registry: list[str] = []
+        for n in list(getattr(reg, "internal", None) or []) + list(getattr(reg, "mcp", None) or []):
+            if n not in registry:
+                registry.append(n)
+        module_allow = MODULE_TOOLS.get(module)
+        if module_allow is None:
+            return registry
+        allow = set(module_allow)
+        return [n for n in registry if n in allow]
+
+    def compute_effective_tools(self, module: str, client_requested: list[str] | None) -> list[str]:
+        """本轮最终工具集合（cached 计算，纯函数委托）。"""
+        from careercrew_core.tools.effective import compute_effective_tools
+
+        return compute_effective_tools(
+            client_requested, self._server_allowlist(module),
+        )
+
     def _make_tools(self, kind: str, episodic=None, rag_sink=None, rag_category=None,
-                    knowledge_access_filters: dict | None = None):
+                    knowledge_access_filters: dict | None = None,
+                    forced_doc_ids: list[str] | None = None,
+                    allowed: list[str] | None = None):
         """构造 agent 工具集；必须显式携带认证用户的 episodic 上下文。"""
         from careercrew_core.memory.semantic import SemanticFactStore
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
@@ -729,6 +1425,7 @@ class CareerCrewRuntime:
         from careercrew_core.tools.internal.read_image import make_read_image_tool
         from careercrew_core.tools.internal.salary_query import make_salary_query_tool
         from careercrew_core.tools.internal.search_jobs import search_jobs
+        from careercrew_core.tools.mcp.mock_apply import submit_application
         from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
         if episodic is None:
@@ -758,6 +1455,9 @@ class CareerCrewRuntime:
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="job_matcher")))
+            # T3.5 HITL MVP 的实际生产绑定：投递动作必须先经过
+            # HitlMiddleware；当前无 approve/reject 恢复协议时绝不执行工具函数。
+            tools.register(ToolSpec(tool=submit_application, requires_confirmation=True))
         elif kind == "resume":
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, categories=cats, filters={"user_id": user_id},
@@ -791,9 +1491,14 @@ class CareerCrewRuntime:
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_salary_query_tool()))
         elif kind == "knowledge":
+            # T3.4 §15.3 强制上下文：mentioned 的 knowledge 文档通过 doc 过滤限定为本轮检索范围，
+            # 与 auto RAG（category/scope 过滤）共用 rag_query 接缝，仅额外叠加 doc 白名单。
+            kf = {**dict(knowledge_access_filters or {"__access_user": user_id})}
+            if forced_doc_ids:
+                kf["doc"] = list(forced_doc_ids)
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, sink=rag_sink, categories=rag_category or None,
-                filters=knowledge_access_filters or {"__access_user": user_id},
+                filters=kf,
             )))
             # 个人背景问题（学校/专业/教育等）常藏在简历页图里，允许顾问按需读图
             tools.register(ToolSpec(tool=make_read_image_tool(
@@ -802,45 +1507,64 @@ class CareerCrewRuntime:
             )))
             # "我有哪些项目/技能/目标公司" 等个人记忆问题：允许查语义事实 + 情景事件
             tools.register(ToolSpec(tool=mem_search))
+        # T3.5 §16.3：allowed 非 None 时裁剪到最终集合（client ∩ server allowlist 已在上游算好）。
+        # None = 默认全放行（保持既有行为）。
+        if allowed is not None:
+            allowed_set = set(allowed)
+            filtered = ToolRegistry()
+            for spec in tools.list_specs():
+                if spec.name in allowed_set:
+                    filtered.register(spec)
+            return filtered
         return tools
 
-    def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None):
+    def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None,
+                        allowed: list[str] | None = None, hitl_requires: set[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.job_matcher import JobMatcher
 
         return JobMatcher(
-            llm=self.llm, tools=self._make_tools("matcher", episodic=episodic),
+            llm=self.llm, tools=self._make_tools("matcher", episodic=episodic, allowed=allowed),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
+            hitl_requires=hitl_requires,
         )
 
-    def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None):
+    def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
+                           allowed: list[str] | None = None, hitl_requires: set[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.resume_advisor import ResumeAdvisor
 
         return ResumeAdvisor(
-            llm=self.llm, tools=self._make_tools("resume", episodic=episodic),
+            llm=self.llm, tools=self._make_tools("resume", episodic=episodic, allowed=allowed),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
+            hitl_requires=hitl_requires,
         )
 
-    def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None, prompt_path=None):
+    def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None,
+                        prompt_path=None, allowed: list[str] | None = None,
+                        hitl_requires: set[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.interviewer import Interviewer
 
         return Interviewer(
-            llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic),
+            llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic, allowed=allowed),
             max_iterations=15, stream_callback=cb, prompt_path=prompt_path,
             memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
+            hitl_requires=hitl_requires,
         )
 
     def new_knowledge_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
                               rag_sink=None, category: str = "",
-                              knowledge_access_filters: dict | None = None):
+                              knowledge_access_filters: dict | None = None,
+                              forced_doc_ids: list[str] | None = None,
+                              allowed: list[str] | None = None,
+                              hitl_requires: set[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.knowledge_advisor import KnowledgeAdvisor
 
@@ -857,45 +1581,56 @@ class CareerCrewRuntime:
             tools=self._make_tools(
                 "knowledge", episodic=episodic, rag_sink=rag_sink, rag_category=category,
                 knowledge_access_filters=knowledge_access_filters,
+                forced_doc_ids=forced_doc_ids, allowed=allowed,
             ),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
             prompt_suffix=prompt_suffix,
+            hitl_requires=hitl_requires,
         )
 
-    def new_career_planner(self, cb: Callable[[str], None] | None = None, episodic=None):
+    def new_career_planner(self, cb: Callable[[str], None] | None = None, episodic=None,
+                           allowed: list[str] | None = None, hitl_requires: set[str] | None = None):
         """职业规划师（求职对话主理人）：聚焦求职规划，建画像、定目标公司池、做阶段规划与复盘。"""
         self._ensure_heavy()
         from careercrew_core.agents.career_planner import CareerPlanner
 
         return CareerPlanner(
-            llm=self.llm, tools=self._make_tools("planner", episodic=episodic),
+            llm=self.llm, tools=self._make_tools("planner", episodic=episodic, allowed=allowed),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
+            hitl_requires=hitl_requires,
         )
 
-    def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None):
-        """按名字建会诊 agent。"""
+    def new_consult_agent(self, name: str, cb: Callable[[str], None] | None = None, episodic=None,
+                          allowed: list[str] | None = None,
+                          hitl_requires: set[str] | None = None):
+        """按名字建会诊 agent（T3.5：透传 effective allowed + hitl_requires）。"""
         self._ensure_heavy()
         if name == "salary_negotiator":
             from careercrew_core.agents.salary_negotiator import SalaryNegotiator
 
             return SalaryNegotiator(
-                llm=self.llm, tools=self._make_tools("salary", episodic=episodic),
+                llm=self.llm, tools=self._make_tools("salary", episodic=episodic, allowed=allowed),
                 max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
                 history_loader=self._history_loader,
                 compaction=self._compaction_kwargs() or None,
+                hitl_requires=hitl_requires,
             )
         if name == "career_planner":
-            return self.new_career_planner(cb, episodic=episodic)
+            return self.new_career_planner(cb, episodic=episodic, allowed=allowed,
+                                           hitl_requires=hitl_requires)
         if name == "job_matcher":
-            return self.new_job_matcher(cb, episodic=episodic)
+            return self.new_job_matcher(cb, episodic=episodic, allowed=allowed,
+                                        hitl_requires=hitl_requires)
         if name == "resume_advisor":
-            return self.new_resume_advisor(cb, episodic=episodic)
+            return self.new_resume_advisor(cb, episodic=episodic, allowed=allowed,
+                                           hitl_requires=hitl_requires)
         if name == "interviewer":
-            return self.new_interviewer(cb, episodic=episodic)
+            return self.new_interviewer(cb, episodic=episodic, allowed=allowed,
+                                        hitl_requires=hitl_requires)
         raise ValueError(f"未知会诊 agent: {name}")
 
     # ── 直通方法 ──
@@ -1171,6 +1906,83 @@ class CareerCrewRuntime:
         if not resolved.is_relative_to(DATA_ROOT.resolve()):
             return False
         return bool(self.store.metadata_exists({"__access_user": user_id, "image_path": str(resolved)}))
+
+    # ── Context @ 引用（T3.4 §15）──
+
+    def _resume_library_items(self, user_id: str) -> list[dict]:
+        """读取本人简历库条目元数据（data/parsed/resumes/{user_id}/*/meta.json）。"""
+        import json as _json
+
+        from careercrew_api.storage import L
+
+        user_dir = L.parsed_resumes / user_id
+        items: list[dict] = []
+        if user_dir.exists():
+            for meta_path in user_dir.glob("*/meta.json"):
+                try:
+                    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001 - 元数据损坏时跳过单条
+                    continue
+                if meta.get("user_id") != user_id:
+                    continue
+                items.append(meta)
+        items.sort(key=lambda m: m.get("created_at", 0), reverse=True)
+        return items
+
+    def list_context_resources(self, user_id: str, types: list[str] | None = None,
+                               q: str = "") -> list[dict]:
+        """§15.1：返回当前用户可引用的资源（本人 private + public 知识 + 本人简历）。
+
+        types 过滤（knowledge/resume，缺省两者）；q 按名称模糊过滤（不区分大小写）。
+        返回 §15.1 形状：{"type","id","name","visibility"}。
+        """
+        self._ensure_heavy()
+        ql = (q or "").strip().lower()
+        want_knowledge = types is None or "knowledge" in types
+        want_resume = types is None or "resume" in types
+        items: list[dict] = []
+
+        if want_knowledge:
+            # 本人 private + public（与 ask 的 all scope 一致）
+            docs = self.store.list_docs(filters=self._knowledge_scope_filters(user_id, "all"))
+            for d in docs:
+                doc_id = str(d.get("doc") or "")
+                if ql and ql not in doc_id.lower():
+                    continue
+                items.append({
+                    "type": "knowledge_document",
+                    "id": doc_id,
+                    "name": doc_id,
+                    "visibility": str(d.get("visibility") or "private"),
+                })
+
+        if want_resume:
+            for meta in self._resume_library_items(user_id):
+                rid = str(meta.get("resume_id") or "")
+                name = str(meta.get("filename") or rid)
+                if ql and ql not in name.lower() and ql not in rid.lower():
+                    continue
+                items.append({
+                    "type": "resume",
+                    "id": rid,
+                    "name": name,
+                    "visibility": "private",
+                })
+        return items
+
+    def resolve_mentions(self, user_id: str, mentions: list[dict]) -> list[dict]:
+        """服务端再次校验 mentions（§15.2）；不合法抛 MentionRejected。返回 resolved dict 列表。"""
+        from careercrew_api.mentions import resolve_mentions as _resolve
+
+        self._ensure_heavy()
+        docs = self.store.list_docs(filters=self._knowledge_scope_filters(user_id, "all"))
+        resumes = self._resume_library_items(user_id)
+        resolved = _resolve(
+            user_id, mentions, knowledge_docs=docs, resume_items=resumes,
+        )
+        return [m.as_dict() for m in resolved]
+
+
 
     def consult_stream(self, names: list[str], question: str, user_id: str,
                        cb: Callable[[str, str], None] | None = None):
