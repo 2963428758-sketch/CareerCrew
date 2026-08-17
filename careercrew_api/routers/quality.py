@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from careercrew_api.auth.dependencies import QualityReviewer
 from careercrew_api.deps import get_runtime_dep
+from careercrew_core.conversation.db import _json_dumps
 from careercrew_core.conversation.store import OwnershipError
 
 router = APIRouter()
@@ -122,3 +123,76 @@ def get_bad_case_diagnostics(feedback_id: str, reviewer: QualityReviewer,
     if diagnostics is None:
         raise _not_found()
     return diagnostics
+
+
+class EvalCaseUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    status: Literal["draft", "approved", "deprecated"] | None = None
+    target_agent: str | None = None
+    input_text: str | None = None
+    context: dict | None = None
+    expected_behavior: str | None = None
+    rubric: dict | None = None
+    failure_reason: str | None = None
+
+
+@router.post("/bad-cases/{feedback_id}/promote")
+def promote_bad_case(feedback_id: str, reviewer: QualityReviewer,
+                     rt=Depends(get_runtime_dep)) -> dict:
+    """Promote a shared-context negative feedback into an eval case draft (§29)."""
+    try:
+        case = rt.conversation_store.promote_to_eval(reviewer["id"], feedback_id)
+    except OwnershipError as exc:
+        raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return case
+
+
+@router.get("/eval-cases/export")
+def export_eval_cases(reviewer: QualityReviewer, rt=Depends(get_runtime_dep)) -> str:
+    """Versioned JSONL export of approved eval cases（§30）。"""
+    rows = rt.conversation_store.export_eval_cases()
+    return "\n".join(_json_dumps(row) for row in rows) + ("\n" if rows else "")
+
+
+@router.get("/eval-cases")
+def list_eval_cases(reviewer: QualityReviewer, rt=Depends(get_runtime_dep),
+                    status: str | None = Query(None)) -> list[dict]:
+    try:
+        return rt.conversation_store.list_eval_cases(status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/eval-cases/{case_id}")
+def get_eval_case(case_id: str, reviewer: QualityReviewer,
+                  rt=Depends(get_runtime_dep)) -> dict:
+    case = rt.conversation_store.get_eval_case(case_id)
+    if case is None:
+        raise _not_found()
+    return case
+
+
+@router.put("/eval-cases/{case_id}")
+def update_eval_case(case_id: str, req: EvalCaseUpdateRequest, reviewer: QualityReviewer,
+                     rt=Depends(get_runtime_dep)) -> dict:
+    try:
+        return rt.conversation_store.update_eval_case(reviewer["id"], case_id,
+                                                      fields=req.model_dump(exclude_unset=True))
+    except OwnershipError as exc:
+        raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/eval-cases/{case_id}/approve")
+def approve_eval_case(case_id: str, reviewer: QualityReviewer,
+                      rt=Depends(get_runtime_dep)) -> dict:
+    try:
+        return rt.conversation_store.approve_eval_case(reviewer["id"], case_id)
+    except OwnershipError as exc:
+        raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

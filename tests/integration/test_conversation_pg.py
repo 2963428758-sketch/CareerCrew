@@ -472,3 +472,34 @@ def test_quality_metrics_postgres_matches_fake_semantics(store_and_db):
     assert metrics["tool_failure_share"] == 1.0
     assert metrics["median_latency_ms"] == 800 and metrics["p95_latency_ms"] == 800
     assert metrics["avg_input_tokens"] == 20 and metrics["avg_output_tokens"] == 40
+
+def test_eval_case_lifecycle_postgres(store_and_db):
+    """Promote → edit → approve → export on real SQL with audit rows (§29/§30)."""
+    store, db = store_and_db
+    uid = "u_eval_pg"
+    _conv, _turn, _user, message, _run = _begin_chat_turn(store, uid)
+    store.finish_run(uid, _run["id"], "completed", latency_ms=100, input_tokens=5, output_tokens=9)
+    store.put_feedback(uid, message["id"], rating="negative", reason="tool_failure",
+                       comment=None, share_context=True)
+    feedback_id = store.list_quality_feedback()[0]["feedback_id"]
+
+    case = store.promote_to_eval("u_reviewer_pg", feedback_id)
+    assert case["status"] == "draft" and case["target_agent"] == "a"
+    assert case["input_text"] == "hello"
+    assert store.get_quality_review(feedback_id)["review_status"] == "promoted_to_eval"
+
+    store.update_eval_case("u_reviewer_pg", case["id"], fields={
+        "expected_behavior": "fallback on tool failure",
+        "rubric": {"must_include": ["fallback"]},
+    })
+    approved = store.approve_eval_case("u_reviewer_pg", case["id"])
+    assert approved["status"] == "approved" and approved["approved_by"] == "u_reviewer_pg"
+
+    exported = store.export_eval_cases()
+    assert len(exported) == 1 and exported[0]["id"] == case["id"]
+    assert exported[0]["rubric"] == {"must_include": ["fallback"]}
+    with db._connect() as conn:
+        actions = [r["action"] for r in conn.execute(
+            "SELECT action FROM feedback_audit_log WHERE actor_user_id=%s",
+            ("u_reviewer_pg",)).fetchall()]
+    assert "quality.eval_draft_created" in actions and "quality.eval_case.approved" in actions

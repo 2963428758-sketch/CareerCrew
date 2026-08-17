@@ -429,13 +429,16 @@ class ConversationStore:
         return self._db.get_feedback_review(normalized)
 
     def update_quality_review(self, reviewer_id: str, feedback_id: str, *,
-                              root_cause: str | None, status: str, note: str | None) -> dict:
+                              root_cause: str | None, status: str, note: str | None,
+                              allow_promote: bool = False) -> dict:
         """Apply one reviewed attribution change atomically with events and audit rows.
 
         - ``root_cause=None`` keeps the previous value; ``""`` clears it.
         - ``note=None`` keeps the previous note; ``""`` clears it.
         - Raises ``ValueError`` on an illegal status transition (mapped to 409).
         - Raises ``OwnershipError`` when the feedback record is not reviewable.
+        - ``allow_promote`` is an internal escape hatch: only the Promote API
+          may move a review into ``promoted_to_eval`` (§27).
         """
         normalized = self._quality_feedback_id(feedback_id)
         if not normalized or self._db.get_quality_feedback(normalized) is None:
@@ -444,7 +447,10 @@ class ConversationStore:
         old_status = (existing or {}).get("review_status") or "new"
         old_cause = (existing or {}).get("root_cause")
         old_note = (existing or {}).get("reviewer_note")
-        if status != old_status and status not in _REVIEW_TRANSITIONS.get(old_status, set()):
+        allowed = _REVIEW_TRANSITIONS.get(old_status, set())
+        if allow_promote and status == "promoted_to_eval":
+            allowed = allowed | {"promoted_to_eval"}
+        if status != old_status and status not in allowed:
             raise ValueError(f"illegal review status transition: {old_status} -> {status}")
         if root_cause is not None and root_cause not in REVIEW_ROOT_CAUSES:
             raise ValueError(f"invalid root cause: {root_cause}")
@@ -487,6 +493,153 @@ class ConversationStore:
             "created_at": now, "updated_at": now,
         }
         return self._db.upsert_feedback_review(fields, events, audits)
+
+    # ── eval cases（Phase 6：Bad Case → Eval Dataset，§29）──
+
+    _EVAL_EDITABLE = ("input_text", "context", "expected_behavior", "failure_reason", "target_agent")
+    _EVAL_STATUSES = ("draft", "approved", "deprecated")
+
+    def promote_to_eval(self, reviewer_id: str, feedback_id: str) -> dict:
+        """Promote a shared-context negative feedback into an eval case draft (§29).
+
+        Preconditions: negative rating, ``share_context=True``, an unexpired
+        redacted snapshot, and a review that has not already been promoted.
+        Moves the review to ``promoted_to_eval`` and audits the draft creation.
+        """
+        normalized = self._quality_feedback_id(feedback_id)
+        feedback = self._db.get_quality_feedback(normalized) if normalized else None
+        if feedback is None:
+            raise OwnershipError("quality target is not available")
+        if feedback.get("share_context") is not True:
+            raise ValueError("only shared-context cases can be promoted to eval")
+        existing = self._db.get_feedback_review(normalized)
+        if (existing or {}).get("review_status") == "promoted_to_eval":
+            raise ValueError("feedback is already promoted to eval")
+        snapshot = self._db.get_quality_snapshot(normalized)
+        if snapshot is None:
+            raise ValueError("missing context snapshot; share_context feedback is required")
+        messages = (snapshot.get("snapshot_json") or {}).get("messages") or []
+        user_input = next((m.get("content", "") for m in messages if m.get("role") == "user"), "")
+        now = _now()
+        case = {
+            "id": str(uuid7()),
+            "source_feedback_id": normalized,
+            "status": "draft",
+            "target_agent": feedback.get("agent_id") or "unknown",
+            "input_text": user_input,
+            "context": snapshot.get("snapshot_json"),
+            "expected_behavior": None,
+            "rubric": {},
+            "failure_reason": feedback.get("reason"),
+            "source_model": feedback.get("model"),
+            "source_prompt_version": feedback.get("prompt_version"),
+            "source_agent_version": feedback.get("agent_version"),
+            "created_by": reviewer_id,
+            "approved_by": None,
+            "created_at": now,
+            "approved_at": None,
+        }
+        audits = [{
+            "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.eval_draft_created",
+            "resource_type": "eval_case", "resource_id": case["id"],
+            "metadata": {
+                "feedback_id": normalized, "target_agent": case["target_agent"],
+                "source_prompt_version": case["source_prompt_version"],
+                "source_agent_version": case["source_agent_version"], "source_model": case["source_model"],
+            },
+            "created_at": now,
+        }]
+        inserted = self._db.insert_eval_case(case, audits)
+        self.update_quality_review(reviewer_id, normalized, root_cause=None,
+                                   status="promoted_to_eval", note=None, allow_promote=True)
+        return inserted
+
+    def list_eval_cases(self, status: str | None = None) -> list[dict]:
+        if status is not None and status not in self._EVAL_STATUSES:
+            raise ValueError(f"invalid eval case status: {status}")
+        return self._db.list_eval_cases(status)
+
+    def get_eval_case(self, case_id: str) -> dict | None:
+        return self._db.get_eval_case(case_id)
+
+    def update_eval_case(self, reviewer_id: str, case_id: str, *, fields: dict) -> dict:
+        """Edit a draft eval case (or deprecate an approved one)."""
+        existing = self._db.get_eval_case(case_id)
+        if existing is None:
+            raise OwnershipError("eval case not found")
+        now = _now()
+        updates: dict[str, Any] = {}
+        for key in self._EVAL_EDITABLE:
+            if key in fields:
+                updates[key] = fields[key]
+        if "rubric" in fields:
+            rubric = fields["rubric"]
+            if not isinstance(rubric, dict):
+                raise ValueError("rubric must be a JSON object")
+            updates["rubric"] = rubric
+        new_status = fields.get("status")
+        if new_status is not None:
+            if new_status not in self._EVAL_STATUSES:
+                raise ValueError(f"invalid eval case status: {new_status}")
+            allowed = {
+                "draft": {"draft"},
+                "approved": {"approved", "deprecated"},
+                "deprecated": {"deprecated"},
+            }[existing["status"]]
+            if new_status not in allowed:
+                raise ValueError(
+                    f"illegal eval case status transition: {existing['status']} -> {new_status}")
+            updates["status"] = new_status
+        if not updates:
+            raise ValueError("no updatable fields")
+        updates["updated_at"] = now
+        audits: list[dict] = []
+        if updates.get("status") and updates["status"] != existing["status"]:
+            audits.append({
+                "id": str(uuid7()), "actor_user_id": reviewer_id,
+                "action": "quality.eval_case.status_changed",
+                "resource_type": "eval_case", "resource_id": case_id,
+                "metadata": {"old_status": existing["status"], "new_status": updates["status"]},
+                "created_at": now,
+            })
+        return self._db.update_eval_case(case_id, updates, audits)
+
+    def approve_eval_case(self, reviewer_id: str, case_id: str) -> dict:
+        """Approve a draft eval case: requires expected_behavior and rubric (§29.2)."""
+        existing = self._db.get_eval_case(case_id)
+        if existing is None:
+            raise OwnershipError("eval case not found")
+        if existing["status"] != "draft":
+            raise ValueError(f"only draft eval cases can be approved (current: {existing['status']})")
+        if not existing.get("expected_behavior") or not existing.get("rubric"):
+            raise ValueError("expected_behavior and rubric are required before approval")
+        now = _now()
+        audits = [{
+            "id": str(uuid7()), "actor_user_id": reviewer_id, "action": "quality.eval_case.approved",
+            "resource_type": "eval_case", "resource_id": case_id,
+            "metadata": {"source_feedback_id": existing.get("source_feedback_id")},
+            "created_at": now,
+        }]
+        return self._db.update_eval_case(case_id, {
+            "status": "approved", "approved_by": reviewer_id, "approved_at": now, "updated_at": now,
+        }, audits)
+
+    def export_eval_cases(self, status: str = "approved") -> list[dict]:
+        """Versioned JSONL export payload（§30）：仅 approved 可导出。"""
+        rows = self._db.list_eval_cases(status)
+        return [{
+            "id": row["id"],
+            "agent": row["target_agent"],
+            "input": row["input_text"],
+            "context": row["context"],
+            "expected_behavior": row["expected_behavior"],
+            "rubric": row["rubric"],
+            "source": {
+                "feedback_id": row["source_feedback_id"], "failure_reason": row["failure_reason"],
+                "prompt_version": row["source_prompt_version"],
+                "agent_version": row["source_agent_version"], "model": row["source_model"],
+            },
+        } for row in rows]
 
     # ── regeneration idempotency ──
 

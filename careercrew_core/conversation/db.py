@@ -269,6 +269,20 @@ class ConversationDb(ABC):
     @abstractmethod
     def compute_quality_metrics(self, filters: dict) -> dict: ...
 
+    # ── eval cases（Phase 6：Bad Case → Eval Dataset，§29）──
+
+    @abstractmethod
+    def list_eval_cases(self, status: str | None = None) -> list[dict]: ...
+
+    @abstractmethod
+    def get_eval_case(self, case_id: str) -> dict | None: ...
+
+    @abstractmethod
+    def insert_eval_case(self, fields: dict, audits: list[dict]) -> dict: ...
+
+    @abstractmethod
+    def update_eval_case(self, case_id: str, fields: dict, audits: list[dict]) -> dict: ...
+
 
 class PostgresConversationDb(ConversationDb):
     """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
@@ -440,6 +454,31 @@ class PostgresConversationDb(ConversationDb):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_feedback_review_events_feedback "
                 "ON feedback_review_events(feedback_id, created_at)"
+            )
+            # Phase 6（§29.3）：Bad Case → Eval 数据集。只存脱敏后输入/必要上下文与
+            # 评审填写的期望行为/评分细则，绝不引用完整正文。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS eval_cases ("
+                "id UUID PRIMARY KEY, "
+                "source_feedback_id UUID NOT NULL REFERENCES message_feedback(id) ON DELETE CASCADE, "
+                "status VARCHAR(30) NOT NULL, "
+                "target_agent VARCHAR(100) NOT NULL, "
+                "input_text TEXT NOT NULL, "
+                "context_json JSONB, "
+                "expected_behavior TEXT, "
+                "rubric JSONB NOT NULL, "
+                "failure_reason VARCHAR(100), "
+                "source_model VARCHAR(150), "
+                "source_prompt_version VARCHAR(80), "
+                "source_agent_version VARCHAR(80), "
+                "created_by VARCHAR(64) NOT NULL, "
+                "approved_by VARCHAR(64), "
+                "created_at TIMESTAMPTZ NOT NULL, "
+                "approved_at TIMESTAMPTZ)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_eval_cases_status "
+                "ON eval_cases(status, created_at)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_message_feedback_user_thread "
@@ -1200,6 +1239,103 @@ class PostgresConversationDb(ConversationDb):
         return _row_to_dict(row)
 
     @staticmethod
+    def _eval_case_row(row: dict | None) -> dict | None:
+        if row is None:
+            return None
+        out = dict(row)
+        out["context"] = out.pop("context_json")
+        return out
+
+    def list_eval_cases(self, status=None) -> list[dict]:
+        sql = "SELECT * FROM eval_cases"
+        params: tuple = ()
+        if status:
+            sql += " WHERE status=%s"
+            params = (status,)
+        sql += " ORDER BY created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._eval_case_row(r) for r in rows]
+
+    def get_eval_case(self, case_id) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM eval_cases WHERE id=%s", (case_id,)).fetchone()
+        return self._eval_case_row(row)
+
+    @_synchronized
+    def insert_eval_case(self, fields, audits) -> dict:
+        """Atomically insert an eval case and its audit rows (draft created)."""
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                "INSERT INTO eval_cases (id, source_feedback_id, status, target_agent, input_text, "
+                "context_json, expected_behavior, rubric, failure_reason, source_model, "
+                "source_prompt_version, source_agent_version, created_by, approved_by, "
+                "created_at, approved_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING *",
+                (fields["id"], fields["source_feedback_id"], fields["status"],
+                 fields["target_agent"], fields["input_text"],
+                 _json_dumps(fields.get("context")), fields.get("expected_behavior"),
+                 _json_dumps(fields["rubric"]), fields.get("failure_reason"),
+                 fields.get("source_model"), fields.get("source_prompt_version"),
+                 fields.get("source_agent_version"), fields["created_by"],
+                 fields.get("approved_by"), fields["created_at"], fields.get("approved_at")),
+            ).fetchone()
+            for audit in audits:
+                conn.execute(
+                    "INSERT INTO feedback_audit_log (id, actor_user_id, action, resource_type, "
+                    "resource_id, metadata, created_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)",
+                    (audit["id"], audit["actor_user_id"], audit["action"], audit["resource_type"],
+                     audit["resource_id"], _json_dumps(audit["metadata"]), audit["created_at"]),
+                )
+        return self._eval_case_row(row)
+
+    @_synchronized
+    def update_eval_case(self, case_id, fields, audits) -> dict:
+        """Atomically update an eval case and append its audit rows."""
+        sets: list[str] = []
+        params: list = []
+        for column in ("status", "target_agent", "expected_behavior", "failure_reason",
+                       "source_model", "source_prompt_version", "source_agent_version"):
+            if column in fields:
+                sets.append(f"{column}=%s")
+                params.append(fields[column])
+        if "input_text" in fields:
+            sets.append("input_text=%s")
+            params.append(fields["input_text"])
+        if "context" in fields:
+            sets.append("context_json=%s")
+            params.append(_json_dumps(fields["context"]))
+        if "rubric" in fields:
+            sets.append("rubric=%s")
+            params.append(_json_dumps(fields["rubric"]))
+        if "approved_by" in fields:
+            sets.append("approved_by=%s")
+            params.append(fields["approved_by"])
+        if "approved_at" in fields:
+            sets.append("approved_at=%s")
+            params.append(fields["approved_at"])
+        if "updated_at" in fields:
+            sets.append("updated_at=%s")
+            params.append(fields["updated_at"])
+        if not sets:
+            raise ValueError("eval case 无更新字段")
+        params.append(case_id)
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                f"UPDATE eval_cases SET {', '.join(sets)} WHERE id=%s RETURNING *",
+                params,
+            ).fetchone()
+            for audit in audits:
+                conn.execute(
+                    "INSERT INTO feedback_audit_log (id, actor_user_id, action, resource_type, "
+                    "resource_id, metadata, created_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)",
+                    (audit["id"], audit["actor_user_id"], audit["action"], audit["resource_type"],
+                     audit["resource_id"], _json_dumps(audit["metadata"]), audit["created_at"]),
+                )
+        return self._eval_case_row(row)
+
+    @staticmethod
     def _metrics_clauses(filters: dict) -> tuple[str, list]:
         """Build a run-scoped WHERE fragment from dashboard filters (T5.2)."""
         clauses: list[str] = []
@@ -1313,6 +1449,7 @@ class FakeConversationDb(ConversationDb):
         self._snapshots: dict[str, dict] = {}
         self._reviews: dict[str, dict] = {}
         self._review_events: list[dict] = []
+        self._eval_cases: dict[str, dict] = {}
         self._audit: list[dict] = []
 
     # ── conversations ──
@@ -1808,6 +1945,44 @@ class FakeConversationDb(ConversationDb):
             "root_cause": row["root_cause"], "review_status": row["status"],
             "reviewer_note": row["reviewer_note"], "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
+
+    # ── eval cases（Phase 6，§29）──
+
+    def list_eval_cases(self, status=None) -> list[dict]:
+        rows = [dict(r) for r in self._eval_cases.values()]
+        if status:
+            rows = [r for r in rows if r["status"] == status]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+
+    def get_eval_case(self, case_id) -> dict | None:
+        row = self._eval_cases.get(case_id)
+        return dict(row) if row else None
+
+    def insert_eval_case(self, fields, audits) -> dict:
+        with self.write_lock:
+            row = dict(fields)
+            self._eval_cases[fields["id"]] = dict(row)
+            for audit in audits:
+                _json_dumps(audit["metadata"])
+                self._audit.append(dict(audit))
+        return dict(row)
+
+    def update_eval_case(self, case_id, fields, audits) -> dict:
+        with self.write_lock:
+            existing = self._eval_cases.get(case_id)
+            if existing is None:
+                raise KeyError(f"eval case {case_id!r} 不存在")
+            merged = dict(existing)
+            for key in ("status", "target_agent", "input_text", "context", "expected_behavior",
+                        "rubric", "failure_reason", "source_model", "source_prompt_version",
+                        "source_agent_version", "approved_by", "approved_at", "updated_at"):
+                if key in fields:
+                    merged[key] = fields[key]
+            self._eval_cases[case_id] = merged
+            for audit in audits:
+                _json_dumps(audit["metadata"])
+                self._audit.append(dict(audit))
+        return dict(merged)
 
     @staticmethod
     def _run_in_scope(run: dict, filters: dict) -> bool:
