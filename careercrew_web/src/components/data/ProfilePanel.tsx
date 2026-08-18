@@ -129,7 +129,6 @@ export function ProfilePanel() {
         body: JSON.stringify({ fields }),
       })
       if (!resp.ok) throw new Error(await apiErrorText(resp, "保存画像失败"))
-      useChatStore.getState().bumpProfileNonce()
       savedRef.current = { ...savedRef.current, ...fields }
       setFeedback({ section, kind: "ok", text: okText })
       setTimeout(() => setFeedback(null), 3000)
