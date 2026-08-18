@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Flag, Check } from "lucide-react"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
+import { toMessageAttachments, type Attachment } from "@/lib/attachments"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { ConversationRail } from "@/components/conversation/ConversationRail"
@@ -20,7 +22,7 @@ import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
 import { restoreHistory } from "@/lib/historyRestore"
-import type { InterviewQA } from "@/types"
+import type { InterviewQA, MessageAttachment } from "@/types"
 
 const INTERVIEWER = { label: "面试官", color: "#BE185D" }
 
@@ -37,12 +39,15 @@ interface ChatMsg {
   messageId?: string
   turnId?: string
   runId?: string
+  attachments?: MessageAttachment[]
 }
 
 export default function InterviewPage() {
   const [topic, setTopic] = useState("")
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState("")
+  const attachRef = useRef<AttachmentPickerHandle>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [qaList, setQaList] = useState<InterviewQA[]>([])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.interview)
   // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
@@ -112,6 +117,7 @@ export default function InterviewPage() {
         id: nextId(),
         role: r.role,
         content: r.content,
+        attachments: r.attachments,
         messageId: r.messageId,
         turnId: r.turnId,
         runId: r.runId,
@@ -129,11 +135,17 @@ export default function InterviewPage() {
     const trimmed = text.trim()
     if (!trimmed || stream.status === "streaming") return
     const isFirst = messages.length === 0
+    const turnAttachments = attachments
     const prev = messages[messages.length - 1]
     pendingRef.current = prev?.role === "assistant" && prev.content
       ? { q: prev.content, a: trimmed }
       : null
-    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }])
+    setMessages((prev) => [...prev, {
+      id: nextId(),
+      role: "user",
+      content: trimmed,
+      attachments: toMessageAttachments(turnAttachments),
+    }])
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     setInput("")
     jumpToLatest()
@@ -142,7 +154,12 @@ export default function InterviewPage() {
       role: m.role,
       content: m.content,
     }))
-    await startStream(currentThreadId, "/interview/chat", { topic: topicOverride ?? topic, messages: history, thread_id: currentThreadId })
+    const body: Record<string, unknown> = {
+      topic: topicOverride ?? topic, messages: history, thread_id: currentThreadId,
+    }
+    if (turnAttachments.length) body.attachments = turnAttachments.map((a) => ({ id: a.id }))
+    attachRef.current?.clear()
+    await startStream(currentThreadId, "/interview/chat", body)
   }
 
   const startWithTopic = (t: string) => {
@@ -216,7 +233,7 @@ export default function InterviewPage() {
               threadId={currentThreadId}
               title={threadTitle ?? "新对话"}
               module="interview"
-              onAfterClear={() => void restoreHistory(currentThreadId)}
+              onAfterClear={() => setMessages([])}
             />
           </>
         }
@@ -264,6 +281,7 @@ export default function InterviewPage() {
                       key={turn.id}
                       turnId={turn.id}
                       userContent={turn.user.content}
+                      userAttachments={turn.user.attachments}
                       isUser={turn.user.role === "user"}
                       highlighted={highlightId === turn.id}
                       onEdit={handleEdit}
@@ -311,6 +329,8 @@ export default function InterviewPage() {
             }
             allowEmptySend
             toolbar
+            onAddAttachment={() => attachRef.current?.pick()}
+            attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={lastIsStreaming} onAttachmentsChange={setAttachments} />}
             textareaRef={composerRef}
             className="w-full"
           />

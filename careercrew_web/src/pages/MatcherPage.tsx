@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
+import { toMessageAttachments, type Attachment } from "@/lib/attachments"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
 import { VersionSwitcher } from "@/components/conversation/VersionSwitcher"
@@ -18,7 +20,7 @@ import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META } from "@/types"
+import { AGENT_META, type MessageAttachment } from "@/types"
 import { restoreHistory } from "@/lib/historyRestore"
 
 interface MatcherMessage {
@@ -29,6 +31,7 @@ interface MatcherMessage {
   messageId?: string
   turnId?: string
   runId?: string
+  attachments?: MessageAttachment[]
 }
 
 let msgId = 0
@@ -36,6 +39,8 @@ const nextId = () => `match-msg-${++msgId}`
 
 export default function MatcherPage() {
   const [input, setInput] = useState("")
+  const attachRef = useRef<AttachmentPickerHandle>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [messages, setMessages] = useState<MatcherMessage[]>([])
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.matcher)
   // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
@@ -100,6 +105,7 @@ export default function MatcherPage() {
         id: nextId(),
         role: r.role,
         content: r.content,
+        attachments: r.attachments,
         messageId: r.messageId,
         turnId: r.turnId,
         runId: r.runId,
@@ -117,15 +123,19 @@ export default function MatcherPage() {
     const intent = input
     if (!intent.trim() || stream.status === "streaming") return
     const isFirst = messages.length === 0
+    const turnAttachments = attachments
     setMessages((prev) => [
       ...prev,
-      { id: nextId(), role: "user", content: intent },
+      { id: nextId(), role: "user", content: intent, attachments: toMessageAttachments(turnAttachments) },
       { id: nextId(), role: "assistant", content: "", streaming: true },
     ])
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("matcher", currentThreadId, intent)
-    await startStream(currentThreadId, "/chat/match", { intent, thread_id: currentThreadId })
+    const body: Record<string, unknown> = { intent, thread_id: currentThreadId }
+    if (turnAttachments.length) body.attachments = turnAttachments.map((a) => ({ id: a.id }))
+    attachRef.current?.clear()
+    await startStream(currentThreadId, "/chat/match", body)
   }
 
   /** 重新生成保留旧版本；稳定 ID 走后端 regenerate，遗留无 ID 消息保留兼容重发。 */
@@ -165,7 +175,7 @@ export default function MatcherPage() {
             threadId={currentThreadId}
             title={threadTitle ?? "新对话"}
             module="matcher"
-            onAfterClear={() => void restoreHistory(currentThreadId)}
+            onAfterClear={() => setMessages([])}
           />
         }
       />
@@ -215,6 +225,7 @@ export default function MatcherPage() {
                       key={turn.id}
                       turnId={turn.id}
                       userContent={turn.user.content}
+                      userAttachments={turn.user.attachments}
                       isUser={turn.user.role === "user"}
                       highlighted={highlightId === turn.id}
                       onEdit={handleEdit}
@@ -275,6 +286,8 @@ export default function MatcherPage() {
             placeholder="输入求职方向与背景，匹配官将自动检索岗位"
             hint="匹配官会搜索猎聘真实岗位并评估匹配度"
             toolbar
+            onAddAttachment={() => attachRef.current?.pick()}
+            attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={lastIsStreaming} onAttachmentsChange={setAttachments} />}
             textareaRef={composerRef}
             className="w-full"
           />

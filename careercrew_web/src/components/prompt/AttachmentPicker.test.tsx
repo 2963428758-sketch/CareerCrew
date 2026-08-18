@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { AttachmentPicker } from "@/components/prompt/AttachmentPicker"
+import { createRef } from "react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
 import type { Attachment } from "@/lib/attachments"
 
 // ---- 依赖桩：lib 层 mock，隔离组件行为 ----
@@ -52,13 +53,12 @@ describe("AttachmentPicker", () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it("渲染已有附件 chips（名称/大小/状态）", async () => {
+  it("不会把服务端历史附件回填为当前轮 pending 附件", async () => {
     listAttachments.mockResolvedValue([att()])
     render(<AttachmentPicker threadId="t-1" />)
-    const chip = await screen.findByTestId("attachment-chip")
-    expect(chip.textContent).toContain("报告.pdf")
-    expect(chip.textContent).toContain("1.0 KB")
-    expect(chip.textContent).toContain("已上传")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.queryByTestId("attachment-chip")).toBeNull()
+    expect(listAttachments).not.toHaveBeenCalled()
   })
 
   it("选择文件：客户端预检失败时显示错误且不发起上传", async () => {
@@ -99,10 +99,13 @@ describe("AttachmentPicker", () => {
   })
 
   it("删除（二次确认）后从列表移除", async () => {
-    listAttachments.mockResolvedValue([att()])
+    uploadAttachment.mockResolvedValue(att())
     deleteAttachment.mockResolvedValue(undefined)
     render(<AttachmentPicker threadId="t-1" />)
 
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [new File(["x"], "报告.pdf", { type: "application/pdf" })] },
+    })
     await screen.findByTestId("attachment-chip")
     fireEvent.click(screen.getByRole("button", { name: "删除 报告.pdf" }))
     // 二次确认对话框
@@ -116,13 +119,16 @@ describe("AttachmentPicker", () => {
   })
 
   it("「存入知识库」ready 后可用并触发 save + 轮询刷新状态", async () => {
-    listAttachments.mockResolvedValue([att({ status: "ready" })]) // 初始
+    uploadAttachment.mockResolvedValue(att({ status: "ready" }))
     saveAttachmentToKnowledge.mockResolvedValue(undefined)
     pollSaveToKnowledge.mockResolvedValue(
       att({ status: "saved_to_knowledge", knowledge_document_id: "doc-1", expires_at: null })
     )
     render(<AttachmentPicker threadId="t-1" />)
 
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [new File(["x"], "报告.pdf", { type: "application/pdf" })] },
+    })
     await screen.findByTestId("attachment-chip")
     // ready 态 chip 上应出现「存入知识库」按钮
     const saveBtn = screen.getByRole("button", { name: "将 报告.pdf 存入知识库" })
@@ -136,12 +142,31 @@ describe("AttachmentPicker", () => {
   })
 
   it("附件状态变更触发 onAttachmentsChange 回调", async () => {
-    listAttachments.mockResolvedValue([att()])
+    uploadAttachment.mockResolvedValue(att())
     const onChange = vi.fn()
     render(<AttachmentPicker threadId="t-1" onAttachmentsChange={onChange} />)
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [new File(["x"], "报告.pdf", { type: "application/pdf" })] },
+    })
     await screen.findByTestId("attachment-chip")
     expect(onChange).toHaveBeenCalledWith(expect.arrayContaining([
       expect.objectContaining({ id: "att-1" }),
     ]))
+  })
+
+  it("clear 清空当前轮待发送附件", async () => {
+    uploadAttachment.mockResolvedValue(att())
+    const onChange = vi.fn()
+    const handle = createRef<AttachmentPickerHandle>()
+    render(<AttachmentPicker ref={handle} threadId="t-1" onAttachmentsChange={onChange} />)
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [new File(["x"], "报告.pdf", { type: "application/pdf" })] },
+    })
+    await screen.findByTestId("attachment-chip")
+
+    act(() => handle.current?.clear())
+
+    await waitFor(() => expect(screen.queryByTestId("attachment-chip")).toBeNull())
+    expect(onChange).toHaveBeenLastCalledWith([])
   })
 })

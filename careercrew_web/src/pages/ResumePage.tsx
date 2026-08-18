@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { FileText, X } from "lucide-react"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
+import { toMessageAttachments, type Attachment } from "@/lib/attachments"
 import { Tooltip } from "@/components/ui/tooltip"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { JumpToLatest } from "@/components/JumpToLatest"
@@ -20,7 +22,7 @@ import { useToast } from "@/hooks/useToast"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META } from "@/types"
+import { AGENT_META, type MessageAttachment } from "@/types"
 import { cn } from "@/lib/utils"
 import { pollResumeUpload, type ActiveResume } from "@/lib/resumeUpload"
 import { restoreHistory } from "@/lib/historyRestore"
@@ -40,11 +42,14 @@ interface ChatMsg {
   messageId?: string
   turnId?: string
   runId?: string
+  attachments?: MessageAttachment[]
 }
 
 export default function ResumePage() {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState("")
+  const attachRef = useRef<AttachmentPickerHandle>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
@@ -112,6 +117,7 @@ export default function ResumePage() {
         id: nextId(),
         role: r.role,
         content: r.content,
+        attachments: r.attachments,
         messageId: r.messageId,
         turnId: r.turnId,
         runId: r.runId,
@@ -183,18 +189,29 @@ export default function ResumePage() {
     const trimmed = text.trim()
     if (!trimmed || stream.status === "streaming") return
     const isFirst = messages.length === 0
+    const turnAttachments = attachments
     const pending = pendingResumeRef.current
     const resumeText = pending && pending.threadId === currentThreadId ? pending.text : ""
     if (pending && pending.threadId === currentThreadId) {
       pendingResumeRef.current = null
       setActiveResume(null)
     }
-    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }])
+    setMessages((prev) => [...prev, {
+      id: nextId(),
+      role: "user",
+      content: trimmed,
+      attachments: toMessageAttachments(turnAttachments),
+    }])
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("resume", currentThreadId, trimmed)
-    await startStream(currentThreadId, "/resume/chat", { question: trimmed, resume_text: resumeText, thread_id: currentThreadId })
+    const body: Record<string, unknown> = {
+      question: trimmed, resume_text: resumeText, thread_id: currentThreadId,
+    }
+    if (turnAttachments.length) body.attachments = turnAttachments.map((a) => ({ id: a.id }))
+    attachRef.current?.clear()
+    await startStream(currentThreadId, "/resume/chat", body)
   }
 
   /** 重新生成保留旧版本；稳定 ID 走后端 regenerate，遗留无 ID 消息保留兼容重发。 */
@@ -243,7 +260,7 @@ extra={
               threadId={currentThreadId}
               title={threadTitle ?? "新对话"}
               module="resume"
-              onAfterClear={() => void restoreHistory(currentThreadId)}
+              onAfterClear={() => setMessages([])}
             />
           </>
         }
@@ -300,6 +317,7 @@ extra={
                       key={turn.id}
                       turnId={turn.id}
                       userContent={turn.user.content}
+                      userAttachments={turn.user.attachments}
                       isUser={turn.user.role === "user"}
                       highlighted={highlightId === turn.id}
                       onEdit={handleEdit}
@@ -354,6 +372,8 @@ extra={
             placeholder={activeResume ? "已添加简历，输入目标 JD 或想优化的部分…" : "上传简历，或直接输入简历内容与优化需求…"}
             hint="上传简历后，直接描述目标 JD 或想优化的部分"
             toolbar
+            onAddAttachment={() => attachRef.current?.pick()}
+            attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={stream.status === "streaming"} onAttachmentsChange={setAttachments} />}
             textareaRef={composerRef}
             className="w-full"
             header={

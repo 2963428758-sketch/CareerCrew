@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import { turnAnchorId } from "@/components/conversation/turn"
 import { UserMessage } from "@/components/conversation/UserMessage"
+import type { MessageAttachment } from "@/types"
 
 /**
  * 一轮对话的外壳：anchor id（Rail 点击滚动目标）+ 用户气泡 + 助手区域。
@@ -12,6 +13,7 @@ export function TurnSection({
   isUser,
   highlighted,
   onEdit,
+  userAttachments,
   children,
 }: {
   turnId: string
@@ -19,6 +21,7 @@ export function TurnSection({
   isUser: boolean
   highlighted?: boolean
   onEdit?: (text: string) => void
+  userAttachments?: MessageAttachment[]
   children?: ReactNode
 }) {
   return (
@@ -29,6 +32,7 @@ export function TurnSection({
           turnId={turnId}
           highlighted={highlighted}
           onEdit={onEdit}
+          attachments={userAttachments}
         />
       )}
       {children && <div className="mt-4">{children}</div>}

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Users, ChevronDown } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
+import { toMessageAttachments, type Attachment } from "@/lib/attachments"
 import { InitIndicator, ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
 import { AgentPanel } from "@/components/agent/AgentThread"
@@ -21,7 +23,7 @@ import { useToast } from "@/hooks/useToast"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore, type StreamSession } from "@/store/streamStore"
-import { AGENT_META, CONSULT_AGENTS, CONSULT_INPUT_FIELDS, ORCHESTRATOR_META, type ConsultCall, type MessageFeedback } from "@/types"
+import { AGENT_META, CONSULT_AGENTS, CONSULT_INPUT_FIELDS, ORCHESTRATOR_META, type ConsultCall, type MessageAttachment, type MessageFeedback } from "@/types"
 import { ConsultFormDialog } from "@/components/ConsultFormDialog"
 import { cn } from "@/lib/utils"
 import { restoreHistory } from "@/lib/historyRestore"
@@ -38,10 +40,13 @@ interface ConsultMessage {
   messageId?: string
   turnId?: string
   runId?: string
+  attachments?: MessageAttachment[]
 }
 
 export default function ConsultPage() {
   const [input, setInput] = useState("")
+  const attachRef = useRef<AttachmentPickerHandle>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [messages, setMessages] = useState<ConsultMessage[]>([])
   // 资料填写框：关闭状态按会话（thread_id）保存——一次会话里用户主动关闭后不再弹出，
   // 切换/新建会话回到各自状态（新会话默认未关闭，会正常弹出）。
@@ -123,6 +128,7 @@ export default function ConsultPage() {
           runId: r.runId,
           calls,
           opinions,
+          attachments: r.attachments,
         }
       })
       // 切回一个仍在流式回答的会话：补一个流式占位气泡（会诊渲染用 lastAssistantIdRef 定位）
@@ -142,17 +148,26 @@ export default function ConsultPage() {
     const trimmed = q.trim()
     if (!trimmed || stream.status === "streaming") return
     const isFirst = messages.length === 0
+    const turnAttachments = attachments
     const id = nextId()
     lastAssistantIdRef.current = id
-    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: trimmed }, { id, role: "assistant" }])
+    setMessages((prev) => [...prev, {
+      id: nextId(),
+      role: "user",
+      content: trimmed,
+      attachments: toMessageAttachments(turnAttachments),
+    }, { id, role: "assistant" }])
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("consult", currentThreadId, trimmed)
-    await startStream(currentThreadId, "/consult", {
+    const body: Record<string, unknown> = {
       question: trimmed,
       thread_id: currentThreadId,
       ...(profile ? { profile } : {}),
-    })
+    }
+    if (turnAttachments.length) body.attachments = turnAttachments.map((a) => ({ id: a.id }))
+    attachRef.current?.clear()
+    await startStream(currentThreadId, "/consult", body)
   }
 
   const handleSend = () => {
@@ -200,7 +215,7 @@ export default function ConsultPage() {
             threadId={currentThreadId}
             title={threadTitle ?? "新对话"}
             module="consult"
-            onAfterClear={() => void restoreHistory(currentThreadId)}
+            onAfterClear={() => setMessages([])}
           />
         }
       />
@@ -238,6 +253,7 @@ export default function ConsultPage() {
                       key={turn.id}
                       turnId={turn.id}
                       userContent={turn.user.content ?? ""}
+                      userAttachments={turn.user.attachments}
                       isUser={turn.user.role === "user"}
                       highlighted={highlightId === turn.id}
                       onEdit={handleEdit}
@@ -274,6 +290,8 @@ export default function ConsultPage() {
             placeholder="输入需要会诊的问题…"
             hint="总调度官自动调度顾问，综合给出建议"
             toolbar
+            onAddAttachment={() => attachRef.current?.pick()}
+            attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={stream.status === "streaming"} onAttachmentsChange={setAttachments} />}
             textareaRef={composerRef}
             className="w-full"
           />

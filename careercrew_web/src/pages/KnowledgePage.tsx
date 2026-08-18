@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { BookOpen, ChevronDown, X } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
+import { toMessageAttachments, type Attachment } from "@/lib/attachments"
 import { Tooltip } from "@/components/ui/tooltip"
 import { ThinkingPulse } from "@/components/ThinkingIndicator"
 import { MarkdownContent } from "@/components/MarkdownContent"
@@ -23,7 +25,7 @@ import { useToast } from "@/hooks/useToast"
 import { useChatScroll } from "@/hooks/useChatScroll"
 import { useThreadStore, type ThreadItem } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, KB_SCOPE_LABELS, type KnowledgeSource, type MessageFeedback } from "@/types"
+import { AGENT_META, KB_CATEGORIES, KB_CATEGORY_LABELS, KB_SCOPE, KB_SCOPE_LABELS, type KnowledgeSource, type MessageAttachment, type MessageFeedback } from "@/types"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/auth"
 import { restoreHistory } from "@/lib/historyRestore"
@@ -37,6 +39,7 @@ interface KnowledgeMessage {
   messageId?: string
   turnId?: string
   runId?: string
+  attachments?: MessageAttachment[]
 }
 
 let msgId = 0
@@ -112,6 +115,8 @@ function renderKnowledgeText(text: string, images: Record<string, AuthenticatedI
 
 export default function KnowledgePage() {
   const [input, setInput] = useState("")
+  const attachRef = useRef<AttachmentPickerHandle>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [messages, setMessages] = useState<KnowledgeMessage[]>([])
   const [panelOpen, setPanelOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -201,6 +206,7 @@ export default function KnowledgePage() {
           messageId: r.messageId,
           turnId: r.turnId,
           runId: r.runId,
+          attachments: r.attachments,
         }
         if (sources && r.role === "assistant") msg.sources = sources
         return msg
@@ -218,15 +224,21 @@ export default function KnowledgePage() {
     const question = input
     if (!question.trim() || stream.status === "streaming") return
     const isFirst = messages.length === 0
+    const turnAttachments = attachments
     setMessages((prev) => [
       ...prev,
-      { id: nextId(), role: "user", content: question },
+      { id: nextId(), role: "user", content: question, attachments: toMessageAttachments(turnAttachments) },
       { id: nextId(), role: "assistant", content: "", streaming: true },
     ])
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("knowledge", currentThreadId, question)
-    await startStream(currentThreadId, "/knowledge/ask", { question, thread_id: currentThreadId, category, scope })
+    const body: Record<string, unknown> = {
+      question, thread_id: currentThreadId, category, scope,
+    }
+    if (turnAttachments.length) body.attachments = turnAttachments.map((a) => ({ id: a.id }))
+    attachRef.current?.clear()
+    await startStream(currentThreadId, "/knowledge/ask", body)
   }
 
   /** 重新生成保留旧版本；稳定 ID 走后端 regenerate，遗留无 ID 消息保留兼容重发。 */
@@ -273,7 +285,7 @@ extra={
               threadId={currentThreadId}
               title={threadTitle ?? "新对话"}
               module="knowledge"
-              onAfterClear={() => void restoreHistory(currentThreadId)}
+              onAfterClear={() => setMessages([])}
             />
           </>
         }
@@ -323,6 +335,7 @@ extra={
                       key={turn.id}
                       turnId={turn.id}
                       userContent={turn.user.content}
+                      userAttachments={turn.user.attachments}
                       isUser={turn.user.role === "user"}
                       highlighted={highlightId === turn.id}
                       onEdit={handleEdit}
@@ -378,6 +391,8 @@ extra={
             placeholder="输入问题，将自动检索知识库后回答"
             hint="知识库图片会自动内嵌显示"
             toolbar
+            onAddAttachment={() => attachRef.current?.pick()}
+            attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={lastIsStreaming} onAttachmentsChange={setAttachments} />}
             textareaRef={composerRef}
             className="w-full"
             header={

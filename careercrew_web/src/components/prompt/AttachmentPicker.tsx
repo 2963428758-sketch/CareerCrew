@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
 import { BookmarkPlus, FileText, Loader2, Paperclip, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import {
   deleteAttachment,
-  listAttachments,
   pollSaveToKnowledge,
   saveAttachmentToKnowledge,
   uploadAttachment,
@@ -37,11 +36,19 @@ function formatSize(bytes: number): string {
 }
 
 export interface AttachmentPickerProps {
-  /** 会话 thread_id（上传/列表必需）；由页面接线传入（defer 模式，见 brief）。 */
+  /** 会话 thread_id（上传需要）；页面直接传入（defer 模式注入，如 brief） */
   threadId: string
-  /** 附件列表/状态变化时回调（页面接线可据此把附件引用带进消息上下文）。 */
+  /** 当前轮 pending 附件/状态变化回调（页面据此把附件信息并入发送上下文） */
   onAttachmentsChange?: (attachments: Attachment[]) => void
   disabled?: boolean
+  /** 嵌入模式：隐藏自带 Paperclip 触发按钮；由外部 + 按钮通过 ref.pick() 触发文件选择 */
+  embedded?: boolean
+}
+
+/** 外部触发的命令句柄（+ 按钮点击手势内同步调用，浏览器才会允许弹文件选择器） */
+export interface AttachmentPickerHandle {
+  pick: () => void
+  clear: () => void
 }
 
 /**
@@ -51,37 +58,39 @@ export interface AttachmentPickerProps {
  *
  * 自包含组件：不依赖全局 store，threadId 由父组件（PromptComposer 挂载处）传入。
  */
-export function AttachmentPicker({
-  threadId,
-  onAttachmentsChange,
-  disabled = false,
-}: AttachmentPickerProps) {
-  const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
-  const [pendingDelete, setPendingDelete] = useState<Attachment | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+export const AttachmentPicker = forwardRef<AttachmentPickerHandle, AttachmentPickerProps>(
+  function AttachmentPicker(
+    { threadId, onAttachmentsChange, disabled = false, embedded = false }: AttachmentPickerProps,
+    ref
+  ) {
+    const [attachments, setAttachments] = useState<Attachment[]>([])
+    const [uploading, setUploading] = useState(false)
+    const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
+    const [pendingDelete, setPendingDelete] = useState<Attachment | null>(null)
+    const [error, setError] = useState<string | null>(null)
+    const inputRef = useRef<HTMLInputElement>(null)
 
-  const emit = useCallback(
-    (next: Attachment[]) => {
-      setAttachments(next)
-      onAttachmentsChange?.(next)
-    },
-    [onAttachmentsChange]
-  )
+    const emit = useCallback(
+      (next: Attachment[]) => {
+        setAttachments(next)
+        onAttachmentsChange?.(next)
+      },
+      [onAttachmentsChange]
+    )
 
-  const refresh = useCallback(async () => {
-    try {
-      emit(await listAttachments(threadId))
-    } catch {
-      // 初次加载失败静默；后续操作失败经 setError 提示
-    }
-  }, [threadId, emit])
+    // 外部 + 按钮：用户手势同步调用，浏览器才会放行文件选择对话框。
+    // clear 用于发送后消费当前轮 pending 列表，不删除服务端附件文件。
+    useImperativeHandle(ref, () => ({
+      pick: () => {
+        if (!disabled) inputRef.current?.click()
+      },
+      clear: () => emit([]),
+    }), [disabled, emit])
 
-  useEffect(() => {
-    refresh()
-  }, [refresh])
+    // 切换线程时，历史附件不自动变成下一轮待发送附件。
+    useEffect(() => {
+      emit([])
+    }, [threadId, emit])
 
   const handleSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -155,33 +164,42 @@ export function AttachmentPicker({
         data-testid="attachment-file-input"
       />
 
-      <div className="flex items-center gap-1.5">
-        <Tooltip label={disabled ? undefined : `添加附件（≤25MB，${5} 个/会话）`}>
-          <button
-            type="button"
-            disabled={disabled || uploading}
-            onClick={() => inputRef.current?.click()}
-            aria-label="添加附件"
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50"
-          >
-            {uploading ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Paperclip className="h-[15px] w-[15px]" strokeWidth={1.8} />
-            )}
-          </button>
-        </Tooltip>
-        {error && (
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            className="inline-flex max-w-[calc(100%-40px)] items-center gap-1 truncate text-[11px] text-destructive"
-          >
-            <X className="h-3 w-3 shrink-0" />
-            <span className="truncate">{error}</span>
-          </button>
-        )}
-      </div>
+      {!embedded && (
+        <div className="flex items-center gap-1.5">
+          <Tooltip label={disabled ? undefined : `添加附件（≤25MB，${5} 个/会话）`}>
+            <button
+              type="button"
+              disabled={disabled || uploading}
+              onClick={() => inputRef.current?.click()}
+              aria-label="添加附件"
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50"
+            >
+              {uploading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Paperclip className="h-[15px] w-[15px]" strokeWidth={1.8} />
+              )}
+            </button>
+          </Tooltip>
+          {error && (
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="inline-flex max-w-[calc(100%-40px)] items-center gap-1 truncate text-[11px] text-destructive"
+            >
+              <X className="h-3 w-3 shrink-0" />
+              <span className="truncate">{error}</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {embedded && error && (
+        <div className="flex items-center gap-1 text-[11px] text-destructive">
+          <X className="h-3 w-3 shrink-0" />
+          <span className="truncate">{error}</span>
+        </div>
+      )}
 
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5" data-testid="attachment-chips">
@@ -257,4 +275,5 @@ export function AttachmentPicker({
       />
     </div>
   )
-}
+  }
+)

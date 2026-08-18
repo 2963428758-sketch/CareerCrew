@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react"
-import { Check, Copy, MoreHorizontal, Pencil } from "lucide-react"
+import { Check, Copy, FileImage, FileText, MoreHorizontal, Pencil } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { copyText } from "@/components/conversation/copy"
 import { Tooltip } from "@/components/ui/tooltip"
 import { useThreadStore } from "@/store/threadStore"
+import type { MessageAttachment } from "@/types"
 
 /**
  * 用户消息气泡（Codex 风格）：右对齐、弱灰、轻微不对称圆角（右下 5px）。
@@ -14,6 +15,7 @@ export function UserMessage({
   turnId,
   highlighted = false,
   onEdit,
+  attachments,
   className,
 }: {
   content: string
@@ -21,6 +23,7 @@ export function UserMessage({
   turnId?: string
   highlighted?: boolean
   onEdit?: (text: string) => void
+  attachments?: MessageAttachment[]
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
@@ -67,9 +70,39 @@ export function UserMessage({
   }
 
   return (
-    <div ref={rootRef} className={cn("group relative flex justify-end", className)}>
+    <div ref={rootRef} className={cn("group relative flex flex-col items-end", className)}>
+      {attachments && attachments.length > 0 && (
+        <div
+          className="mb-1.5 flex max-w-[68%] flex-wrap justify-end gap-1.5 max-md:max-w-[84%]"
+          data-testid="message-attachments"
+        >
+          {attachments.map((attachment) => {
+            const isImage = attachment.kind === "image"
+              || attachment.mimeType?.startsWith("image/")
+              || /\.(png|jpe?g)$/i.test(attachment.filename)
+            const Icon = isImage ? FileImage : FileText
+            return (
+              <div
+                key={attachment.id}
+                className="flex min-w-0 items-center gap-1.5 rounded-[8px] border border-[var(--border-soft)] bg-surface-2 px-2 py-1.5 text-[12px] text-ink-soft"
+                data-testid="message-attachment"
+                title={attachment.filename}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0 text-ink-soft" strokeWidth={1.8} />
+                <span className="max-w-[180px] truncate">{attachment.filename}</span>
+                {typeof attachment.sizeBytes === "number" && (
+                  <span className="shrink-0 text-[11px] text-ink-faint">
+                    {formatAttachmentSize(attachment.sizeBytes)}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
       <div
         data-turn-anchor={turnId}
+        data-testid="user-message-bubble"
         className={cn(
           "max-w-[68%] max-md:max-w-[84%] whitespace-pre-wrap rounded-[14px_14px_5px_14px] bg-[var(--user-bubble)] px-3.5 py-2.5 text-[14px] leading-[1.55] text-ink",
           highlighted && "anchor-highlight"
@@ -131,4 +164,10 @@ export function UserMessage({
       )}
     </div>
   )
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }

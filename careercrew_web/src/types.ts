@@ -22,6 +22,15 @@ export type StreamEvent =
 
 export type StreamStatus = "idle" | "streaming" | "done" | "error"
 
+/** 用户消息上方展示的附件摘要；不包含附件正文。 */
+export interface MessageAttachment {
+  id: string
+  filename: string
+  sizeBytes?: number
+  mimeType?: string
+  kind?: string
+}
+
 /** 聊天消息。 */
 export interface ChatMessage {
   /** UI key（turn 分组/React key/anchor 用；非后端稳定 message_id）。 */
@@ -34,6 +43,8 @@ export interface ChatMessage {
   messageId?: string
   turnId?: string
   runId?: string
+  /** 当前用户消息随发送携带的附件摘要。 */
+  attachments?: MessageAttachment[]
   /** §19 regenerate：本消息重新生成自哪条 message_id（版本链）。 */
   regeneratedFromMessageId?: string
 }

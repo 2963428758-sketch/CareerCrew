@@ -7,6 +7,7 @@
  */
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText } from "@/lib/errors"
+import type { MessageAttachment } from "@/types"
 
 /** 附件状态（§14.3 状态全集）。 */
 export type AttachmentStatus =
@@ -31,6 +32,16 @@ export interface Attachment {
   knowledge_document_id?: string | null
   created_at: string
   expires_at: string | null
+}
+
+/** 将服务端附件元数据转换为用户消息上方展示的轻量摘要。 */
+export function toMessageAttachments(items: Attachment[]): MessageAttachment[] {
+  return items.map((item) => ({
+    id: item.id,
+    filename: item.original_filename,
+    sizeBytes: item.size_bytes,
+    mimeType: item.mime_type,
+  }))
 }
 
 /** 与服务端校验（validation.py）对齐的扩展名白名单。 */

@@ -106,6 +106,7 @@ export function Tooltip({
       ref={wrapRef}
       onMouseEnter={show}
       onMouseLeave={hide}
+      onPointerDown={hide}
       onClick={hide}
       className={cn("contents", className)}
     >

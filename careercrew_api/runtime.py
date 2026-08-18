@@ -566,6 +566,7 @@ class CareerCrewRuntime:
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
                          mentions: list[dict] | None = None,
+                         attachments: list[dict] | None = None,
                          cancel_check: Callable[[], None] | None = None,
                          tools: list[str] | None = None) -> "StreamResult":
         """流式 match：用带 callback 的 agent 替换 cycle 中的 matcher，保留对话历史。
@@ -582,6 +583,7 @@ class CareerCrewRuntime:
             intent=intent,
             cb=cb,
             mentions=mentions,
+            attachments=attachments,
             cancel_check=cancel_check,
             tools=tools,
         )
@@ -589,17 +591,23 @@ class CareerCrewRuntime:
     def _run_match_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                cb: Callable[[str], None] | None = None,
                                mentions: list[dict] | None = None,
+                               attachments: list[dict] | None = None,
                                cancel_check: Callable[[], None] | None = None,
                                tools: list[str] | None = None) -> "StreamResult":
         from careercrew_api.chat_lifecycle import StreamResult
+        from careercrew_api.attachment_context import build_user_message
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
         ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
             cancel_check()
         user_meta: dict | None = None
-        if mentions:
-            user_meta = {"mentions": mentions}
+        if mentions or attachments:
+            user_meta = {}
+            if mentions:
+                user_meta["mentions"] = mentions
+            if attachments:
+                user_meta["attachments"] = attachments
         effective = self.compute_effective_tools("matcher", tools)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
@@ -617,11 +625,19 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         ep = self._get_episodic(thread_id, user_id)
-        cycle.job_matcher = self.new_job_matcher(cb, episodic=ep, allowed=effective, hitl_requires=hitl)
+        forced_doc_ids = [
+            str(m.get("id") or "") for m in (mentions or [])
+            if m.get("type") == "knowledge_document" and m.get("id")
+        ]
+        cycle.job_matcher = self.new_job_matcher(
+            cb, episodic=ep, allowed=effective, hitl_requires=hitl,
+            forced_doc_ids=forced_doc_ids or None,
+        )
         if cancel_check:
             cancel_check()
+        composed = build_user_message(intent, attachments + self._mention_blocks(user_id, mentions))
         try:
-            result = cycle.run_match(intent)
+            result = cycle.run_match(intent, composed=composed)
         except Exception as e:
             self._fail_chat_turn(ctx, e)
             raise
@@ -656,6 +672,7 @@ class CareerCrewRuntime:
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
                           mentions: list[dict] | None = None,
+                          attachments: list[dict] | None = None,
                           cancel_check: Callable[[], None] | None = None,
                           tools: list[str] | None = None) -> "StreamResult":
         """流式 resume：用带 callback 的 agent 替换 cycle 中的 advisor，保留对话历史。"""
@@ -669,6 +686,7 @@ class CareerCrewRuntime:
             jd_text=jd_text,
             cb=cb,
             mentions=mentions,
+            attachments=attachments,
             cancel_check=cancel_check,
             tools=tools,
         )
@@ -676,9 +694,11 @@ class CareerCrewRuntime:
     def _run_resume_stream_impl(self, thread_id: str, user_id: str, jd_text: str,
                                 cb: Callable[[str], None] | None = None,
                                 mentions: list[dict] | None = None,
+                                attachments: list[dict] | None = None,
                                 cancel_check: Callable[[], None] | None = None,
                                 tools: list[str] | None = None) -> "StreamResult":
         from careercrew_api.chat_lifecycle import StreamResult
+        from careercrew_api.attachment_context import build_user_message
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
         ls_run_id = _capture_langsmith_run_id()
@@ -692,6 +712,8 @@ class CareerCrewRuntime:
         user_meta: dict = {"jd_text": jd_text[:5000]}
         if mentions:
             user_meta["mentions"] = mentions
+        if attachments:
+            user_meta["attachments"] = attachments
         effective = self.compute_effective_tools("resume", tools)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
@@ -712,11 +734,22 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         ep = self._get_episodic(thread_id, user_id)
-        cycle.resume_advisor = self.new_resume_advisor(cb, episodic=ep, allowed=effective, hitl_requires=hitl)
+        forced_doc_ids = [
+            str(m.get("id") or "") for m in (mentions or [])
+            if m.get("type") == "knowledge_document" and m.get("id")
+        ]
+        cycle.resume_advisor = self.new_resume_advisor(
+            cb, episodic=ep, allowed=effective, hitl_requires=hitl,
+            forced_doc_ids=forced_doc_ids or None,
+        )
         if cancel_check:
             cancel_check()
+        composed = build_user_message(
+            f"按这个 JD 定制简历：{jd_text}",
+            attachments + self._mention_blocks(user_id, mentions),
+        )
         try:
-            result = cycle.run_resume(jd_text)
+            result = cycle.run_resume(jd_text, composed=composed)
         except Exception as e:
             self._fail_chat_turn(ctx, e)
             raise
@@ -747,6 +780,7 @@ class CareerCrewRuntime:
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
                                 mentions: list[dict] | None = None,
+                                attachments: list[dict] | None = None,
                                 cancel_check: Callable[[], None] | None = None,
                                 tools: list[str] | None = None) -> "StreamResult":
         """求职对话：职业规划师主理（聚焦求职规划：画像/目标公司池/阶段规划与复盘）。"""
@@ -760,6 +794,7 @@ class CareerCrewRuntime:
             intent=intent,
             cb=cb,
             mentions=mentions,
+            attachments=attachments,
             cancel_check=cancel_check,
             tools=tools,
         )
@@ -767,9 +802,11 @@ class CareerCrewRuntime:
     def _run_planner_chat_stream_impl(self, thread_id: str, user_id: str, intent: str,
                                       cb: Callable[[str], None] | None = None,
                                       mentions: list[dict] | None = None,
+                                      attachments: list[dict] | None = None,
                                       cancel_check: Callable[[], None] | None = None,
                                       tools: list[str] | None = None) -> "StreamResult":
         from careercrew_api.chat_lifecycle import StreamResult
+        from careercrew_api.attachment_context import build_user_message
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
         ls_run_id = _capture_langsmith_run_id()
@@ -778,8 +815,12 @@ class CareerCrewRuntime:
         if cancel_check:
             cancel_check()
         user_meta: dict | None = None
-        if mentions:
-            user_meta = {"mentions": mentions}
+        if mentions or attachments:
+            user_meta = {}
+            if mentions:
+                user_meta["mentions"] = mentions
+            if attachments:
+                user_meta["attachments"] = attachments
         effective = self.compute_effective_tools("chat", tools)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
@@ -787,7 +828,14 @@ class CareerCrewRuntime:
             user_text=intent, user_metadata=user_meta, effective_tools=effective,
         )
         ep = self._get_episodic(thread_id, user_id)
-        agent = self.new_career_planner(cb, episodic=ep, allowed=effective, hitl_requires=hitl)
+        forced_doc_ids = [
+            str(m.get("id") or "") for m in (mentions or [])
+            if m.get("type") == "knowledge_document" and m.get("id")
+        ]
+        agent = self.new_career_planner(
+            cb, episodic=ep, allowed=effective, hitl_requires=hitl,
+            forced_doc_ids=forced_doc_ids or None,
+        )
         try:
             # 先落库用户消息：长工具链（搜岗位/查薪资）中断也不丢问题
             pending_id = self.record_user_message(
@@ -797,10 +845,11 @@ class CareerCrewRuntime:
             pending_id = None
         if cancel_check:
             cancel_check()
+        composed = build_user_message(intent, attachments + self._mention_blocks(user_id, mentions))
         state = {
             "thread_id": thread_id, "user_id": user_id, "stage": "planning",
             "user_intent": intent,
-            "messages": [HumanMessage(content=intent)],
+            "messages": [HumanMessage(content=composed)],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
             "pending_user_entry_id": pending_id,
         }
@@ -840,6 +889,7 @@ class CareerCrewRuntime:
                                  category: str = "",
                                  scope: str = "all",
                                  mentions: list[dict] | None = None,
+                                 attachments: list[dict] | None = None,
                                  cancel_check: Callable[[], None] | None = None,
                                  tools: list[str] | None = None) -> "StreamResult":
         """知识库问答：KnowledgeAdvisor 基于 rag_query 检索流式回答（无状态）。
@@ -873,9 +923,11 @@ class CareerCrewRuntime:
                                        category: str = "",
                                        scope: str = "all",
                                        mentions: list[dict] | None = None,
+                                       attachments: list[dict] | None = None,
                                        cancel_check: Callable[[], None] | None = None,
                                        tools: list[str] | None = None) -> "StreamResult":
         from careercrew_api.chat_lifecycle import StreamResult
+        from careercrew_api.attachment_context import build_user_message
 
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         ls_run_id = _capture_langsmith_run_id()
@@ -892,6 +944,8 @@ class CareerCrewRuntime:
         user_meta: dict = {"category": category, "scope": scope}
         if mentions:
             user_meta["mentions"] = mentions
+        if attachments:
+            user_meta["attachments"] = attachments
         effective = self.compute_effective_tools("knowledge", tools)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
@@ -942,7 +996,10 @@ class CareerCrewRuntime:
             "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
             "user_intent": question,
             # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前问题
-            "messages": [HumanMessage(content=question)],
+            # （+ 本轮附带的附件/引用简历内容）
+            "messages": [HumanMessage(content=build_user_message(
+                question, attachments + self._mention_blocks(user_id, mentions)
+            ))],
             "pending_action": None, "agent_outputs": {}, "target_companies": [],
             # 历史恢复时跳过刚写入的当前问题，避免上下文里重复出现
             "pending_user_entry_id": pending_id,
@@ -1202,12 +1259,23 @@ class CareerCrewRuntime:
 
         if module == "chat":
             from langchain_core.messages import HumanMessage
+            from careercrew_api.attachment_context import build_user_message
 
-            agent = self.new_career_planner(cb, episodic=ep)
+            mentions = meta.get("mentions") or []
+            attachments = meta.get("attachments") or []
+            forced_doc_ids = [
+                str(m.get("id") or "") for m in mentions
+                if m.get("type") == "knowledge_document" and m.get("id")
+            ]
+            agent = self.new_career_planner(
+                cb, episodic=ep, forced_doc_ids=forced_doc_ids or None,
+            )
             state = {
                 "thread_id": thread_id, "user_id": user_id, "stage": "planning",
                 "user_intent": question,
-                "messages": [HumanMessage(content=question)],
+                "messages": [HumanMessage(content=build_user_message(
+                    question, attachments + self._mention_blocks(user_id, mentions)
+                ))],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
             }
             agent.run(state)
@@ -1219,9 +1287,12 @@ class CareerCrewRuntime:
 
         if module == "knowledge":
             from langchain_core.messages import HumanMessage
+            from careercrew_api.attachment_context import build_user_message
 
             category = meta.get("category") or ""
             scope = meta.get("scope") or "all"
+            mentions = meta.get("mentions") or []
+            attachments = meta.get("attachments") or []
             # 绑定决策：category/scope 缺失时回退到端点自身默认值（""/"all"），
             # 这仍是忠实重跑（等价于首次无参调用），但记录警告便于排查 legacy 行。
             if not meta.get("category") or not meta.get("scope"):
@@ -1231,6 +1302,10 @@ class CareerCrewRuntime:
                     "falling back to endpoint defaults (category=%r scope=%r)",
                     user_msg.get("turn_id"), category, scope,
                 )
+            forced_doc_ids: list[str] = [
+                str(m.get("id") or "") for m in mentions
+                if m.get("type") == "knowledge_document" and m.get("id")
+            ]
             sources: list[dict] = []
             seen: set[str] = set()
 
@@ -1253,11 +1328,14 @@ class CareerCrewRuntime:
             agent = self.new_knowledge_advisor(
                 cb, episodic=ep, rag_sink=_sink, category=category,
                 knowledge_access_filters=self._knowledge_scope_filters(user_id, scope),
+                forced_doc_ids=forced_doc_ids or None,
             )
             state = {
                 "thread_id": thread_id, "user_id": user_id, "stage": "knowledge",
                 "user_intent": question,
-                "messages": [HumanMessage(content=question)],
+                "messages": [HumanMessage(content=build_user_message(
+                    question, attachments + self._mention_blocks(user_id, mentions)
+                ))],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
             }
             agent.run(state)
@@ -1445,10 +1523,17 @@ class CareerCrewRuntime:
 
         # 每个 agent 的 rag_query 只检索对应分类（knowledge 分支由 rag_category 用户选择控制）
         cats = categories_for_agent(kind)
+        # 强制上下文（T3.4 §15.3）：mentions 命中的 knowledge 文档叠加 doc 白名单，
+        # 与 auto RAG 共用 rag_query 接缝（knowledge/planner/matcher 等均适用）。
+        def _rag_filters(base: dict) -> dict:
+            if forced_doc_ids:
+                return {**base, "doc": list(forced_doc_ids)}
+            return base
+
         if kind == "matcher":
             tools.register(ToolSpec(tool=search_jobs))
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters={"user_id": user_id},
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
             )))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
@@ -1460,20 +1545,20 @@ class CareerCrewRuntime:
             tools.register(ToolSpec(tool=submit_application, requires_confirmation=True))
         elif kind == "resume":
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters={"user_id": user_id},
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
             )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="resume_advisor")))
         elif kind == "interviewer":
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters={"user_id": user_id},
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
             )))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
         elif kind == "salary":
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters={"user_id": user_id},
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
             )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
@@ -1483,7 +1568,7 @@ class CareerCrewRuntime:
         elif kind == "planner":
             # 职业规划师：求职对话页的主理 agent，职责聚焦求职规划
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters={"user_id": user_id},
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
             )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
@@ -1519,12 +1604,14 @@ class CareerCrewRuntime:
         return tools
 
     def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None,
-                        allowed: list[str] | None = None, hitl_requires: set[str] | None = None):
+                        allowed: list[str] | None = None, hitl_requires: set[str] | None = None,
+                        forced_doc_ids: list[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.job_matcher import JobMatcher
 
         return JobMatcher(
-            llm=self.llm, tools=self._make_tools("matcher", episodic=episodic, allowed=allowed),
+            llm=self.llm, tools=self._make_tools("matcher", episodic=episodic, allowed=allowed,
+                                                  forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
@@ -1532,12 +1619,14 @@ class CareerCrewRuntime:
         )
 
     def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
-                           allowed: list[str] | None = None, hitl_requires: set[str] | None = None):
+                           allowed: list[str] | None = None, hitl_requires: set[str] | None = None,
+                           forced_doc_ids: list[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.resume_advisor import ResumeAdvisor
 
         return ResumeAdvisor(
-            llm=self.llm, tools=self._make_tools("resume", episodic=episodic, allowed=allowed),
+            llm=self.llm, tools=self._make_tools("resume", episodic=episodic, allowed=allowed,
+                                                  forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
@@ -1546,12 +1635,14 @@ class CareerCrewRuntime:
 
     def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None,
                         prompt_path=None, allowed: list[str] | None = None,
-                        hitl_requires: set[str] | None = None):
+                        hitl_requires: set[str] | None = None,
+                        forced_doc_ids: list[str] | None = None):
         self._ensure_heavy()
         from careercrew_core.agents.interviewer import Interviewer
 
         return Interviewer(
-            llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic, allowed=allowed),
+            llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic, allowed=allowed,
+                                                  forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, prompt_path=prompt_path,
             memory_injector=self.memory_injector,
             history_loader=self._history_loader,
@@ -1591,13 +1682,15 @@ class CareerCrewRuntime:
         )
 
     def new_career_planner(self, cb: Callable[[str], None] | None = None, episodic=None,
-                           allowed: list[str] | None = None, hitl_requires: set[str] | None = None):
+                           allowed: list[str] | None = None, hitl_requires: set[str] | None = None,
+                           forced_doc_ids: list[str] | None = None):
         """职业规划师（求职对话主理人）：聚焦求职规划，建画像、定目标公司池、做阶段规划与复盘。"""
         self._ensure_heavy()
         from careercrew_core.agents.career_planner import CareerPlanner
 
         return CareerPlanner(
-            llm=self.llm, tools=self._make_tools("planner", episodic=episodic, allowed=allowed),
+            llm=self.llm, tools=self._make_tools("planner", episodic=episodic, allowed=allowed,
+                                                  forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
@@ -1981,6 +2074,129 @@ class CareerCrewRuntime:
             user_id, mentions, knowledge_docs=docs, resume_items=resumes,
         )
         return [m.as_dict() for m in resolved]
+
+    # ── 附件上下文（T3.2：上传文件注入对话）──
+
+    def resolve_attachment_blocks(self, user_id: str, refs: list[dict]) -> list[dict]:
+        """按附件 id 校验所有权并读取内容，返回可注入 LLM 上下文的文本块列表。
+
+        refs: [{"id": ...}]；任一不存在/越权 → AttachmentRejected（整体拒绝，同 mentions）。
+        块形状：{"id", "filename", "kind": text|image|document|error, "content"}。
+        - md/txt 直读；图片走 VLM（settings.vlm）；pdf/docx/pptx/xlsx 走 MinerU 解析。
+        - 单附件解析失败不阻断整体：降级为 error 块，让模型知晓该附件不可用。
+        """
+        from careercrew_api.attachment_context import (
+            AttachmentRejected,
+            _truncate,
+            describe_image,
+            extract_pdf_text,
+        )
+        from careercrew_api.storage import L, resolve_under as _storage_resolve_under
+
+        self._ensure_heavy()
+        blocks: list[dict] = []
+        for ref in refs or []:
+            aid = str(ref.get("id") or "")
+            if not aid:
+                raise AttachmentRejected("附件缺少 id")
+            try:
+                row = self.attachment_store.get(user_id, aid)
+            except Exception as e:
+                raise AttachmentRejected(f"附件不存在或无权访问：{aid}") from e
+            disk_path = _storage_resolve_under(
+                L.attachments, row["user_id"], row["thread_id"], aid
+            )
+            if not disk_path.is_file():
+                raise AttachmentRejected(f"附件文件已不存在：{row.get('original_filename')}")
+            filename = row.get("original_filename") or aid
+            ext = Path(filename).suffix.lower()
+            try:
+                if ext in (".md", ".markdown", ".txt"):
+                    content = _truncate(disk_path.read_text(encoding="utf-8"))
+                    blocks.append({"id": aid, "filename": filename, "kind": "text", "content": content})
+                elif ext in (".png", ".jpg", ".jpeg"):
+                    content = _truncate(
+                        describe_image(
+                            self.settings,
+                            str(disk_path),
+                            mime_type=row.get("mime_type"),
+                        )
+                    )
+                    blocks.append({"id": aid, "filename": filename, "kind": "image", "content": content})
+                elif ext == ".pdf":
+                    try:
+                        output_dir = _storage_resolve_under(L.parsed_knowledge, user_id, aid)
+                        content = _truncate(
+                            self.extract_document_text(str(disk_path), str(output_dir))
+                        )
+                        if not content.strip():
+                            content = extract_pdf_text(str(disk_path))
+                    except Exception as mineru_error:
+                        try:
+                            content = extract_pdf_text(str(disk_path))
+                        except Exception as fallback_error:
+                            raise RuntimeError(
+                                f"MinerU 解析失败：{mineru_error}；PDF 文本回退失败：{fallback_error}"
+                            ) from fallback_error
+                    blocks.append({"id": aid, "filename": filename, "kind": "document", "content": content})
+                elif ext in (".docx", ".pptx", ".xlsx"):
+                    output_dir = _storage_resolve_under(L.parsed_knowledge, user_id, aid)
+                    content = _truncate(self.extract_document_text(str(disk_path), str(output_dir)))
+                    blocks.append({"id": aid, "filename": filename, "kind": "document", "content": content})
+                else:
+                    blocks.append({
+                        "id": aid, "filename": filename, "kind": "error",
+                        "content": f"不支持的附件类型：{ext or '（无扩展名）'}",
+                    })
+            except AttachmentRejected:
+                raise
+            except Exception as e:  # noqa: BLE001 - 单附件解析失败降级 error 块
+                blocks.append({
+                    "id": aid, "filename": filename, "kind": "error",
+                    "content": f"解析失败：{type(e).__name__}: {e}",
+                })
+        return blocks
+
+    def extract_document_text(self, path: str, output_dir: str) -> str:
+        """MinerU 解析二进制文档（仅解析不向量化），返回页面 markdown 拼接文本。"""
+        parsed = self.ingest_pipeline.parse_file(path, output_dir=output_dir)
+        return "\n\n".join(pg.markdown for pg in parsed.pages)
+
+    def _resume_text(self, user_id: str, resume_id: str) -> str | None:
+        """读取本人简历库条目的解析文本（data/parsed/resumes/{user_id}/{resume_id}/content.txt）。"""
+        from careercrew_api.attachment_context import _truncate
+        from careercrew_api.storage import L
+
+        p = L.parsed_resumes / user_id / (resume_id or "") / "content.txt"
+        if not p.is_file():
+            return None
+        try:
+            return _truncate(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - 单条读取失败视为不可用
+            return None
+
+    def _mention_knowledge_ids(self, mentions: list[dict] | None) -> list[str]:
+        """mentions 中 knowledge_document 类型的 id 列表（强制检索上下文）。"""
+        return [
+            str(m.get("id") or "") for m in (mentions or [])
+            if m.get("type") == "knowledge_document" and m.get("id")
+        ]
+
+    def _mention_blocks(self, user_id: str, mentions: list[dict] | None) -> list[dict]:
+        """resume 类 mentions → 简历解析文本块（knowledge 文档走强制检索，不进消息体）。"""
+        blocks: list[dict] = []
+        for m in mentions or []:
+            if m.get("type") != "resume":
+                continue
+            text = self._resume_text(user_id, str(m.get("id") or ""))
+            if text:
+                blocks.append({
+                    "id": str(m.get("id") or ""),
+                    "filename": str(m.get("name") or "简历"),
+                    "kind": "text",
+                    "content": text,
+                })
+        return blocks
 
 
 

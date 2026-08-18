@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
-import { AttachmentPicker } from "@/components/prompt/AttachmentPicker"
-import { MentionPicker } from "@/components/prompt/MentionPicker"
-import { ToolPicker } from "@/components/prompt/ToolPicker"
+import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
+import { toMessageAttachments, type Attachment } from "@/lib/attachments"
 import { EmptyState, AgentDots } from "@/components/workspace/EmptyState"
 import { UserMessage } from "@/components/conversation/UserMessage"
 import { AssistantMessage } from "@/components/conversation/AssistantMessage"
@@ -29,6 +28,9 @@ const nextId = () => `msg-${++msgId}`
 
 export default function ChatPage() {
   const [input, setInput] = useState("")
+  const attachRef = useRef<AttachmentPickerHandle>(null)
+  // 当前轮待发送的附件；发送时快照并立即清空，避免下一轮重复引用。
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const {
     messages, addMessage, updateLastAssistant, removeLastEmptyAssistant,
     newConversation,
@@ -99,6 +101,7 @@ export default function ChatPage() {
         role: r.role,
         content: r.content,
         agent: r.role === "assistant" ? "career_planner" : undefined,
+        attachments: r.attachments,
         messageId: r.messageId,
         turnId: r.turnId,
         runId: r.runId,
@@ -119,12 +122,21 @@ export default function ChatPage() {
 
   const handlePlan = async (text: string) => {
     const isFirst = useChatStore.getState().messages.length === 0
-    addMessage({ id: nextId(), role: "user", content: text })
+    const turnAttachments = attachments
+    addMessage({
+      id: nextId(),
+      role: "user",
+      content: text,
+      attachments: toMessageAttachments(turnAttachments),
+    })
     addMessage({ id: nextId(), role: "assistant", content: "", agent: "career_planner", streaming: true })
     setInput("")
     jumpToLatest()
     if (isFirst) useThreadStore.getState().touchThread("chat", currentThreadId, text)
-    await startStream(currentThreadId, "/chat/plan", { intent: text, thread_id: currentThreadId })
+    const body: Record<string, unknown> = { intent: text, thread_id: currentThreadId }
+    if (turnAttachments.length) body.attachments = turnAttachments.map((a) => ({ id: a.id }))
+    attachRef.current?.clear()
+    await startStream(currentThreadId, "/chat/plan", body)
   }
 
   const handleSend = () => {
@@ -183,7 +195,7 @@ export default function ChatPage() {
             threadId={currentThreadId}
             title={threadTitle ?? "新对话"}
             module="chat"
-            onAfterClear={() => void restoreHistory(currentThreadId)}
+            onAfterClear={() => useChatStore.setState({ messages: [] })}
           />
         }
       />
@@ -235,6 +247,7 @@ export default function ChatPage() {
                       {turn.user.role === "user" && (
                         <UserMessage
                           content={turn.user.content}
+                          attachments={turn.user.attachments}
                           turnId={turn.id}
                           highlighted={highlightId === turn.id}
                           onEdit={handleEdit}
@@ -298,9 +311,8 @@ export default function ChatPage() {
             onStop={() => stopStream(currentThreadId)}
             placeholder="聊聊你的求职方向与背景…"
             toolbar
-            attachments={<AttachmentPicker threadId={currentThreadId} disabled={lastIsStreaming} />}
-            mentions={<MentionPicker disabled={lastIsStreaming} />}
-            tools={<ToolPicker module="chat" disabled={lastIsStreaming} />}
+            onAddAttachment={() => attachRef.current?.pick()}
+            attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={lastIsStreaming} onAttachmentsChange={setAttachments} />}
             textareaRef={composerRef}
             className="w-full"
           />

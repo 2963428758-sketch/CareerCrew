@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
-import { ArrowUp, AtSign, Plus, Square, Wrench } from "lucide-react"
+import { ArrowUp, Plus, Square } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip } from "@/components/ui/tooltip"
 
@@ -26,14 +26,12 @@ interface PromptComposerProps {
   sendLabel?: string
   /** 允许空内容发送（面试随机出题场景） */
   allowEmptySend?: boolean
-  /** Codex 工具栏（+ / @ / Tools）：主聊天页开启，其余页面不显示 */
+  /** 输入框附件工具栏：主聊天页开启，其余页面不显示 */
   toolbar?: boolean
+  /** 点击添加附件按钮，必须在用户手势内触发文件选择器 */
+  onAddAttachment?: () => void
   /** 附件选择区（AttachmentPicker 等），渲染在工具栏上方；页面接线注入（defer 模式）。 */
   attachments?: ReactNode
-  /** @ 引用选择区（MentionPicker 等），渲染在工具栏上方；页面接线注入（defer 模式，T3.4）。 */
-  mentions?: ReactNode
-  /** 工具选择区（ToolPicker），渲染在工具栏上方；页面接线注入（defer 模式，T3.5）。 */
-  tools?: ReactNode
   /** 外部引用 textarea（编辑用户消息时聚焦回填） */
   textareaRef?: RefObject<HTMLTextAreaElement | null>
   className?: string
@@ -41,7 +39,7 @@ interface PromptComposerProps {
 
 /**
  * Prompt Composer（Codex 风格）：
- * 14px 圆角、min-height 56px、极弱边框 + 轻阴影；底部工具栏左 +/@/Tools、右发送。
+ * 14px 圆角、min-height 56px、极弱边框 + 轻阴影；底部工具栏左侧附件、右侧发送。
  * Enter 发送 / Shift + Enter 换行；多行粘贴原样保留。
  */
 export function PromptComposer({
@@ -57,9 +55,8 @@ export function PromptComposer({
   sendLabel,
   allowEmptySend = false,
   toolbar = false,
+  onAddAttachment,
   attachments,
-  mentions,
-  tools,
   textareaRef,
   className,
 }: PromptComposerProps) {
@@ -141,8 +138,6 @@ export function PromptComposer({
     <div className={cn("mx-auto w-full max-w-[820px]", className)}>
       {header}
       {attachments && <div className="mb-2">{attachments}</div>}
-      {mentions && <div className="mb-2">{mentions}</div>}
-      {tools && <div className="mb-2">{tools}</div>}
       <div className="group/composer relative rounded-[14px] border border-input bg-workspace shadow-prompt transition-colors duration-100 focus-within:border-[var(--border-strong)]">
         {/* 拖拽手柄：按住上下拖调整高度（双击恢复自动） */}
         <Tooltip label="拖动调整输入框高度，双击恢复自动">
@@ -180,22 +175,11 @@ export function PromptComposer({
         <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1">
           {toolbar ? (
             <>
-              {/* 左：附件 / 提及 / 工具（通用 Agent 提示工具占位） */}
+              {/* 左：附件 */}
               <div className="flex items-center gap-0.5">
-                <ToolbarIconButton title="添加附件" disabled={disabled}>
+                <ToolbarIconButton title="添加附件" disabled={disabled} onClick={onAddAttachment}>
                   <Plus className="h-[15px] w-[15px]" strokeWidth={1.8} />
                 </ToolbarIconButton>
-                <ToolbarIconButton title="提及资料" disabled={disabled}>
-                  <AtSign className="h-[15px] w-[15px]" strokeWidth={1.8} />
-                </ToolbarIconButton>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  className="flex h-[26px] items-center gap-1 rounded-[6px] px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50"
-                >
-                  <Wrench className="h-3.5 w-3.5" strokeWidth={1.8} />
-                  Tools
-                </button>
               </div>
               {/* 右：发送/停止 */}
               <div className="flex items-center gap-1">
@@ -237,10 +221,14 @@ export function PromptComposer({
 function ToolbarIconButton({
   title,
   disabled,
+  active,
+  onClick,
   children,
 }: {
   title: string
   disabled?: boolean
+  active?: boolean
+  onClick?: () => void
   children: ReactNode
 }) {
   return (
@@ -248,8 +236,13 @@ function ToolbarIconButton({
       <button
         type="button"
         disabled={disabled}
+        onClick={onClick}
         aria-label={title}
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50"
+        aria-pressed={active}
+        className={cn(
+          "flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50",
+          active && "bg-[var(--active)] text-ink"
+        )}
       >
         {children}
       </button>

@@ -43,6 +43,30 @@ describe("historyRestore", () => {
       ])
       expect(msgs).toHaveLength(0)
     })
+
+    it("从用户 metadata 恢复附件摘要且不带正文", () => {
+      const row = {
+        role: "user",
+        content: "请分析",
+        metadata: {
+          attachments: [{
+            id: "a-1",
+            filename: "report.pdf",
+            kind: "document",
+            content: "private body",
+          }],
+        },
+      }
+      const [message] = parseThreadMessages([row])
+      expect(message.attachments).toEqual([{
+        id: "a-1",
+        filename: "report.pdf",
+        sizeBytes: undefined,
+        mimeType: undefined,
+        kind: "document",
+      }])
+      expect(JSON.stringify(message.attachments)).not.toContain("private body")
+    })
   })
 
   describe("parseMemoryEntries", () => {
