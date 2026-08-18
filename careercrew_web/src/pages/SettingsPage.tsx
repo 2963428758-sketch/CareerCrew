@@ -176,20 +176,26 @@ function AvatarUpload({ userId, username, initial }: { userId: string; username:
   )
 }
 
-function ChangePasswordCard() {
+export function ChangePasswordCard() {
   const [oldPassword, setOldPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
   const [confirm, setConfirm] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+  const [newPasswordError, setNewPasswordError] = useState("")
   const [success, setSuccess] = useState(false)
 
   // 与后端密码策略一致：8-64 位，必须同时包含字母和数字
   const policyValid = (p: string) => /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(p)
 
   const submit = async () => {
+    setNewPasswordError("")
     if (!oldPassword) { setError("请输入当前密码"); return }
-    if (!policyValid(newPassword)) { setError("新密码需为 8-64 位，且同时包含字母和数字"); return }
+    if (!policyValid(newPassword)) {
+      setError("")
+      setNewPasswordError("新密码需为 8-64 位，且同时包含字母和数字")
+      return
+    }
     if (newPassword !== confirm) { setError("两次输入的新密码不一致"); return }
     setError("")
     setSuccess(false)
@@ -234,7 +240,29 @@ function ChangePasswordCard() {
         </label>
         <label className="block">
           <span className="mb-1 block text-[12px] font-medium text-ink-soft">新密码</span>
-          <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="8-64 位，包含字母和数字" autoComplete="new-password" />
+          <div className="relative">
+            <Input
+              type="password"
+              value={newPassword}
+              onChange={(e) => {
+                setNewPassword(e.target.value)
+                if (newPasswordError) setNewPasswordError("")
+              }}
+              placeholder="8-64 位，包含字母和数字"
+              autoComplete="new-password"
+              aria-invalid={newPasswordError ? true : undefined}
+              aria-describedby={newPasswordError ? "new-password-error" : undefined}
+            />
+            {newPasswordError && (
+              <div
+                id="new-password-error"
+                role="alert"
+                className="absolute left-0 top-full z-20 mt-1 w-max max-w-[min(280px,calc(100vw-48px))] rounded-[7px] border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-[11.5px] font-medium text-destructive shadow-popover sm:left-full sm:top-1/2 sm:ml-2 sm:mt-0 sm:-translate-y-1/2"
+              >
+                {newPasswordError}
+              </div>
+            )}
+          </div>
         </label>
         <label className="block">
           <span className="mb-1 block text-[12px] font-medium text-ink-soft">确认新密码</span>
