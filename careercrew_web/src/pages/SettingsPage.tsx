@@ -189,7 +189,6 @@ export function ChangePasswordCard() {
   const policyValid = (p: string) => /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(p)
 
   const submit = async () => {
-    setNewPasswordError("")
     if (!oldPassword) { setError("请输入当前密码"); return }
     if (!policyValid(newPassword)) {
       setError("")
@@ -247,6 +246,13 @@ export function ChangePasswordCard() {
               onChange={(e) => {
                 setNewPassword(e.target.value)
                 if (newPasswordError) setNewPasswordError("")
+              }}
+              onBlur={() => {
+                if (!policyValid(newPassword)) {
+                  setNewPasswordError("新密码需为 8-64 位，且同时包含字母和数字")
+                } else {
+                  setNewPasswordError("")
+                }
               }}
               placeholder="8-64 位，包含字母和数字"
               autoComplete="new-password"
