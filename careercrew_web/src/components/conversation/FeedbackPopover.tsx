@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
 import { Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { MessageFeedback } from "@/types"
@@ -26,12 +27,15 @@ export function FeedbackPopover({
   onClose,
   onSubmit,
   pending = false,
+  anchorRef,
   className,
 }: {
   open: boolean
   onClose: () => void
   onSubmit: (reason: NonNullable<MessageFeedback["reason"]>, comment: string, shareContext: boolean) => void
   pending?: boolean
+  /** 操作栏锚点；弹层通过 portal 定位，避免被对话滚动容器裁剪。 */
+  anchorRef?: RefObject<HTMLElement | null>
   className?: string
 }) {
   const [reason, setReason] = useState<FeedbackReason | null>(null)
@@ -39,6 +43,7 @@ export function FeedbackPopover({
   const [shareContext, setShareContext] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
 
   useEffect(() => { onCloseRef.current = onClose }, [onClose])
 
@@ -71,15 +76,62 @@ export function FeedbackPopover({
     }
   }, [open, reset, close])
 
+  const updatePosition = useCallback(() => {
+    if (!open || !ref.current) return
+    const anchor = anchorRef?.current
+    if (!anchor) return
+
+    const anchorRect = anchor.getBoundingClientRect()
+    const panelRect = ref.current.getBoundingClientRect()
+    const margin = 8
+    const gap = 6
+    const maxTop = Math.max(margin, window.innerHeight - panelRect.height - margin)
+    const above = anchorRect.top - panelRect.height - gap
+    const top = above >= margin
+      ? above
+      : Math.min(anchorRect.bottom + gap, maxTop)
+    const maxLeft = Math.max(margin, window.innerWidth - panelRect.width - margin)
+    const left = Math.min(Math.max(anchorRect.left, margin), maxLeft)
+
+    setPosition((previous) => (
+      previous && previous.top === top && previous.left === left
+        ? previous
+        : { top, left }
+    ))
+  }, [anchorRef, open])
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPosition(null)
+      return
+    }
+    updatePosition()
+    const frame = window.requestAnimationFrame(updatePosition)
+    const onViewportChange = () => updatePosition()
+    window.addEventListener("resize", onViewportChange)
+    window.addEventListener("scroll", onViewportChange, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener("resize", onViewportChange)
+      window.removeEventListener("scroll", onViewportChange, true)
+    }
+  }, [open, updatePosition])
+
   if (!open) return null
 
-  return (
+  const panel = (
     <div
       ref={ref}
+      data-testid="feedback-popover"
       className={cn(
-        "absolute bottom-full left-0 z-50 mb-1.5 w-[300px] max-w-[calc(100vw-32px)] rounded-[10px] border border-[var(--border-normal)] bg-workspace p-3 shadow-popover",
+        "fixed z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-[10px] border border-[var(--border-normal)] bg-workspace p-3 shadow-popover",
         className
       )}
+      style={{
+        top: position?.top ?? 0,
+        left: position?.left ?? 0,
+        visibility: position ? "visible" : "hidden",
+      }}
     >
       <p className="mb-2 text-[12.5px] font-medium text-ink">这条回答哪里需要改进？</p>
       <div className="flex flex-col gap-0.5">
@@ -131,4 +183,6 @@ export function FeedbackPopover({
       </div>
     </div>
   )
+
+  return createPortal(panel, document.body)
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { MessageActions } from "@/components/conversation/MessageActions"
 import { FeedbackPopover } from "@/components/conversation/FeedbackPopover"
 import { deleteMessageFeedback, putMessageFeedback, type FeedbackRequest } from "@/lib/feedback"
@@ -65,6 +65,7 @@ function PersistedFeedbackArea({
   const feedback = usePersistedFeedback(threadId, messageId)
   const [dislikeOpen, setDislikeOpen] = useState(false)
   const [pending, setPending] = useState(false)
+  const anchorRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     void hydrateThreadFeedback(threadId).catch((error: unknown) => {
@@ -127,7 +128,7 @@ function PersistedFeedbackArea({
   }
 
   return (
-    <div className="relative">
+    <div ref={anchorRef} className="relative">
       <MessageActions
         content={content}
         feedback={feedback}
@@ -139,7 +140,13 @@ function PersistedFeedbackArea({
         onRegenerate={onRegenerate}
         disabled={pending}
       />
-      <FeedbackPopover open={dislikeOpen} pending={pending} onClose={() => setDislikeOpen(false)} onSubmit={submitDislike} />
+      <FeedbackPopover
+        open={dislikeOpen}
+        pending={pending}
+        anchorRef={anchorRef}
+        onClose={() => setDislikeOpen(false)}
+        onSubmit={submitDislike}
+      />
     </div>
   )
 }
