@@ -25,4 +25,14 @@ describe("ChangePasswordCard", () => {
     expect(newPassword.getAttribute("aria-invalid")).toBe("true")
     expect(apiFetch).not.toHaveBeenCalled()
   })
+
+  it("新密码为空时失焦不显示策略气泡", () => {
+    render(<ChangePasswordCard />)
+    const newPassword = screen.getByPlaceholderText("8-64 位，包含字母和数字")
+
+    fireEvent.blur(newPassword)
+
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(newPassword.getAttribute("aria-invalid")).toBeNull()
+  })
 })

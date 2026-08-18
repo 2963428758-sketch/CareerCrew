@@ -248,7 +248,9 @@ export function ChangePasswordCard() {
                 if (newPasswordError) setNewPasswordError("")
               }}
               onBlur={() => {
-                if (!policyValid(newPassword)) {
+                if (!newPassword) {
+                  setNewPasswordError("")
+                } else if (!policyValid(newPassword)) {
                   setNewPasswordError("新密码需为 8-64 位，且同时包含字母和数字")
                 } else {
                   setNewPasswordError("")
