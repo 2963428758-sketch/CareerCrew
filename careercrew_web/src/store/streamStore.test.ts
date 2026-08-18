@@ -66,7 +66,7 @@ describe("streamStore done 解析", () => {
     expect(asst?.runId).toBe("uuid-run1")
   })
 
-  it("legacy remap：done 的 UUID thread_id 不同 → chatStore/threadStore 更新为新 UUID", async () => {
+  it("done 携带当前 legacy_thread_id 时不切换当前会话身份", async () => {
     useChatStore.setState({ messages: [], threadId: "t-legacy" })
     useThreadStore.setState({
       currentThreadByModule: { chat: "t-legacy" },
@@ -86,18 +86,18 @@ describe("streamStore done 解析", () => {
 
     await useStreamStore.getState().start("t-legacy", "/chat/plan", { intent: "hi", thread_id: "t-legacy" })
 
-    expect(useChatStore.getState().threadId).toBe("uuid-new")
-    expect(useThreadStore.getState().currentThreadByModule.chat).toBe("uuid-new")
-    expect(useThreadStore.getState().threadsByModule.chat?.[0].thread_id).toBe("uuid-new")
-    // 流式 session 重新挂到新 id，页面按新 id 仍能查到该流（done 状态）
-    const session = useStreamStore.getState().sessions["uuid-new"]
+    expect(useChatStore.getState().threadId).toBe("t-legacy")
+    expect(useThreadStore.getState().currentThreadByModule.chat).toBe("t-legacy")
+    expect(useThreadStore.getState().threadsByModule.chat?.[0].thread_id).toBe("t-legacy")
+    // canonical UUID 仍保存在 doneIds，但流式 session 继续使用 legacy key。
+    const session = useStreamStore.getState().sessions["t-legacy"]
     expect(session).toBeDefined()
     expect(session?.status).toBe("done")
     expect(session?.doneContent).toBe("ans")
-    expect(useStreamStore.getState().sessions["t-legacy"]).toBeUndefined()
+    expect(useStreamStore.getState().sessions["uuid-new"]).toBeUndefined()
   })
 
-  it("remap 后 stop(新 UUID) 能 abort 在途请求（controller 已被 re-key 到新 id）", async () => {
+  it("legacy_thread_id 匹配时 stop(legacy id) 能 abort 在途请求", async () => {
     const done = {
       type: "done",
       content: "ans",
@@ -131,13 +131,13 @@ describe("streamStore done 解析", () => {
     })
 
     const startP = useStreamStore.getState().start("t-legacy", "/chat/plan", { intent: "hi", thread_id: "t-legacy" })
-    // 等 done 行被消费、remap 完成（session 重挂到 uuid-new）
+    // 等 done 行被消费（session 仍挂在 legacy id）
     await vi.waitFor(() => {
-      expect(useStreamStore.getState().sessions["uuid-new"]).toBeDefined()
+      expect(useStreamStore.getState().sessions["t-legacy"]).toBeDefined()
     })
     expect(signal?.aborted).toBe(false)
-    // 关键：用新 UUID 停止，应命中 re-key 后的 controller 并 abort 在途 fetch
-    useStreamStore.getState().stop("uuid-new")
+    // 关键：用 legacy id 停止，应命中原 controller 并 abort 在途 fetch。
+    useStreamStore.getState().stop("t-legacy")
     await startP
     expect(signal?.aborted).toBe(true)
   })

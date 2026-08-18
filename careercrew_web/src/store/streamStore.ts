@@ -91,8 +91,8 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
     useThreadStore.getState().clearCompletedUnread(threadId)
     set((s) => ({ sessions: { ...s.sessions, [threadId]: freshSession(threadId) } }))
 
-    // 会话 key：legacy remap 后指向新 UUID（done 事件携带 thread_id），
-    // 后续所有 patchS/thinkTimers/controllers 都用新 key，保证页面按新 id 定位到本流。
+    // 会话 key 默认保持请求使用的 legacy id；只有服务端没有返回对应 legacy 映射时，
+    // 才把真正的旧客户端 key remap 到 canonical UUID。
     let sessionKey = threadId
 
     const patchS = (
@@ -240,9 +240,14 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
                   break
                 }
               }
-              // legacy remap：done 返回 UUID thread_id 与本地 id 不同 → 更新 chatStore + threadStore，
-              // 后续请求用新 UUID；同时把流式 session 重新挂到新 id（否则页面按新 id 查不到该流）。
-              if (evt.thread_id && evt.thread_id !== threadId) {
+              // 只有 done 没有声明当前 legacy 映射时才 remap。正常 legacy 请求会同时收到
+              // UUID thread_id + legacy_thread_id；若此时切换到 UUID，下一轮 memory 写入会
+              // 把同一会话拆成第二条历史记录。
+              if (
+                evt.thread_id
+                && evt.thread_id !== threadId
+                && evt.legacy_thread_id !== threadId
+              ) {
                 useChatStore.getState().setThreadId(evt.thread_id)
                 useThreadStore.getState().remapLegacyThread(threadId, evt.thread_id)
                 // re-key 在途 controller + thinking timer 到新 UUID：否则 stop(newId)
@@ -271,7 +276,9 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
               // 注意顺序：此判断必须在 remap 之后读取 currentThreadByModule——remap 已把
               // 当前 module 的 currentThreadByModule 切到新 UUID，所以「正在看的会话」仍被
               // newThreadId（新 UUID）命中也算 active，不会误打未读圆点。
-              const newThreadId = evt.thread_id ?? threadId
+              const newThreadId = evt.legacy_thread_id === threadId
+                ? threadId
+                : (evt.thread_id ?? threadId)
               const activeIds = Object.values(useThreadStore.getState().currentThreadByModule)
               if (!activeIds.includes(newThreadId)) {
                 // 未在看的会话完成：打蓝色圆点，点击该会话后清除

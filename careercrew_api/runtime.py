@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -399,6 +400,68 @@ class CareerCrewRuntime:
         except Exception:
             import logging
             logging.getLogger(__name__).exception("finish_chat_turn failed")
+        self._maybe_generate_first_title(ctx, content)
+
+    def _generate_title(self, user_text: str, assistant_text: str) -> str:
+        """用现有对话模型为首轮问答生成短标题；返回空串表示不可用。"""
+        from careercrew_core.memory.redaction import redact_secrets
+
+        user = redact_secrets(user_text or "")[:1200]
+        assistant = redact_secrets(assistant_text or "")[:2400]
+        prompt = (
+            "请根据下面的用户问题和助手回答，生成一个简洁的中文会话标题。\n"
+            "要求：只输出标题本身，不要引号、编号、Markdown 或解释；不超过18个汉字，概括主题而不是复述整句。\n\n"
+            f"用户问题：\n{user}\n\n助手回答：\n{assistant}"
+        )
+        response = self.llm.invoke(prompt)
+        raw = getattr(response, "content", "")
+        if isinstance(raw, list):
+            parts: list[str] = []
+            for item in raw:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or item.get("content") or ""))
+                else:
+                    parts.append(str(item))
+            raw = "".join(parts)
+        title = str(raw or "").strip().splitlines()[0] if str(raw or "").strip() else ""
+        title = re.sub(r"^```(?:text|markdown)?\s*|\s*```$", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"^(?:标题|title)\s*[:：]\s*", "", title, flags=re.IGNORECASE)
+        title = title.strip(" `\"'“”‘’《》")
+        title = re.sub(r"[。！？.!?]+$", "", title).strip()
+        return title[:30]
+
+    def _maybe_generate_first_title(self, ctx, assistant_text: str) -> None:
+        """首轮回答完成后更新同一 conversation/memory 线程标题，失败不影响主流程。"""
+        if ctx is None or not getattr(ctx, "user_message_id", ""):
+            return
+        if self.conversation_store is None or self.thread_store is None or self.llm is None:
+            return
+        try:
+            turn = self.conversation_store.get_turn(ctx.user_id, ctx.turn_id)
+            if not turn or int(turn.get("sequence_no") or 0) != 1:
+                return
+            user_message = self.conversation_store.get_message(ctx.user_id, ctx.user_message_id)
+            user_text = str((user_message or {}).get("content") or "").strip()
+            if not user_text or not assistant_text:
+                return
+            title = self._generate_title(user_text, assistant_text)
+            if not title:
+                return
+
+            self.conversation_store.rename_title(ctx.thread_id, ctx.user_id, title)
+            memory_thread_id = self._memory_thread_id(ctx.thread_id, ctx.user_id)
+            existing = self.thread_store.get(ctx.user_id, memory_thread_id)
+            self.thread_store.upsert(
+                ctx.user_id,
+                memory_thread_id,
+                title=title,
+                module=ctx.module,
+                pinned=bool((existing or {}).get("pinned")),
+                retrieval_scope=(existing or {}).get("retrieval_scope"),
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("first-turn title generation failed")
 
     def _fail_chat_turn(self, ctx, exc: BaseException) -> None:
         from careercrew_api.chat_lifecycle import fail_turn
@@ -427,12 +490,28 @@ class CareerCrewRuntime:
         """确保线程元数据存在（首次使用时登记，供侧边栏列表）。"""
         self._ensure_heavy()
         ts = self.thread_store
-        existing = ts.get(user_id, thread_id)
+        memory_thread_id = self._memory_thread_id(thread_id, user_id)
+        existing = ts.get(user_id, memory_thread_id)
         if existing is None:
-            ts.upsert(user_id, thread_id, title=title[:50], module=module)
+            ts.upsert(user_id, memory_thread_id, title=title[:50], module=module)
         elif title and not existing.get("title"):
-            ts.upsert(user_id, thread_id, title=title[:50], module=module,
+            ts.upsert(user_id, memory_thread_id, title=title[:50], module=module,
                       pinned=bool(existing.get("pinned")))
+
+    def _memory_thread_id(self, thread_id: str, user_id: str) -> str:
+        """将 conversation UUID 归一到对应的 legacy memory thread id。
+
+        conversation 表是 UUID 主表，memory threads 表仍兼容旧的 ``t-*`` 等 id。
+        两张表之间如果已有 legacy 映射，所有 memory 读写都必须使用同一个 key，
+        否则同一会话在第二轮会被拆成两条侧边栏历史。
+        """
+        if not thread_id or self.conversation_store is None:
+            return thread_id
+        try:
+            conversation = self.conversation_store.get_conversation(thread_id, user_id)
+        except Exception:
+            return thread_id
+        return str(conversation.get("legacy_thread_id") or thread_id) if conversation else thread_id
 
     def record_thread_messages(
         self,
@@ -455,8 +534,9 @@ class CareerCrewRuntime:
         from careercrew_core.memory.redaction import redact_secrets
         from careercrew_core.memory.types import MemoryEntry
 
-        self._ensure_thread(thread_id, user_id, module=module, title=user_text[:50])
-        ep = self._get_episodic(thread_id, user_id)
+        memory_thread_id = self._memory_thread_id(thread_id, user_id)
+        self._ensure_thread(memory_thread_id, user_id, module=module, title=user_text[:50])
+        ep = self._get_episodic(memory_thread_id, user_id)
         n = 0
         if user_text:
             ep.write(MemoryEntry(
@@ -493,17 +573,42 @@ class CareerCrewRuntime:
 
         if not user_text:
             return None
-        self._ensure_thread(thread_id, user_id, module=module, title=user_text[:50])
-        ep = self._get_episodic(thread_id, user_id)
+        memory_thread_id = self._memory_thread_id(thread_id, user_id)
+        self._ensure_thread(memory_thread_id, user_id, module=module, title=user_text[:50])
+        ep = self._get_episodic(memory_thread_id, user_id)
         entry = ep.write(MemoryEntry(
             type="user_message", content=redact_secrets(user_text),
         ))
         return entry.id
 
     def get_threads(self, user_id: str, module: str | None = None) -> list[dict]:
-        """列出用户的所有对话线程（Postgres threads 表，按置顶+更新时间排序）。"""
+        """列出用户的所有对话线程，并按 conversation 映射去重 legacy/UUID 别名。"""
         self._ensure_heavy()
-        return self.thread_store.list(user_id, module=module)
+        rows = self.thread_store.list(user_id, module=module)
+        merged: dict[str, dict] = {}
+        source_ids: dict[str, str] = {}
+        for row in rows:
+            memory_thread_id = self._memory_thread_id(
+                str(row.get("thread_id") or ""), user_id
+            )
+            normalized = {**row, "thread_id": memory_thread_id}
+            current = merged.get(memory_thread_id)
+            source_id = str(row.get("thread_id") or "")
+            # 已有稳定 legacy 行优先；UUID 别名只用于补齐没有 legacy 行的旧数据。
+            if current is None or (
+                source_id == memory_thread_id
+                and source_ids.get(memory_thread_id) != memory_thread_id
+            ):
+                merged[memory_thread_id] = normalized
+                source_ids[memory_thread_id] = source_id
+        return sorted(
+            merged.values(),
+            key=lambda row: (
+                bool(row.get("pinned")),
+                str(row.get("updated_at") or row.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
 
     def register_thread(self, thread_id: str, user_id: str,
                         module: str = "chat", title: str = "",
@@ -1381,7 +1486,7 @@ class CareerCrewRuntime:
         from langchain_core.messages import AIMessage, HumanMessage
 
         rows = self.memory_db.list_episodic(
-            user_id, thread_id=thread_id, type=None
+            user_id, thread_id=self._memory_thread_id(thread_id, user_id), type=None
         )
         msgs: list = []
         for r in rows:
@@ -1763,7 +1868,8 @@ class CareerCrewRuntime:
         from careercrew_core.memory.semantic import SemanticFactStore
 
         facts = [f.model_dump() for f in SemanticFactStore(self.memory_db, user_id).list_facts()]
-        rows = self.memory_db.list_episodic(user_id, thread_id=thread_id, type=type or None)
+        memory_thread_id = self._memory_thread_id(thread_id, user_id) if thread_id else None
+        rows = self.memory_db.list_episodic(user_id, thread_id=memory_thread_id, type=type or None)
         events = []
         for r in rows:
             content = r.get("content")
