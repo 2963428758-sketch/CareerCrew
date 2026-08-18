@@ -702,6 +702,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
         from careercrew_api.attachment_context import build_user_message
 
+        attachments = attachments or []
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="match")
         ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
@@ -805,6 +806,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
         from careercrew_api.attachment_context import build_user_message
 
+        attachments = attachments or []
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="resume")
         ls_run_id = _capture_langsmith_run_id()
         if cancel_check:
@@ -913,6 +915,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
         from careercrew_api.attachment_context import build_user_message
 
+        attachments = attachments or []
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="planning")
         ls_run_id = _capture_langsmith_run_id()
         from langchain_core.messages import HumanMessage
@@ -1034,6 +1037,7 @@ class CareerCrewRuntime:
         from careercrew_api.chat_lifecycle import StreamResult
         from careercrew_api.attachment_context import build_user_message
 
+        attachments = attachments or []
         attach_run_metadata(user_id=user_id, thread_id=thread_id, stage="knowledge")
         ls_run_id = _capture_langsmith_run_id()
         from langchain_core.messages import HumanMessage
