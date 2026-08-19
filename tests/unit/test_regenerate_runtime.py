@@ -100,11 +100,13 @@ def _dispatch(rt, result_map, calls_list):
                     cb(self.last_result.content)
         return A()
 
-    def fake_new_resume_advisor(cb=None, episodic=None):
+    def fake_new_resume_advisor(cb=None, episodic=None, allowed=None,
+                                hitl_requires=None, forced_doc_ids=None):
         calls_list.append(("new_resume_advisor",))
         return fake_new_job_matcher(cb, episodic)
 
-    def fake_new_career_planner(cb=None, episodic=None):
+    def fake_new_career_planner(cb=None, episodic=None, allowed=None,
+                                hitl_requires=None, forced_doc_ids=None):
         calls_list.append(("new_career_planner",))
         result = type("R", (), {"content": result_map.get("content", "r2"),
                                 "tool_call_details": []})()
@@ -118,7 +120,8 @@ def _dispatch(rt, result_map, calls_list):
         return A()
 
     def fake_new_knowledge_advisor(cb=None, episodic=None, rag_sink=None,
-                                   category="", knowledge_access_filters=None):
+                                   category="", knowledge_access_filters=None,
+                                   forced_doc_ids=None):
         calls_list.append(("new_knowledge_advisor", category, bool(knowledge_access_filters)))
         if rag_sink:
             calls_list.append(("rag_sink",))

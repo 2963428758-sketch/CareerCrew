@@ -71,41 +71,43 @@ export function ConversationHeader({
             </button>
           </Tooltip>
           {extra}
-          <div ref={ref} className="relative">
-            <Tooltip label="更多" side="bottom">
-              <button
-                type="button"
-                onClick={() => setMenuOpen((o) => !o)}
-                aria-label="更多"
-                className={cn(iconBtn, menuOpen && "bg-[var(--active)] text-ink")}
-              >
-                <MoreHorizontal className="h-4 w-4" strokeWidth={1.7} />
-              </button>
-            </Tooltip>
-            {menuOpen && (
-              <div className="absolute right-0 top-[34px] z-50 w-48 overflow-hidden rounded-[9px] border border-[var(--border-soft)] bg-workspace py-1 shadow-popover">
-                <HeaderMenuEntry
-                  label="复制会话 ID"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    void useThreadStore.getState().copyThreadId(threadId)
-                  }}
-                />
-                {menuItems.map((item) => (
+          {menuItems.length > 0 && (
+            <div ref={ref} className="relative">
+              <Tooltip label="更多" side="bottom">
+                <button
+                  type="button"
+                  onClick={() => setMenuOpen((o) => !o)}
+                  aria-label="更多"
+                  className={cn(iconBtn, menuOpen && "bg-[var(--active)] text-ink")}
+                >
+                  <MoreHorizontal className="h-4 w-4" strokeWidth={1.7} />
+                </button>
+              </Tooltip>
+              {menuOpen && (
+                <div className="absolute right-0 top-[34px] z-50 w-48 overflow-hidden rounded-[9px] border border-[var(--border-soft)] bg-workspace py-1 shadow-popover">
                   <HeaderMenuEntry
-                    key={item.label}
-                    label={item.label}
-                    icon={item.icon}
-                    danger={item.danger}
+                    label="复制会话 ID"
                     onClick={() => {
                       setMenuOpen(false)
-                      item.onClick()
+                      void useThreadStore.getState().copyThreadId(threadId)
                     }}
                   />
-                ))}
-              </div>
-            )}
-          </div>
+                  {menuItems.map((item) => (
+                    <HeaderMenuEntry
+                      key={item.label}
+                      label={item.label}
+                      icon={item.icon}
+                      danger={item.danger}
+                      onClick={() => {
+                        setMenuOpen(false)
+                        item.onClick()
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       }
     />

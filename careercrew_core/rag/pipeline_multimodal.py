@@ -180,12 +180,24 @@ class MultimodalIngestionPipeline:
             return self.ingest_text(
                 doc.text, source=str(p), metadata=meta, progress_cb=progress_cb, category=category,
             )
-        if progress_cb:
-            progress_cb("parse", 0.05)
-        parsed = self._make_loader(output_dir).parse(p)
+        parsed = self.parse_file(p, output_dir, progress_cb=progress_cb)
         if progress_cb:
             progress_cb("vectorize", 0.6)
         return self._ingest_parsed(parsed, metadata, progress_cb=progress_cb, category=category)
+
+    def parse_file(
+        self,
+        path: str | Path,
+        output_dir: str | Path | None = None,
+        progress_cb: Callable[[str, float], None] | None = None,
+    ) -> ParsedDocument:
+        """仅解析不向量化：返回 ParsedDocument（页面/对象单元），供附件/临时文件取文本。
+
+        与 ingest_file 共用同一 loader 路由（api/local），产出目录按调用方隔离。
+        """
+        if progress_cb:
+            progress_cb("parse", 0.05)
+        return self._make_loader(output_dir).parse(Path(path))
 
     def _ingest_parsed(
         self,

@@ -291,13 +291,16 @@ class PostgresConversationDb(ConversationDb):
         self._dsn = dsn
         self._connected = False
         self.write_lock = threading.RLock()
+        self._connect_timeout = 5
 
     def _connect(self):
         if not self._connected:
             self._ensure()
         import psycopg
 
-        return psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row)
+        return psycopg.connect(
+            self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
+        )
 
     @_synchronized
     def _ensure(self):
@@ -310,7 +313,9 @@ class PostgresConversationDb(ConversationDb):
             raise RuntimeError(
                 "PostgresConversationDb 需要 psycopg：pip install 'psycopg[binary]'"
             ) from e
-        with psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row) as conn, conn.transaction():
+        with psycopg.connect(
+            self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
+        ) as conn, conn.transaction():
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS conversations ("
                 "id UUID PRIMARY KEY, user_id VARCHAR(64) NOT NULL, module VARCHAR(50) NOT NULL, "

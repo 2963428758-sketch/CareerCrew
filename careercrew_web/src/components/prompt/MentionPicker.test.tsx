@@ -97,4 +97,27 @@ describe("MentionPicker", () => {
       expect(onChange).toHaveBeenLastCalledWith([])
     })
   })
+
+  it("嵌入模式：expanded=false 收起面板但组件保持挂载（chips 不丢）", async () => {
+    fetchContextResources.mockResolvedValue([resource()])
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <MentionPicker embedded expanded onMentionsChange={onChange} />
+    )
+
+    fireEvent.click(await screen.findByTestId("mention-result"))
+    await screen.findByTestId("mention-chip")
+
+    // 外部收起面板：下拉消失，但 chips 仍在（切换工具栏不丢选择）
+    rerender(
+      <MentionPicker embedded expanded={false} onMentionsChange={onChange} />
+    )
+    expect(screen.queryByTestId("mention-search-input")).toBeNull()
+    expect(screen.getByTestId("mention-chip").textContent).toContain("RAG 技术笔记")
+
+    // 再次展开：面板恢复
+    rerender(<MentionPicker embedded expanded onMentionsChange={onChange} />)
+    expect(screen.getByTestId("mention-search-input")).toBeDefined()
+    expect(screen.getByTestId("mention-chip").textContent).toContain("RAG 技术笔记")
+  })
 })

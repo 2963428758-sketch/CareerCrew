@@ -3,7 +3,7 @@ import { CircleAlert, Info } from "lucide-react"
 import { subscribeToasts, type ToastNotice } from "@/lib/toastBus"
 
 /**
- * 全局 toast 宿主：订阅 toastBus 的通知，底部居中逐条展示，4 秒后自动消失。
+ * 全局 toast 宿主：订阅 toastBus 的通知，顶部居中逐条展示，4 秒后自动消失。
  * 挂在 App 根部，所有页面/面板的静默失败点都能通过 notifyError() 提示用户。
  */
 export function ToastHost() {
@@ -30,7 +30,7 @@ export function ToastHost() {
   if (toasts.length === 0) return null
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[70] flex flex-col items-center gap-2 px-4">
+    <div className="pointer-events-none fixed inset-x-0 top-5 z-[70] flex flex-col items-center gap-2 px-4">
       {toasts.map((t) => (
         <div
           key={t.id}

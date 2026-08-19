@@ -94,7 +94,7 @@ transformers 4.57.6、FlagEmbedding（BGE-M3，CPU）、mineru 3.4.4[pipeline] +
 **目标架构（v1.2）**：文档经 MinerU 解析为「页面文本 + 对象文本（OCR/Markdown）+
 页面图/对象图路径」→ 文本统一用 BGE-M3 编码 dense+sparse → 写入 Qdrant（唯一向量库）
 → 查询时两路召回（文本 dense/sparse）客户端 RRF 融合 → Qwen3-VL-Reranker-8B 精排
-（API）→ Qwen3-VL-8B-Instruct 看图回答（API，读 payload 中的页面图）。整个能力
+（API）→ zai-org/GLM-4.5V 看图回答（API，读 payload 中的页面图）。整个能力
 封装为 MCP server（stdio + HTTP 双传输，FastMCP，SDK 1.x），对外暴露
 ingest/search/query/status。本地 GPU 视觉模型全部移除，推理负载≈0。
 
@@ -131,7 +131,7 @@ rag:
     language: ch
 
 vlm:
-  model: Qwen/Qwen3-VL-8B-Instruct
+  model: zai-org/GLM-4.5V
   rerank_model: Qwen/Qwen3-VL-Reranker-8B
   base_url: https://api.siliconflow.cn/v1
   api_key: "${SILICONFLOW_API_KEY}"
@@ -227,7 +227,7 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
   （Qwen3-VL-Reranker-8B，`documents[].content` 含文本块 + base64 data URI 图片，
   本地图片必须转 data URI 而非传路径）→ 取 top_k；API 失败回退 RRF 序
   （不做 image token 计费记录）。
-- **回答**：top_k 页面图（base64 data URI）+ 文本块 → Qwen3-VL-8B-Instruct 生成，
+- **回答**：top_k 页面图（base64 data URI）+ 文本块 → zai-org/GLM-4.5V 生成，
   返回 `{answer, sources[]}`；sources 含 `image_path`，可在 Web/CLI 展示。
 - **rag_query 输出**：返回字符串保持旧文本格式兼容，图片以
   `[image: <绝对路径>]` 行附尾；渲染层（Web/CLI）识别并展示，文本模型忽略（R8）。
@@ -306,7 +306,7 @@ knowledge 名 → 多模态 schema；构造参数与 MilvusStore 对齐
 ## 假设与默认（修正）
 
 - 生成与精排均走硅基流动 API（已有 key），模型固定
-  `Qwen/Qwen3-VL-8B-Instruct`、`Qwen/Qwen3-VL-Reranker-8B`；rerank 文档图片用 base64
+  `zai-org/GLM-4.5V`、`Qwen/Qwen3-VL-Reranker-8B`；rerank 文档图片用 base64
   data URI（R8 之外的接口细节）。
 - 本地推理只有 BGE-M3（CPU）；MinerU 默认走云端 API（`provider=api`，本机零推理负载），
   `provider=local` 本地子进程仅作可选回退（R3 已被 v1.2/v1.3 覆盖）。

@@ -15,6 +15,7 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.mentions import MentionRejected
+from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.schemas import MatchRequest, ResumeRequest
 from careercrew_api.sse import (
     CancellationEvent,
@@ -41,6 +42,18 @@ def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dic
         raise HTTPException(status_code=503, detail=str(e)) from e
 
 
+def _resolve_attachments(rt: CareerCrewRuntime, user_id: str, refs) -> list[dict]:
+    """T3.2：附件服务端校验所有权 + 读取内容（文本块）；整体拒绝 → 422。"""
+    if not refs:
+        return []
+    try:
+        return rt.resolve_attachment_blocks(user_id, [r.model_dump() for r in refs])
+    except AttachmentRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
 def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
     """统一 NDJSON 响应头。"""
     return StreamingResponse(
@@ -59,6 +72,7 @@ def match(
     """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
@@ -69,6 +83,7 @@ def match(
             res = rt.run_match_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
                 **({"mentions": mentions} if mentions else {}),
+                **({"attachments": attachment_blocks} if attachment_blocks else {}),
                 cancel_check=cancel.check,
                 tools=req.tools,
             )
@@ -108,6 +123,7 @@ def resume(
     """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
@@ -118,6 +134,7 @@ def resume(
             res = rt.run_resume_stream(
                 req.thread_id, current_user["id"], req.jd_text, cb,
                 **({"mentions": mentions} if mentions else {}),
+                **({"attachments": attachment_blocks} if attachment_blocks else {}),
                 cancel_check=cancel.check,
                 tools=req.tools,
             )
@@ -156,6 +173,7 @@ def plan(
     """求职对话：职业规划师主理（一站式画像/规划/匹配/简历/薪资），流式输出。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
@@ -166,6 +184,7 @@ def plan(
             res = rt.run_planner_chat_stream(
                 req.thread_id, current_user["id"], req.intent, cb,
                 **({"mentions": mentions} if mentions else {}),
+                **({"attachments": attachment_blocks} if attachment_blocks else {}),
                 cancel_check=cancel.check,
                 tools=req.tools,
             )

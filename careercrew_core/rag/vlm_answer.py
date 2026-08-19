@@ -1,7 +1,7 @@
 """VLM 看图回答（多模态 RAG 生成层）。
 
-检索出的 top_k 页面/对象图（base64 data URI）+ 文本块 -> Qwen3-VL-8B-Instruct 生成。
-API 失败回退文本生成（DeepSeek + 文本块），sources 始终返回。
+检索出的 top_k 页面/对象图（base64 data URI）+ 文本块 -> settings.vlm.model（zai-org/GLM-4.5V）生成。
+API 失败回退文本生成（主 LLM + 文本块），sources 始终返回。
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def vlm_answer(
     except Exception:
         pass
 
-    # 回退：文本生成（DeepSeek + 文本块）
+    # 回退：文本生成（主 LLM + 文本块）
     fallback_prompt = (
         f"问题：{question}\n\n检索到的文档片段（多模态回答不可用，仅文本）：\n{text_blocks}\n\n请基于片段回答。"
     )

@@ -170,7 +170,7 @@ class CareerCrewState(TypedDict):
   - checkpointer 从 `langgraph.checkpoint.sqlite` 导入（`SqliteSaver`），`StateGraph.compile(checkpointer=...)`。
   - agent 内核用 `langchain.agents.create_agent`（LangChain 1.x 平台版）+ 自定义 `AgentMiddleware`，不再手写 while 循环（演进见 §3.2 / ADR-1）。
 - **版本锁定原则**：MVP 阶段 pyproject 用兼容范围安装，但**以本表实测版本为准写代码**；升级/新增依赖前先验证 API 兼容，避免按旧文档 API 落码。
-- **LLM / Rerank / VLM 模型名已实测可用**（2026-08-01，硅基流动 `/v1/models`）：`deepseek-ai/DeepSeek-V4-Flash`、`BAAI/bge-m3`、`BAAI/bge-reranker-v2-m3`、`Qwen/Qwen3-VL-8B-Instruct`、`Qwen/Qwen3-VL-Reranker-8B` 均存在。
+- **LLM / Rerank / VLM 模型名已实测可用**（2026-08-01，硅基流动 `/v1/models`）：`zai-org/GLM-4.5V`（视觉+工具调用）、`BAAI/bge-m3`、`BAAI/bge-reranker-v2-m3`、`zai-org/GLM-4.5V`、`Qwen/Qwen3-VL-Reranker-8B` 均存在。
 
 ---
 
@@ -1175,7 +1175,7 @@ agent 调 rag_query 工具
 # LLM 配置（硅基流动，OpenAI 兼容；init_chat_model 适配）
 llm:
   provider: openai               # 走 init_chat_model 的 openai provider（OpenAI 兼容）
-  model: "deepseek-ai/DeepSeek-V4-Flash"
+  model: "zai-org/GLM-4.5V"
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
   temperature: 0.3               # 默认；按 agent 场景调（见 §3.15.2）
@@ -1235,7 +1235,7 @@ rag:
 
 # VLM 配置（硅基流动，多模态生成 + 视觉精排）
 vlm:
-  model: Qwen/Qwen3-VL-8B-Instruct
+  model: zai-org/GLM-4.5V
   rerank_model: Qwen/Qwen3-VL-Reranker-8B
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"

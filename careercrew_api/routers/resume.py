@@ -29,6 +29,8 @@ from fastapi.responses import StreamingResponse
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.mentions import MentionRejected
+from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
 from careercrew_api.sse import (
     CancellationEvent,
@@ -52,6 +54,30 @@ _RESUME_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 # 进程内上传任务表（单进程部署；多 worker 需换外部存储/队列）
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+
+
+def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dict]:
+    """T3.4 §15.2：mentions 服务端二次校验；拒绝越权引用 → 422。"""
+    if not mentions:
+        return []
+    try:
+        return rt.resolve_mentions(user_id, [m.model_dump() for m in mentions])
+    except MentionRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+def _resolve_attachments(rt: CareerCrewRuntime, user_id: str, refs) -> list[dict]:
+    """T3.2：附件服务端校验所有权 + 读取内容（文本块）；整体拒绝 → 422。"""
+    if not refs:
+        return []
+    try:
+        return rt.resolve_attachment_blocks(user_id, [r.model_dump() for r in refs])
+    except AttachmentRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 def _resume_path(user_id: str, thread_id: str) -> Path:
@@ -364,6 +390,9 @@ def chat(
     - 每轮 done 后落库 user/agent transcript，刷新可恢复
     """
 
+    mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
+
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": ""}
         cancel = CancellationEvent()
@@ -371,10 +400,16 @@ def chat(
         def run_fn(cb):
             nonlocal result
             from langchain_core.messages import HumanMessage
+            from careercrew_api.attachment_context import build_user_message
 
             user_id = current_user["id"]
             episodic = rt._get_episodic(req.thread_id, user_id)
-            agent = rt.new_resume_advisor(cb, episodic=episodic)
+            agent = rt.new_resume_advisor(
+                cb, episodic=episodic,
+                allowed=rt.compute_effective_tools("resume", req.tools),
+                hitl_requires=rt._hitl_requires(),
+                forced_doc_ids=rt._mention_knowledge_ids(mentions),
+            )
             if req.resume_text.strip():
                 _save_resume(user_id, req.thread_id, req.resume_text)
             resume = req.resume_text.strip() or _load_resume(user_id, req.thread_id)
@@ -395,7 +430,9 @@ def chat(
             state = {
                 "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
                 "user_intent": current,
-                "messages": [HumanMessage(content=current)],
+                "messages": [HumanMessage(content=build_user_message(
+                    current, attachment_blocks + rt._mention_blocks(user_id, mentions)
+                ))],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
                 "pending_user_entry_id": pending_id,
             }

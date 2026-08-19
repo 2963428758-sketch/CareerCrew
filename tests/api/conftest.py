@@ -104,6 +104,52 @@ class FakeRuntime:
         hitl = getattr(tools, "hitl", None) if tools is not None else None
         return set(getattr(hitl, "requires_confirmation", None) or [])
 
+    def resolve_attachment_blocks(self, user_id: str, refs: list[dict]) -> list[dict]:
+        """T3.2：FakeRuntime 附件块（校验 ownership；内容为占位文本）。"""
+        from careercrew_api.attachment_context import AttachmentRejected
+
+        blocks: list[dict] = []
+        for ref in refs or []:
+            aid = str(ref.get("id") or "")
+            try:
+                row = self.attachment_store.get(user_id, aid)
+            except Exception as e:
+                raise AttachmentRejected(f"附件不存在或无权访问：{aid}") from e
+            filename = row.get("original_filename") or aid
+            ext = "." + str(filename).rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if ext in (".png", ".jpg", ".jpeg"):
+                kind = "image"
+            elif ext in (".md", ".markdown", ".txt"):
+                kind = "text"
+            else:
+                kind = "document"
+            blocks.append({
+                "id": aid, "filename": filename, "kind": kind,
+                "content": f"（附件内容 {filename}）",
+            })
+        return blocks
+
+    def _mention_blocks(self, user_id: str, mentions: list[dict] | None) -> list[dict]:
+        """T3.2：FakeRuntime 的 resume mention 文本块（与真实 runtime 同构）。"""
+        blocks: list[dict] = []
+        for m in mentions or []:
+            if m.get("type") != "resume":
+                continue
+            text = f"（简历 {m.get('name') or m.get('id')}）"
+            blocks.append({
+                "id": str(m.get("id") or ""),
+                "filename": str(m.get("name") or "简历"),
+                "kind": "text",
+                "content": text,
+            })
+        return blocks
+
+    def _mention_knowledge_ids(self, mentions: list[dict] | None) -> list[str]:
+        return [
+            str(m.get("id") or "") for m in (mentions or [])
+            if m.get("type") == "knowledge_document" and m.get("id")
+        ]
+
     def _server_allowlist(self, module: str) -> list:
         from careercrew_core.tools.capabilities import MODULE_TOOLS
 
@@ -212,21 +258,29 @@ class FakeRuntime:
     def run_match_stream(self, thread_id: str, user_id: str, intent: str,
                          cb: Callable[[str], None] | None = None,
                          mentions: list[dict] | None = None,
+                         attachments: list[dict] | None = None,
                          cancel_check: Callable[[], None] | None = None,
                          tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
 
         self.last_call = {
             "method": "run_match_stream", "thread_id": thread_id,
-            "user_id": user_id, "intent": intent, "mentions": mentions, "tools": tools,
+            "user_id": user_id, "intent": intent, "mentions": mentions,
+            "attachments": attachments, "tools": tools,
         }
         if cancel_check:
             cancel_check()
         effective = self.compute_effective_tools("matcher", tools)
+        meta = None
+        if mentions or attachments:
+            meta = {}
+            if mentions:
+                meta["mentions"] = mentions
+            if attachments:
+                meta["attachments"] = attachments
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="matcher", agent_id="job_matcher", user_text=intent,
-            user_metadata={"mentions": mentions} if mentions else None,
-            effective_tools=effective,
+            user_metadata=meta, effective_tools=effective,
         )
         if cb:
             if self.stream_preamble:
@@ -238,6 +292,7 @@ class FakeRuntime:
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
                           mentions: list[dict] | None = None,
+                          attachments: list[dict] | None = None,
                           cancel_check: Callable[[], None] | None = None,
                           tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
@@ -247,6 +302,8 @@ class FakeRuntime:
         meta: dict = {"jd_text": jd_text[:5000]}
         if mentions:
             meta["mentions"] = mentions
+        if attachments:
+            meta["attachments"] = attachments
         effective = self.compute_effective_tools("resume", tools)
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="resume", agent_id="resume_advisor",
@@ -263,6 +320,7 @@ class FakeRuntime:
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
                                 mentions: list[dict] | None = None,
+                                attachments: list[dict] | None = None,
                                 cancel_check: Callable[[], None] | None = None,
                                 tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
@@ -270,10 +328,16 @@ class FakeRuntime:
         if cancel_check:
             cancel_check()
         effective = self.compute_effective_tools("chat", tools)
+        meta = None
+        if mentions or attachments:
+            meta = {}
+            if mentions:
+                meta["mentions"] = mentions
+            if attachments:
+                meta["attachments"] = attachments
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="chat", agent_id="career_planner", user_text=intent,
-            user_metadata={"mentions": mentions} if mentions else None,
-            effective_tools=effective,
+            user_metadata=meta, effective_tools=effective,
         )
         if cb:
             if self.stream_preamble:
@@ -287,6 +351,7 @@ class FakeRuntime:
                                  category: str = "",
                                  scope: str = "all",
                                  mentions: list[dict] | None = None,
+                                 attachments: list[dict] | None = None,
                                  cancel_check: Callable[[], None] | None = None,
                                  tools: list[str] | None = None):
         from careercrew_api.chat_lifecycle import StreamResult
@@ -299,6 +364,8 @@ class FakeRuntime:
         meta: dict = {"sources": sources}
         if mentions:
             meta["mentions"] = mentions
+        if attachments:
+            meta["attachments"] = attachments
         effective = self.compute_effective_tools("knowledge", tools)
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",
@@ -456,17 +523,10 @@ class FakeRuntime:
         )
         return f"u-{thread_id}"
 
-    def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None):
-        class FakeAgent:
-            def __init__(self_inner):
-                self_inner.last_result = type("R", (), {"content": self.match_output})()
-
-            def run(self_inner, state):
-                if cb:
-                    cb(self.match_output)
-        return FakeAgent()
-
-    def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None):
+    def new_resume_advisor(self, cb: Callable[[str], None] | None = None, episodic=None,
+                           allowed: list[str] | None = None,
+                           hitl_requires: set[str] | None = None,
+                           forced_doc_ids: list[str] | None = None):
         class FakeAgent:
             def __init__(self_inner):
                 self_inner.last_result = type("R", (), {"content": self.resume_output})()
@@ -476,9 +536,23 @@ class FakeRuntime:
                     cb(self.resume_output)
         return FakeAgent()
 
+    def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None,
+                        allowed: list[str] | None = None,
+                        hitl_requires: set[str] | None = None,
+                        forced_doc_ids: list[str] | None = None):
+        class FakeAgent:
+            def __init__(self_inner):
+                self_inner.last_result = type("R", (), {"content": self.match_output})()
+
+            def run(self_inner, state):
+                if cb:
+                    cb(self.match_output)
+        return FakeAgent()
+
     def new_interviewer(self, cb: Callable[[str], None] | None = None, episodic=None,
                         prompt_path=None, allowed: list[str] | None = None,
-                        hitl_requires: set[str] | None = None):
+                        hitl_requires: set[str] | None = None,
+                        forced_doc_ids: list[str] | None = None):
         class FakeAgent:
             def __init__(self_inner):
                 self_inner.last_result = type("R", (), {

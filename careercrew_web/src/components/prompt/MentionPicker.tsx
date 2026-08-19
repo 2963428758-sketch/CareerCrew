@@ -11,9 +11,16 @@ import {
 } from "@/lib/contextResources"
 
 export interface MentionPickerProps {
-  /** 已选 mention 变化回调（页面接线把 mention 引用带进请求体）。 */
+  /** 已选 mention 变化回调（页面据此把 mention 注入上下文消息） */
   onMentionsChange?: (mentions: Mention[]) => void
   disabled?: boolean
+  /** 嵌入模式：隐藏自带触发按钮，面板常显（由外部工具栏控制展开/收起） */
+  embedded?: boolean
+  /**
+   * 嵌入模式下是否展开面板（默认 true）。面板收起时组件保持挂载、
+   * 已选 chips 继续显示（切换工具栏面板不丢失选择）。
+   */
+  expanded?: boolean
 }
 
 /**
@@ -23,7 +30,7 @@ export interface MentionPickerProps {
  *
  * 仅列出服务端已过 visibility + ownership 过滤的资源；提交时后端会再校验。
  */
-export function MentionPicker({ onMentionsChange, disabled = false }: MentionPickerProps) {
+export function MentionPicker({ onMentionsChange, disabled = false, embedded = false, expanded = true }: MentionPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [items, setItems] = useState<ContextResource[]>([])
@@ -60,6 +67,12 @@ export function MentionPicker({ onMentionsChange, disabled = false }: MentionPic
   // 防抖：输入变化后 250ms 才搜索
   const debouncedSearch = useRef(debounce((q: string) => { void runSearch(q) }, 250)).current
 
+  // 嵌入模式：挂载即加载资源列表
+  useEffect(() => {
+    if (embedded) void runSearch("")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded])
+
   const handleQuery = (q: string) => {
     setQuery(q)
     debouncedSearch(q)
@@ -80,46 +93,62 @@ export function MentionPicker({ onMentionsChange, disabled = false }: MentionPic
     emit(selected.filter((x) => !(x.type === m.type && x.id === m.id)))
   }
 
-  // 点击外部关闭
+  // 点击外部关闭（嵌入模式由外部工具栏控制开合，不监听）
   useEffect(() => {
+    if (embedded) return
     const onDoc = (e: MouseEvent) => {
       if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
     }
     document.addEventListener("mousedown", onDoc)
     return () => document.removeEventListener("mousedown", onDoc)
-  }, [])
+  }, [embedded])
+
+  const isOpen = embedded ? expanded : open
 
   return (
     <div className="relative" ref={boxRef}>
-      <div className="flex items-center gap-1.5">
-        <Tooltip label={disabled ? undefined : "引用资料（@ 知识文档 / 简历）"}>
-          <button
-            type="button"
-            disabled={disabled}
-            aria-label="引用资料"
-            onClick={() => {
-              setOpen((o) => !o)
-              if (!open) inputRef.current?.focus()
-            }}
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50"
-          >
-            <Search className="h-[15px] w-[15px]" strokeWidth={1.8} />
-          </button>
-        </Tooltip>
-        {error && (
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            className="inline-flex max-w-[calc(100%-40px)] items-center gap-1 truncate text-[11px] text-destructive"
-          >
-            <X className="h-3 w-3 shrink-0" />
-            <span className="truncate">{error}</span>
-          </button>
-        )}
-      </div>
+      {!embedded && (
+        <div className="flex items-center gap-1.5">
+          <Tooltip label={disabled ? undefined : "引用资料（@ 知识文档 / 简历）"}>
+            <button
+              type="button"
+              disabled={disabled}
+              aria-label="引用资料"
+              onClick={() => {
+                setOpen((o) => !o)
+                if (!open) inputRef.current?.focus()
+              }}
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-ink-soft transition-colors duration-100 hover:bg-[var(--hover)] hover:text-ink disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Search className="h-[15px] w-[15px]" strokeWidth={1.8} />
+            </button>
+          </Tooltip>
+          {error && (
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="inline-flex max-w-[calc(100%-40px)] items-center gap-1 truncate text-[11px] text-destructive"
+            >
+              <X className="h-3 w-3 shrink-0" />
+              <span className="truncate">{error}</span>
+            </button>
+          )}
+        </div>
+      )}
 
-      {open && (
-        <div className="absolute bottom-[30px] left-0 z-30 w-[280px] rounded-[10px] border border-[var(--border-soft)] bg-surface-2 p-1.5 shadow-prompt">
+      {isOpen && (
+        <div
+          className={cn(
+            "z-30 rounded-[10px] border border-[var(--border-soft)] bg-surface-2 p-1.5 shadow-prompt",
+            embedded ? "w-full" : "absolute bottom-[30px] left-0 w-[280px]"
+          )}
+        >
+          {embedded && error && (
+            <div className="flex items-center gap-1 px-1 pb-1 text-[11px] text-destructive">
+              <X className="h-3 w-3 shrink-0" />
+              <span className="truncate">{error}</span>
+            </div>
+          )}
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint" />
             <input

@@ -121,10 +121,10 @@ def build_json(conversation: dict, messages: list[dict], runs: list[dict]) -> di
         "runs": [_clean_run(r) for r in runs],
     }
     # 序列化后做敏感字段红线校验（覆盖嵌套内容）
-    _assert_no_sensitive(json.dumps(payload, ensure_ascii=False))
+    _assert_no_sensitive(json.dumps(payload, ensure_ascii=False, default=str))
     return payload
 
 
 def build_json_text(conversation: dict, messages: list[dict], runs: list[dict]) -> str:
     """build_json 的文本序列化版本（供路由直接返回）。"""
-    return json.dumps(build_json(conversation, messages, runs), ensure_ascii=False, indent=2)
+    return json.dumps(build_json(conversation, messages, runs), ensure_ascii=False, indent=2, default=str)

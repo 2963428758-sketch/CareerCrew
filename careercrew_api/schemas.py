@@ -120,10 +120,21 @@ class Mention(BaseModel):
     id: str = Field(min_length=1, max_length=255)
 
 
+class AttachmentRef(BaseModel):
+    """对话附带的上传文件（id 为上传时分配的 uuid，不可信，服务端校验所有权）。
+
+    每个端点至少容忍一个无效 ref（返回错误块）与至多一个整体拒绝（AttachmentRejected→422）。
+    """
+
+    id: str = Field(min_length=1, max_length=255)
+
+
 class MatchRequest(BaseModel):
     intent: str
     thread_id: str = "m1"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
     # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
     tools: list[str] | None = None
 
@@ -132,6 +143,8 @@ class ResumeRequest(BaseModel):
     jd_text: str
     thread_id: str = "m1"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
     # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
     tools: list[str] | None = None
 
@@ -143,6 +156,8 @@ class QuestionRequest(BaseModel):
     topic: str = ""
     thread_id: str = "interview"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
     # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
     tools: list[str] | None = None
 
@@ -157,6 +172,8 @@ class InterviewChatRequest(BaseModel):
     messages: list[InterviewChatMessage] = []
     thread_id: str = "interview"
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
     # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
     tools: list[str] | None = None
 
@@ -198,6 +215,11 @@ class ResumeChatRequest(BaseModel):
     resume_text: str = ""
     jd: str = ""
     thread_id: str = "m1"
+    mentions: list[Mention] = Field(default_factory=list)
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
+    # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
+    tools: list[str] | None = None
 
 
 # ── Consult（会诊）──
@@ -212,6 +234,8 @@ class ConsultRequest(BaseModel):
     # skills / target_direction / city / salary / target_companies），后端并入会诊上下文。
     profile: dict[str, str] = Field(default_factory=dict)
     mentions: list[Mention] = Field(default_factory=list)
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
     # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
     tools: list[str] | None = None
 
@@ -225,5 +249,7 @@ class KnowledgeAskRequest(BaseModel):
     category: str = ""  # resume / knowledge / interview，空串=全部
     scope: str = "all"  # all（公共+本人私有）| public | private
     mentions: list[Mention] = Field(default_factory=list)  # 强制上下文（§15）
+    # T3.2：本轮附带的文件引用；服务端读取内容注入 LLM 上下文
+    attachments: list[AttachmentRef] = Field(default_factory=list)
     # T3.5：本轮允许 Agent 使用的工具 id 列表（None/空=默认全部 server allowlist）
     tools: list[str] | None = None

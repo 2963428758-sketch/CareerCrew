@@ -16,6 +16,7 @@ from careercrew_api.runtime import (
     _observability_from_result,
 )
 from careercrew_api.mentions import MentionRejected
+from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.schemas import (
     InterviewChatMessage,
     InterviewChatRequest,
@@ -54,6 +55,18 @@ def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dic
         raise HTTPException(status_code=503, detail=str(e)) from e
 
 
+def _resolve_attachments(rt: CareerCrewRuntime, user_id: str, refs) -> list[dict]:
+    """T3.2：附件服务端校验所有权 + 读取内容（文本块）；整体拒绝 → 422。"""
+    if not refs:
+        return []
+    try:
+        return rt.resolve_attachment_blocks(user_id, [r.model_dump() for r in refs])
+    except AttachmentRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
 def _interview_obs(lr) -> dict:
     """从 agent.last_result 抽观测字段，供 _finish_chat_turn 落库（含 rag_query 检索行）。"""
     from careercrew_api.runtime import _rag_query_retrievals
@@ -87,6 +100,7 @@ def questions(
     """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
     effective = rt.compute_effective_tools("interview", req.tools)
     hitl = rt._hitl_requires()
 
@@ -97,16 +111,25 @@ def questions(
         def run_fn(cb):
             nonlocal result
             from langchain_core.messages import HumanMessage
+            from careercrew_api.attachment_context import build_user_message
 
             user_id = current_user["id"]
             episodic = rt._get_episodic(req.thread_id, user_id)
             agent = rt.new_interviewer(
                 cb, episodic=episodic, allowed=effective, hitl_requires=hitl,
+                forced_doc_ids=rt._mention_knowledge_ids(mentions),
             )
             prompt = req.topic or "请出一组有梯度的面试题（基础、进阶、场景题各一道）"
+            user_meta: dict | None = None
+            if mentions or attachment_blocks:
+                user_meta = {}
+                if mentions:
+                    user_meta["mentions"] = mentions
+                if attachment_blocks:
+                    user_meta["attachments"] = attachment_blocks
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="interview", agent_id="interviewer",
-                user_text=prompt, user_metadata={"mentions": mentions} if mentions else None,
+                user_text=prompt, user_metadata=user_meta,
                 effective_tools=effective,
             )
             try:
@@ -118,7 +141,9 @@ def questions(
             state = {
                 "thread_id": req.thread_id, "user_id": user_id, "stage": "questions",
                 "user_intent": prompt,
-                "messages": [HumanMessage(content=prompt)],
+                "messages": [HumanMessage(content=build_user_message(
+                    prompt, attachment_blocks + rt._mention_blocks(user_id, mentions)
+                ))],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
                 "pending_user_entry_id": pending_id,
             }
@@ -183,6 +208,7 @@ def chat(
     """对话式模拟面试：一轮一问；用户回答后评分并追问，done 事件携带 score/feedback。"""
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
+    attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
     effective = rt.compute_effective_tools("interview", req.tools)
     hitl = rt._hitl_requires()
 
@@ -193,22 +219,31 @@ def chat(
         def run_fn(cb):
             nonlocal result
             from langchain_core.messages import HumanMessage
+            from careercrew_api.attachment_context import build_user_message
 
             user_id = current_user["id"]
             episodic = rt._get_episodic(req.thread_id, user_id)
             agent = rt.new_interviewer(
                 cb, episodic=episodic, prompt_path=_CHAT_PROMPT_PATH,
                 allowed=effective, hitl_requires=hitl,
+                forced_doc_ids=rt._mention_knowledge_ids(mentions),
             )
             # 历史由 BaseAgent.history_loader 从 episodic 恢复，这里只放当前输入
             last_user = next(
                 (m.content for m in reversed(req.messages) if m.role == "user"),
                 "",
             )
+            user_meta: dict | None = None
+            if mentions or attachment_blocks:
+                user_meta = {}
+                if mentions:
+                    user_meta["mentions"] = mentions
+                if attachment_blocks:
+                    user_meta["attachments"] = attachment_blocks
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="interview", agent_id="interviewer_chat",
                 user_text=last_user or (req.topic or "请开始模拟面试"),
-                user_metadata={"mentions": mentions} if mentions else None,
+                user_metadata=user_meta,
                 effective_tools=effective,
             )
             try:
@@ -225,7 +260,9 @@ def chat(
             state = {
                 "thread_id": req.thread_id, "user_id": user_id, "stage": "questions",
                 "user_intent": "chat",
-                "messages": [HumanMessage(content=current)],
+                "messages": [HumanMessage(content=build_user_message(
+                    current, attachment_blocks + rt._mention_blocks(user_id, mentions)
+                ))],
                 "pending_action": None, "agent_outputs": {}, "target_companies": [],
                 "pending_user_entry_id": pending_id,
             }

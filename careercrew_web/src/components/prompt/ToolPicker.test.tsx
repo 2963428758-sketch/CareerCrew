@@ -83,4 +83,23 @@ describe("ToolPicker", () => {
     fireEvent.click(screen.getByText(/重试/))
     await screen.findByTestId("tool-option")
   })
+
+  it("嵌入模式：expanded=false 收起面板但 chips 保留", async () => {
+    fetchAgentCapabilities.mockResolvedValue([cap()])
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <ToolPicker embedded expanded onToolsChange={onChange} />
+    )
+
+    fireEvent.click(await screen.findByTestId("tool-option"))
+    await screen.findByTestId("tool-chip")
+
+    rerender(<ToolPicker embedded expanded={false} onToolsChange={onChange} />)
+    expect(screen.queryByTestId("tool-results")).toBeNull()
+    expect(screen.getByTestId("tool-chip").textContent).toContain("Knowledge Search")
+
+    rerender(<ToolPicker embedded expanded onToolsChange={onChange} />)
+    expect(screen.getByTestId("tool-option")).toBeDefined()
+    expect(screen.getByTestId("tool-chip").textContent).toContain("Knowledge Search")
+  })
 })

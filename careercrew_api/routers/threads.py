@@ -236,14 +236,30 @@ def delete_conversation(thread_id: str, current_user: CurrentUser,
 @router.post("/threads/{thread_id}/clear")
 def clear_conversation(thread_id: str, current_user: CurrentUser,
                        rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
-    """清空会话消息（§13.4）：保留 conversation/title/retrieval_scope，删除全部消息与 turn。"""
+    """清空会话消息（§13.4）：保留 conversation/title/retrieval_scope，删除全部消息与 turn。
+
+    同时删除该 thread 的 legacy episodic 情景事件（episodic_events）——否则
+    restoreHistory 在 messages 端点为空时回退记忆，会把清掉的旧消息捞回来
+    （「清空后切走再切回，旧消息复活」）。episodic 清理失败不阻断清空主流程。
+    """
     user_id = current_user["id"]
     rt._ensure_heavy()
     try:
         removed = rt.conversation_store.clear_conversation(thread_id, user_id)
     except OwnershipError as e:
         raise HTTPException(status_code=404, detail="会话不存在或已被删除") from e
-    return {"cleared": True, "thread_id": thread_id, "removed_turns": removed}
+    episodic_removed = 0
+    try:
+        episodic_removed = rt.memory_db.delete_episodic(user_id, thread_id=thread_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "clear_conversation: episodic cleanup failed for %s", thread_id
+        )
+    return {
+        "cleared": True, "thread_id": thread_id, "removed_turns": removed,
+        "removed_episodic": episodic_removed,
+    }
 
 
 @router.get("/threads/{thread_id}/export")

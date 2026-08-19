@@ -80,6 +80,8 @@ def test_menu_crud_and_export(tenant_api):
     assert runtime.conversation_store.list_messages("t-menu-1", _ids["alice"]) == []
     conv = runtime.conversation_store.get_conversation("t-menu-1", _ids["alice"])
     assert conv is not None and conv["title"] == "改名后"
+    # 清空同时清除 legacy episodic 情景事件（防止 restoreHistory 回退记忆复活旧消息）
+    assert runtime.memory_db.list_episodic(_ids["alice"], thread_id="t-menu-1") == []
 
     # ── delete ──
     d = client.delete("/api/threads/t-menu-1", headers=alice)

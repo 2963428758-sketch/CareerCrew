@@ -18,6 +18,7 @@ from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.mentions import MentionRejected
+from careercrew_api.attachment_context import AttachmentRejected, build_user_message
 from careercrew_api.schemas import ConsultRequest
 from careercrew_api.sse import (
     STREAM_IDLE_TIMEOUT_SECONDS,
@@ -135,6 +136,16 @@ def consult(
         except RuntimeInitError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
 
+    # T3.2：附件服务端校验所有权 + 读取内容（文本块）；整体拒绝 → 422。
+    try:
+        attachment_blocks = rt.resolve_attachment_blocks(
+            current_user["id"], [a.model_dump() for a in req.attachments]
+        )
+    except AttachmentRejected as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeInitError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
     def gen() -> Generator[str, None, None]:
         q: queue.Queue = queue.Queue(maxsize=512)
         err: dict[str, BaseException] = {}
@@ -166,7 +177,8 @@ def consult(
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="consult",
                 agent_id="consult_orchestrator", user_text=req.question,
-                user_metadata={"mentions": mentions} if mentions else None,
+                user_metadata={"mentions": mentions, "attachments": attachment_blocks}
+                if (mentions or attachment_blocks) else None,
                 effective_tools=effective,
             )
             try:
@@ -220,6 +232,11 @@ def consult(
                     )
                 else:
                     context = question
+
+                # T3.2：附件内容 + 引用简历文本并入会诊上下文（展示层仍只显示原 question）
+                context = build_user_message(
+                    context, attachment_blocks + rt._mention_blocks(user_id, mentions)
+                )
 
                 initial_state = {
                     "thread_id": req.thread_id,

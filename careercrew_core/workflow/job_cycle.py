@@ -95,21 +95,26 @@ class JobCycle:
             "pending_user_entry_id": getattr(self, "pending_user_entry_id", None),
         }
 
-    def run_match(self, intent: str) -> str:
-        """阶段 match：JobMatcher 找匹配岗位，返回最终答案。"""
+    def run_match(self, intent: str, composed: str | None = None) -> str:
+        """阶段 match：JobMatcher 找匹配岗位，返回最终答案。
+
+        composed：可选的消息文本覆盖（附加上传文件/引用内容后的完整输入）；
+        intent 仍用于画像抽取与记忆记录（保持展示层原话）。
+        """
         self._sync_profile_from_intent(intent)  # 用户最新消息优先, 历史画像不再带偏方向
-        state = self._state("match", intent)
+        text = composed or intent
+        state = self._state("match", text)
         self.job_matcher.run(state)
         out = (self.job_matcher.last_result.content or "").strip()
         if not out:  # LLM 偶发空返回，兜底
             out = "（本轮未产出匹配结果，可补充技能/方向/城市后重试）"
-        self._messages.append(HumanMessage(content=intent))
+        self._messages.append(HumanMessage(content=text))
         self._messages.append(AIMessage(content=out, name="job_matcher"))
         return out
 
-    def run_resume(self, jd_text: str) -> str:
+    def run_resume(self, jd_text: str, composed: str | None = None) -> str:
         """阶段 resume：ResumeAdvisor 按 JD 定制简历（能看到此前对话/画像）。"""
-        text = f"按这个 JD 定制简历：{jd_text}"
+        text = composed or f"按这个 JD 定制简历：{jd_text}"
         state = self._state("resume", text)
         self.resume_advisor.run(state)
         out = (self.resume_advisor.last_result.content or "").strip()

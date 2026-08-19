@@ -33,6 +33,7 @@ _TRUNC_SUFFIX = "…[已截断]"
 # 内置价格表：模型名 -> (每 1k prompt token 元, 每 1k completion token 元)
 # 未知模型返回 null（前端显示 "—"）。
 MODEL_PRICING: dict[str, tuple[float, float] | None] = {
+    "zai-org/GLM-4.5V": (0.001, 0.006),  # 硅基流动：¥1/M 输入、¥6/M 输出
     "deepseek-ai/DeepSeek-V4-Flash": None,  # 未配置单价，后续按需补
 }
 

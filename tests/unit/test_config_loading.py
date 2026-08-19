@@ -32,14 +32,14 @@ def yaml_safe_dump(data: dict) -> str:
 def test_load_settings_ok(tmp_path: Path, valid_config_data: dict) -> None:
     settings = load_settings(_write_config(tmp_path, valid_config_data))
     assert isinstance(settings, Settings)
-    assert settings.llm.model == "deepseek-ai/DeepSeek-V4-Flash"
+    assert settings.llm.model == "zai-org/GLM-4.5V"
     assert settings.vector_store.backend == "qdrant"
     assert settings.vector_store.collections["knowledge"] == "careercrew_mm"
     assert settings.rag.retrieval.mode == "hybrid"
     assert settings.rag.chunking.contextual is True
     assert settings.rag.loaders.backend == "mineru"
     assert settings.rag.loaders.provider == "local"  # 单测 fixture 走本地路由，不依赖云端 key
-    assert settings.vlm.model == "Qwen/Qwen3-VL-8B-Instruct"
+    assert settings.vlm.model == "zai-org/GLM-4.5V"
     assert settings.tools.hitl.requires_confirmation == ["submit_application", "accept_offer"]
 
 

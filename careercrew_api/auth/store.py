@@ -141,6 +141,7 @@ class PostgresAccountStore(AccountStore):
         self._dsn = dsn
         self._connected = False
         self._ensure_lock = threading.Lock()
+        self._connect_timeout = 5
 
     def _ensure(self) -> None:
         if self._connected:
@@ -151,7 +152,9 @@ class PostgresAccountStore(AccountStore):
             import psycopg
             import psycopg.rows
 
-            with psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row) as conn:
+            with psycopg.connect(
+                self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
+            ) as conn:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS auth_accounts ("
                     "id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
@@ -211,7 +214,9 @@ class PostgresAccountStore(AccountStore):
         import psycopg
         import psycopg.rows
 
-        return psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row)
+        return psycopg.connect(
+            self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
+        )
 
     def _as_text(self, row: dict | None) -> dict[str, Any] | None:
         if row is None:

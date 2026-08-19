@@ -15,7 +15,7 @@ def valid_config() -> dict:
     return {
         "llm": {
             "provider": "openai",
-            "model": "deepseek-ai/DeepSeek-V4-Flash",
+            "model": "zai-org/GLM-4.5V",
             "base_url": "https://api.siliconflow.cn/v1",
             "api_key": "sk-test-literal",
             "temperature": 0.3,
@@ -71,7 +71,7 @@ def valid_config() -> dict:
             },
         },
         "vlm": {
-            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "model": "zai-org/GLM-4.5V",
             "rerank_model": "Qwen/Qwen3-VL-Reranker-8B",
             "base_url": "https://api.siliconflow.cn/v1",
             "api_key": "sk-test-literal",

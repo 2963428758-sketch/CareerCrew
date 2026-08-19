@@ -1,7 +1,7 @@
-"""read_image 工具：用视觉模型（配置 vlm.model，默认 Qwen3-VL 系列）读取图片内容（简历截图/作品集）。
+"""read_image 工具：用视觉模型（配置 vlm.model，默认 GLM-4.5V）读取图片内容（简历截图/作品集）。
 
-关键设计：视觉模型（Qwen3-VL/GLM-4.5V）不兼容 function calling，故视觉做成工具供
-agent 按需调（ReAct 主 LLM 保持 tool-calling 文本模型）。vision_caller 注入便于测试。
+关键设计：vlm.model（GLM-4.5V，视觉+工具调用）经工具按需调，agent 主 LLM 也可直接看图。
+vision_caller 注入便于测试。
 """
 from __future__ import annotations
 
