@@ -22,6 +22,8 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.0",
     "langgraph-checkpoint-postgres>=2.0.0",
     "psycopg[binary]>=3.1.0",
+    "psycopg-pool>=3.2",
+    "alembic>=1.13",
     "langsmith>=0.10",
     "FlagEmbedding>=1.4.0",
     "modelscope>=1.39.0",
@@ -69,4 +71,20 @@ markers = [
     "e2e: 求职闭环端到端测试",
     "slow: 慢测试（真实后端 / 大模型加载）",
     "web: Web API 测试（FastAPI + FakeRuntime，CI 默认不跑）",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["careercrew_web", "data", "logs"]
+
+[tool.ruff.lint]
+# 基线规则集：pycodestyle 错误级（不含 E501 行宽——中文注释按显示宽度计会误报，
+# 格式化交给 ruff format）+ pyflakes 真问题 + import 排序 + pyupgrade + bugbear。
+# 后续可渐进加 SIM/RUF/C4 等；mypy 渐进接入见 docs/TECH_DEBT_PLAN.md #2。
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B"]
+ignore = [
+    "B008", # FastAPI 惯用法：Depends()/Query() 作为参数默认值
+    "UP040", # PEP 695 type 别名改写涉及运行时语义（TypeAliasType），暂不启用
+    "E741", # 存量 l/I/O 单字母变量较多，渐进清理后再启用
 ]
