@@ -17,13 +17,13 @@ class FakeAgent:
 def test_job_cycle_full_flow() -> None:
     jm = FakeAgent("匹配到字节 0.95 / 腾讯 0.85")
     ra = FakeAgent("定制简历完成，匹配度 0.97")
-    cycle = JobCycle(jm, ra)
+    cycle = JobCycle(jm, ra, user_id="u1")
 
     def select_jd(match_out: str) -> str:
         assert "字节" in match_out
         return "字节跳动 大模型应用工程师 JD：Agent/RAG/Python"
 
-    out = cycle.run("我是大模型方向，有 Java 背景，帮我找工作并定制简历", select_jd=select_jd)
+    out = cycle.run("我是大模型方向，有 Java 背景，帮我找工作并定制简历", user_id="u1", select_jd=select_jd)
     assert out == "定制简历完成，匹配度 0.97"
     assert jm.run_calls == 1
     assert ra.run_calls == 1
@@ -32,22 +32,22 @@ def test_job_cycle_full_flow() -> None:
 def test_job_cycle_skip_resume() -> None:
     jm = FakeAgent("匹配结果")
     ra = FakeAgent("简历")
-    cycle = JobCycle(jm, ra)
-    out = cycle.run("帮我找工作", select_jd=lambda _out: None)  # 跳过简历
+    cycle = JobCycle(jm, ra, user_id="u1")
+    out = cycle.run("帮我找工作", user_id="u1", select_jd=lambda _out: None)  # 跳过简历
     assert out == "匹配结果"
     assert ra.run_calls == 0
 
 
 def test_run_match_only() -> None:
     jm = FakeAgent("匹配结果")
-    cycle = JobCycle(jm, FakeAgent("x"))
+    cycle = JobCycle(jm, FakeAgent("x"), user_id="u1")
     assert cycle.run_match("我的方向是大模型") == "匹配结果"
     assert jm.run_calls == 1
 
 
 def test_run_resume_only() -> None:
     ra = FakeAgent("简历完成")
-    cycle = JobCycle(FakeAgent("x"), ra)
+    cycle = JobCycle(FakeAgent("x"), ra, user_id="u1")
     assert cycle.run_resume("某 JD 内容") == "简历完成"
     assert ra.run_calls == 1
 
@@ -63,7 +63,7 @@ def test_job_cycle_carries_conversation() -> None:
         def run(self, state):
             seen.append(list(state["messages"]))
 
-    cycle = JobCycle(RecAgent(), RecAgent())
+    cycle = JobCycle(RecAgent(), RecAgent(), user_id="u1")
     cycle.run_match("我要找 java 工作")
     cycle.run_resume("某 JD")
     assert len(seen) == 2

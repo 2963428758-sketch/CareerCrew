@@ -23,8 +23,8 @@ class JobCycle:
         self,
         job_matcher: JobMatcher,
         resume_advisor: ResumeAdvisor,
+        user_id: str,  # 必填：防止未来调用点漏传导致静默跨用户读写
         user_model_store=None,  # UserModelStore（画像注入 + 持久化）
-        user_id: str = "u_001",
         streaming: bool = False,  # agent 输出已流式打出, 不重复完整打印
         thread_id: str = "m1",  # 情景记忆/追踪元数据用（API 按会话传入，CLI 默认 m1）
         history_loader=None,  # 可选: Callable[[str, str], list]（user_id, thread_id）-> 历史消息
@@ -37,6 +37,7 @@ class JobCycle:
         self._streaming = streaming  # 流式模式: agent 内容已逐 token 打出, 不再重复打印
         self._history_loader = history_loader
         self._messages: list = []  # 跨步骤对话历史
+        self._selected_jd: str | None = None  # supervisor 图流转时由 match 节点写入
 
     def _profile_preamble(self) -> str | None:
         """从 UserModel 生成画像 preamble（有画像则不重复问）。"""
@@ -127,16 +128,40 @@ class JobCycle:
     def run(
         self,
         intent: str,
+        user_id: str,
         select_jd: Callable[[str], str | None] | None = None,
-        user_id: str = "u_001",
     ) -> str:
-        """M1 闭环：匹配 -> 选 JD -> 简历。select_jd 注入 JD 选择（测试 mock），默认交互。"""
+        """M1 闭环（supervisor 图驱动）：匹配 -> 选 JD -> 简历。
+
+        编排由 LangGraph supervisor 真实驱动：agent 节点执行完回 supervisor，
+        按 state.stage 条件路由到下一个 agent 或 END（节点改 stage 推进流程，
+        对齐 DEV_SPEC 3.1.1「agent 在执行中可改 stage 推进流程或终止」；
+        "done" 不在 STAGE_AGENT_MAP 中，route 回退为 __end__）。
+        select_jd 注入 JD 选择（测试 mock；生产 HITL interrupt 的前身），
+        未选中 JD 则止步 match。
+        """
         self._user_id = user_id
-        match_out = self.run_match(intent)
 
-        jd = select_jd(match_out) if select_jd else None
-        if not jd:
-            return match_out
+        from careercrew_core.supervisor.graph import build_graph
 
-        resume_out = self.run_resume(jd)
-        return resume_out
+        def _matcher_node(state: dict) -> dict:
+            out = self.run_match(intent)
+            jd = select_jd(out) if select_jd else None
+            self._selected_jd = jd
+            return {
+                "stage": "resume" if jd else "done",
+                "agent_outputs": {"job_matcher": out},
+            }
+
+        def _resume_node(state: dict) -> dict:
+            out = self.run_resume(self._selected_jd)
+            return {"stage": "done", "agent_outputs": {"resume_advisor": out}}
+
+        graph = build_graph({
+            "job_matcher": _matcher_node,
+            "resume_advisor": _resume_node,
+        })
+        final = graph.invoke(self._state("match", intent))
+
+        outputs = final.get("agent_outputs") or {}
+        return outputs.get("resume_advisor") or outputs.get("job_matcher") or ""

@@ -59,6 +59,11 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 ### 多智能体协同 (Multi-Agent Collaboration)
 "职业顾问团队"由 5 个专职 agent 构成，由 LangGraph supervisor 按求职阶段路由调度：
 
+> **编排模式说明（诚实声明）**：生产 API 采用「端点即编排」——`/chat` 绑定 career_planner、
+> `/match` 绑定 JobCycle 等单模块流式端点；LangGraph supervisor 图用于**多阶段自动流转**
+> 场景（当前已接入：JobCycle M1 闭环 match→resume 由 `build_graph` + `route()` 驱动阶段
+> 切换，见 `workflow/job_cycle.py::run`）。单阶段对话走端点直连以换取 SSE 流式的简单可控。
+
 | Agent | 职责 | 典型工具 |
 |-------|------|---------|
 | **职位匹配官** (job_matcher) | 搜新 JD、JD-画像匹配打分、命中入库 | mcp-jobs、rag_query |
@@ -132,6 +137,7 @@ CareerCrew 是一个多智能体"职业顾问团队"系统，**长期陪跑用�
 - **状态机显式化**：求职阶段（意向 / 规划 / 匹配 / 简历 / 面试 / 谈判 / 投递 / 跟踪 / 复盘）作为状态机的显式状态，路由逻辑可解释、可测试。
 - **HITL 原生**：LangGraph 的 `interrupt` 机制天然支持"暂停等人工确认后恢复"，契合高 stakes 闸门需求。
 - **checkpointer 持久化**：thread 级短期状态（当前阶段、最近几轮对话、待确认动作）用 SQLite checkpointer 持久化，进程重启可恢复。
+- **落地现状（2026-08）**：单阶段对话走「端点即编排」（SSE 流式直连各模块端点）；supervisor 图在 `workflow/job_cycle.py::run` 真实驱动 M1 闭环的 match→resume 自动流转——agent 节点改写 state.stage，条件路由按 STAGE_AGENT_MAP 决定下一跳或 END。
 
 #### 3.1.2 supervisor 与 agent 节点分工
 - **supervisor 节点**：不直接调工具，只做"读状态 -> 判断阶段 -> 路由到 agent / 触发 HITL / 结束"。
