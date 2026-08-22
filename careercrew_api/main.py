@@ -5,11 +5,11 @@
 """
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import logging
-from pathlib import Path
 import threading
 import traceback
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -18,7 +18,21 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from careercrew_api.auth.middleware import TrustedOriginMiddleware
-from careercrew_api.routers import agent, attachments, auth, chat, consult, context, data, feedback, interview, knowledge, quality, resume, threads
+from careercrew_api.routers import (
+    agent,
+    attachments,
+    auth,
+    chat,
+    consult,
+    context,
+    data,
+    feedback,
+    interview,
+    knowledge,
+    quality,
+    resume,
+    threads,
+)
 from careercrew_api.runtime import RuntimeInitError
 from careercrew_core.state.settings import load_auth_settings
 
@@ -52,6 +66,7 @@ def _validation_detail(errors: list[dict]) -> str:
 async def lifespan(app: FastAPI):
     """过期/长期吊销刷新会话清理（守护线程，避免阻塞事件循环）。"""
     from careercrew_api.auth.dependencies import get_auth_service
+    from careercrew_api.dream import start_dream_scheduler
 
     stop = threading.Event()
     interval = max(get_auth_service().settings.cleanup_interval_hours, 1) * 3600
@@ -65,6 +80,19 @@ async def lifespan(app: FastAPI):
 
     thread = threading.Thread(target=_loop, name="refresh-session-cleanup", daemon=True)
     thread.start()
+
+    # Auto Dream：每日低峰 consolidation（memory.consolidation.dream_schedule="HH:MM" 开启，off 关闭）
+    from careercrew_api.deps import get_runtime_dep
+
+    rt = get_runtime_dep()
+    schedule = ""
+    try:
+        if getattr(rt, "settings", None) is not None:
+            schedule = rt.settings.memory.consolidation.dream_schedule
+    except Exception:
+        pass
+    start_dream_scheduler(get_runtime_dep, get_auth_service, schedule, stop)
+
     yield
     stop.set()
 

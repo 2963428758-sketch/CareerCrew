@@ -176,6 +176,8 @@ class ConsolidationSettings(BaseModel):
 
     min_interval_hours: int = 24
     min_sessions: int = 5
+    # 每日自动合并时刻（本地时区，"HH:MM"）；"off" = 不调度（仅手动/测试触发）
+    dream_schedule: str = "off"
 
 
 class MemorySettings(BaseModel):
