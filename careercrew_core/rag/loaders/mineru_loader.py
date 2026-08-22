@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from careercrew_core.rag.loaders.base_loader import ParsedDocument
 from careercrew_core.rag.loaders.mineru_common import (
     ParsingError,
     build_parsed_document,
