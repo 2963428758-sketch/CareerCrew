@@ -15,8 +15,9 @@ embedding:
   provider: bge_m3_local         # bge_m3_local | openai | siliconflow_dense
   model: BAAI/bge-m3
   model_path: F:/AI_models/BAAI--bge-m3/snapshots/master
-  use_fp16: false                # CPU 跑关闭 fp16
+  use_fp16: false                # CPU 跑关闭 fp16；device=cuda 时建议改 true
   batch_size: 12
+  device: cpu                    # cpu（默认，避免显存叠加 OOM）| cuda（有卡机型提速明显）
 
 # ── Rerank（硅基流动 rerank API） ──
 rerank:
@@ -47,7 +48,8 @@ rag:
     strategy: recursive          # recursive | semantic
     chunk_size: 800
     chunk_overlap: 100
-    contextual: true             # Contextual Chunking（LLM 加上下文前置）
+    contextual: false            # Contextual Chunking：每块一次 LLM 调用，摄取成本高，
+                                 # 默认关闭；需要更强检索召回时改为 true（知识库级粒度待做）
   loaders:
     backend: mineru              # MinerU 子进程解析（PDF/图片/docx/pptx/xlsx）
     provider: api                # api（云端精准解析，推荐，本机零推理负载）| local（本地子进程）

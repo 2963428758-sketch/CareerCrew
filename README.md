@@ -17,7 +17,7 @@
 **自建多模态 RAG**
 
 - 文档解析：md / txt 直读；PDF、图片、docx、pptx、xlsx 走 MinerU（默认云端 API 精准解析，可切本地子进程），产出页面 Markdown 与对象裁剪图
-- 分块：递归分块（800/100）+ Contextual Chunking（LLM 为每块生成文档级上下文前缀）
+- 分块：递归分块（800/100）；可选 Contextual Chunking（LLM 为每块生成文档级上下文前缀，`rag.chunking.contextual` 开启，默认关闭——每块一次 LLM 调用，摄取成本较高）
 - 检索：BGE-M3 本地三合一向量（dense + sparse + colbert）写入 Qdrant → 混合召回 → 客户端 RRF 融合 → 硅基流动 rerank 精排（多模态走 Qwen3-VL-Reranker）
 - 回答：VLM（GLM-4.5V）看页面/裁剪图作答并返回引用来源；Agentic RAG 支持 kb/web/memory 路由与多跳子查询分解
 

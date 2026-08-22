@@ -3,8 +3,9 @@
 本地 FlagEmbedding 跑（API 只给 dense，三合一只有本地能拿；ADR-3）。
 稀疏路免额外 BM25 倒排索引，与 Qdrant 原生 hybrid 直接对接。
 
-注意：FlagEmbedding 1.4 未显式传 devices 时会自动选 CUDA（use_fp16 只控制精度），
-8GB 显存机型与其他进程叠加易 OOM——这里强制 devices="cpu"（对齐 v1.2 无 GPU 依赖）。
+注意：FlagEmbedding 1.4 未显式传 devices 时会自动选 CUDA（use_fp16 只控制精度）。
+默认 devices 取 embedding.device 配置（cpu）——8GB 显存机型与其他进程叠加易 OOM；
+有独显的机型在 settings.yaml 设 device: cuda 可显著提速（fp16 建议同时开启）。
 
 FlagEmbedding 在 __init__ 内 lazy import，避免 import 本模块就加载 2GB 模型。
 sparse 的 token id 从 str 转 int（Qdrant 稀疏向量要 int key）。
@@ -25,7 +26,7 @@ class BGEM3Embedding(BaseEmbedding):
 
         cfg = settings.embedding
         self._model = BGEM3FlagModel(
-            cfg.model_path, use_fp16=cfg.use_fp16, devices="cpu"
+            cfg.model_path, use_fp16=cfg.use_fp16, devices=cfg.device
         )
         self._batch_size = cfg.batch_size
 

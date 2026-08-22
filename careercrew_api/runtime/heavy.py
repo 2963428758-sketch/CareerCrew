@@ -166,7 +166,10 @@ class HeavyInitMixin:
         )
 
         pipe = MultimodalIngestionPipeline(
-            embedding, store, contextual=False,
+            embedding, store,
+            # Contextual Chunking 遵循配置（rag.chunking.contextual，默认 false——
+            # 每块一次 LLM 调用，摄取成本高；README 口径与默认值保持一致）
+            contextual=settings.rag.chunking.contextual,
             output_dir=settings.rag.loaders.output_dir,
             loader_provider=settings.rag.loaders.provider,
             loader_api_key=settings.rag.loaders.api_key,
