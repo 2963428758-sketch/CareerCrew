@@ -131,11 +131,9 @@ def test_salary_query_source_exception(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_make_tools_registers_salary_query_for_salary_and_planner() -> None:
     from careercrew_api.runtime import CareerCrewRuntime
-
     from careercrew_core.memory.db import FakeMemoryDb
     from careercrew_core.memory.episodic import EpisodicMemory
     from careercrew_core.memory.router import MemoryRouter
-    from careercrew_core.memory.semantic import SemanticFactStore
 
     settings = SimpleNamespace(
         memory=SimpleNamespace(
@@ -149,10 +147,8 @@ def test_make_tools_registers_salary_query_for_salary_and_planner() -> None:
     )
     memory_db = FakeMemoryDb()
     rt = CareerCrewRuntime()
-    rt.episodic = None
     rt.multimodal_search = object()
     rt.memory_db = memory_db
-    rt.fact_store = SemanticFactStore(memory_db, user_id="u_001")
     rt.memory_router = MemoryRouter()
     rt.settings = settings
     rt.embedding = None

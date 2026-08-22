@@ -79,7 +79,7 @@ def _run_cases(client, settings, cases: list[dict]) -> int:
     for case in cases:
         ctype = case.get("case_type")
 
-        def _run():
+        def _run(ctype=ctype, case=case):
             if ctype == "resume_match":
                 key, score, comment = _evaluate_resume(case)
             elif ctype == "interview_qa":
@@ -101,10 +101,18 @@ def _run_cases(client, settings, cases: list[dict]) -> int:
 
 def _run_business(client, args) -> int:
     from careercrew_core.evaluation.business_eval import BusinessEvaluator
+    from careercrew_core.memory.db import FakeMemoryDb
     from careercrew_core.memory.episodic import EpisodicMemory
+    from careercrew_core.memory.types import MemoryEntry
     from careercrew_core.tracing.langsmith import list_runs
 
-    ep = EpisodicMemory(args.transcript)
+    # transcript 是 JSONL（MemoryEntry dump 行）；装入 FakeMemoryDb 后按统一后端读取
+    db = FakeMemoryDb()
+    ep = EpisodicMemory(db, user_id="transcript")
+    with open(args.transcript, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                ep.write(MemoryEntry.model_validate(json.loads(line)))
     stats = BusinessEvaluator(ep).stats()
     print(f"[business] {json.dumps(stats, ensure_ascii=False)}")
     runs = list_runs(limit=50, thread_id=args.thread_id, project=args.project)

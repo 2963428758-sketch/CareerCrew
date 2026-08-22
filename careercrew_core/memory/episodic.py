@@ -8,7 +8,7 @@ parentId 树：每条指向父节点，会话构成树；rebuild_context 从叶�
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from careercrew_core.memory.db import MemoryDb
 from careercrew_core.memory.types import MemoryEntry, TreeNode
@@ -34,7 +34,7 @@ class EpisodicMemory:
     def __init__(
         self,
         db: MemoryDb,
-        user_id: str = "u_001",
+        user_id: str,
         thread_id: str = "m1",
     ) -> None:
         self._db = db
@@ -52,7 +52,7 @@ class EpisodicMemory:
             if not entry.id:
                 entry.id = self._db.next_episodic_id(self.user_id)
             if not entry.ts:
-                entry.ts = datetime.now(timezone.utc).isoformat()
+                entry.ts = datetime.now(UTC).isoformat()
             if entry.parentId is None:
                 latest = self._db.latest_episodic(self.user_id, tid)
                 if latest:

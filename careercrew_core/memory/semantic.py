@@ -27,7 +27,7 @@ ALLOWED_FIELDS: dict[str, tuple[str, str]] = {
 class SemanticFactStore:
     """语义记忆读写（用户级，全部按 user_id 隔离）。"""
 
-    def __init__(self, db: MemoryDb, user_id: str = "u_001") -> None:
+    def __init__(self, db: MemoryDb, user_id: str) -> None:
         self._db = db
         self.user_id = user_id
 

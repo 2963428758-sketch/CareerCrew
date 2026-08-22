@@ -39,7 +39,7 @@ def test_consult_function() -> None:
             return AIMessage(content="综合：都建议投字节，共识明确")
 
     agents = _mk_agents()
-    out = consult(agents, "这个字节 offer 要不要接", FakeLLM())
+    out = consult(agents, "这个字节 offer 要不要接", FakeLLM(), user_id="u1")
     assert "salary_negotiator" in out["opinions"]
     assert "career_planner" in out["opinions"]
     assert out["synthesis"] == "综合：都建议投字节，共识明确"
@@ -88,5 +88,6 @@ def test_consult_function_fallback_for_failed_agent() -> None:
         {"salary_negotiator": FailingAgent("salary_negotiator", "error")},
         "这个 offer 要不要接",
         FakeLLM(),
+        user_id="u1",
     )
     assert out["opinions"]["salary_negotiator"] == "（该顾问本次执行出错，未能给出意见）"

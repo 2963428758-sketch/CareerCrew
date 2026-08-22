@@ -10,7 +10,6 @@ from careercrew_ai.vector_store.base_vector_store import VectorRecord
 from careercrew_ai.vector_store.qdrant_store import QdrantStore
 from careercrew_api.runtime import CareerCrewRuntime
 from careercrew_core.memory.db import FakeMemoryDb
-from careercrew_core.memory.semantic import SemanticFactStore
 from careercrew_core.memory.threads import ThreadStore
 from careercrew_core.state.checkpointer import tenant_checkpoint_config
 from careercrew_core.state.settings import Settings
@@ -34,7 +33,6 @@ def test_runtime_cycle_cache_keys_by_user_and_public_thread() -> None:
     runtime = CareerCrewRuntime()
     runtime._initialized = True
     runtime.memory_db = FakeMemoryDb()
-    runtime.fact_store = SemanticFactStore(runtime.memory_db, "u_001")
     runtime.new_job_matcher = lambda cb=None, episodic=None: object()
     runtime.new_resume_advisor = lambda cb=None, episodic=None: object()
 

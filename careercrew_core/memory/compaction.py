@@ -31,11 +31,11 @@ class Compactor:
     def __init__(
         self,
         llm,
+        user_id: str,  # 必填：防止未来调用点漏传导致静默跨用户读写
         token_threshold_ratio: float = 0.7,
         retention_tokens: int = 20000,
         max_summary_chunk_tokens: int = 4000,
         user_model_store=None,  # M2: SemanticFactStore（压缩前 flush 用）
-        user_id: str = "u_001",
     ) -> None:
         self._llm = llm
         self._token_threshold_ratio = token_threshold_ratio

@@ -8,8 +8,9 @@ from pydantic import BaseModel, model_validator
 
 from careercrew_api.auth.dependencies import AdminUser, CurrentUser
 from careercrew_api.deps import get_runtime_dep
-from careercrew_api.runtime import CareerCrewRuntime, ResourceNotFoundError, RuntimeInitError
+from careercrew_api.runtime import CareerCrewRuntime, ResourceNotFoundError
 from careercrew_api.schemas import HealthResponse
+from careercrew_core.memory.semantic import SemanticFactStore
 
 router = APIRouter()
 
@@ -107,7 +108,8 @@ def update_profile(req: ProfileUpdateRequest, current_user: CurrentUser,
     """更新用户画像字段（白名单约束，写入语义事实）。"""
     rt._ensure_heavy()
     try:
-        model = rt.fact_store.update(current_user["id"], req.fields, source="api")
+        store = SemanticFactStore(rt.memory_db, current_user["id"])
+        model = store.update(current_user["id"], req.fields, source="api")
         return model.model_dump()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

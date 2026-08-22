@@ -42,7 +42,7 @@ def consult(
     agents: dict[str, BaseAgent],
     question: str,
     llm: BaseChatModel,
-    user_id: str = "u_001",
+    user_id: str,
 ) -> dict:
     """多 agent 串行会诊（简单版）。返回 {opinions, synthesis}。"""
     opinions: dict[str, str] = {}

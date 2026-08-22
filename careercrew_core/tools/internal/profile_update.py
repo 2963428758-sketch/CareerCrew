@@ -10,7 +10,7 @@ from langchain_core.tools import BaseTool, tool
 from careercrew_core.memory.semantic import SemanticFactStore
 
 
-def make_profile_update_tool(store: SemanticFactStore, user_id: str = "u_001", source: str = "agent") -> BaseTool:
+def make_profile_update_tool(store: SemanticFactStore, user_id: str, source: str = "agent") -> BaseTool:
     """构造 profile_update 工具（注入 SemanticFactStore + 默认 user_id + 来源）。"""
 
     @tool

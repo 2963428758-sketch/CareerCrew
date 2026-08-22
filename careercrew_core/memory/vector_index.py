@@ -24,7 +24,7 @@ class VectorIndex:
         embedding: BaseEmbedding,
         store: BaseVectorStore,
         episodic: EpisodicMemory,
-        user_id: str = "u_001",
+        user_id: str,
     ) -> None:
         self._embedding = embedding
         self._store = store
