@@ -84,9 +84,12 @@ def test_agentic_search_single_hop_no_fuse() -> None:
 
 def test_agentic_search_memory_route() -> None:
     """memory 路由 -> memory_search。"""
+
+    def _mem(q, top_k=5):
+        return [QueryResult(id="mem1", score=0.9, text="上次面试字节", metadata={})]
+
     hybrid = _FakeHybrid()
-    mem = lambda q, top_k=5: [QueryResult(id="mem1", score=0.9, text="上次面试字节", metadata={})]
-    agentic = AgenticSearch(hybrid, memory_search=mem)
+    agentic = AgenticSearch(hybrid, memory_search=_mem)
     res = agentic.search("上次的面试怎么样", top_k=3)
     assert res[0].id == "mem1"
     assert hybrid.calls == []  # 未走 kb

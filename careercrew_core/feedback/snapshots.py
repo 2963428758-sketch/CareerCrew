@@ -44,7 +44,7 @@ def build_snapshot(messages: list[dict[str, Any]], rated: dict[str, Any]) -> tup
         additional = min(len(content) - current_lengths[index], remaining)
         current_lengths[index] += additional
         remaining -= additional
-    for (message, content), length in zip(current_pair, current_lengths):
+    for (message, content), length in zip(current_pair, current_lengths, strict=True):
         captured.append({
             "role": message["role"], "content": content[:length],
             "turn_id": message["turn_id"], "message_id": message["id"],

@@ -34,7 +34,7 @@ def hit_at_k(predicted: list[list[str]], expected: list[list[str]], k: int = 5) 
         return 1.0
     hits = [
         1.0 if any(d in pred[:k] for d in exp) else 0.0
-        for pred, exp in zip(predicted, expected)
+        for pred, exp in zip(predicted, expected, strict=False)
     ]
     return sum(hits) / len(hits)
 
@@ -44,7 +44,7 @@ def mrr(predicted: list[list[str]], expected: list[list[str]]) -> float:
     if not expected:
         return 1.0
     scores = []
-    for pred, exp in zip(predicted, expected):
+    for pred, exp in zip(predicted, expected, strict=False):
         best = 0.0
         for d in exp:
             try:
@@ -67,7 +67,7 @@ def route_accuracy(predicted: list[str], expected: list[str]) -> float:
     """路由准确率：逐例是否一致。"""
     if not expected:
         return 1.0
-    return sum(1.0 for p, e in zip(predicted, expected) if p == e) / len(expected)
+    return sum(1.0 for p, e in zip(predicted, expected, strict=False) if p == e) / len(expected)
 
 
 def tool_success(tool_lists: list[list[str]], expected: list[list[str]]) -> float:
@@ -76,7 +76,7 @@ def tool_success(tool_lists: list[list[str]], expected: list[list[str]]) -> floa
         return 1.0
     ok = [
         1.0 if all(t in tools for t in exp) else 0.0
-        for tools, exp in zip(tool_lists, expected)
+        for tools, exp in zip(tool_lists, expected, strict=False)
     ]
     return sum(ok) / len(ok)
 

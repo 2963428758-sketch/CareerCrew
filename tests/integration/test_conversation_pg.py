@@ -346,10 +346,11 @@ def test_feedback_snapshot_postgres_failure_rolls_back_to_current_consent(store_
         "message_id": assistant["id"], "run_id": run["id"], "rating": "negative",
         "reason": "incorrect", "comment": None, "share_context": True,
     }
-    with pytest.raises(Exception):
+    import psycopg
+
+    with pytest.raises(psycopg.errors.DataError):
         db.replace_feedback_with_snapshot(uid, fields, bad_snapshot)
 
-    import psycopg
     with psycopg.connect(DSN) as conn:
         row = conn.execute(
             "SELECT f.share_context, s.feedback_id FROM message_feedback f "

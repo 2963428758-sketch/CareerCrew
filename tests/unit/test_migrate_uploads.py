@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from careercrew_api.storage import layout
-from scripts.audit_uploads import audit, classify
+from scripts.audit_uploads import audit
 from scripts.migrate_uploads import plan_moves
 
 
@@ -45,7 +45,7 @@ def test_plan_moves_targets_inside_layout(legacy_tree, tmp_path):
     rows = audit(legacy_tree, lay=lay)
     moves = plan_moves(rows, lay=lay)
     assert len(moves) == 3
-    for src, target in moves:
+    for _src, target in moves:
         assert target.is_relative_to(lay.uploads)
         assert "简历" not in target.name  # UUID 键名，不含原名
 

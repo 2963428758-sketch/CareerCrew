@@ -127,7 +127,7 @@ def test_finish_turn_batch_writes_retrievals_and_tool_calls(store):
             },
         ],
     )
-    run = store._db.get_run("u_1", ctx.run_id)
+    store._db.get_run("u_1", ctx.run_id)
     # retrieval / tool_call 行在 FakeConversationDb 的内存 dict 里
     rets = [r for r in store._db._retrievals.values() if r["run_id"] == ctx.run_id]
     calls = [c for c in store._db._tool_calls.values() if c["run_id"] == ctx.run_id]

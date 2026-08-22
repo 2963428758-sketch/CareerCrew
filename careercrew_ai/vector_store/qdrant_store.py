@@ -309,7 +309,7 @@ class QdrantStore(BaseVectorStore):
                 if indices is None and isinstance(sparse_raw, dict):
                     indices = sparse_raw.get("indices", [])
                     values = sparse_raw.get("values", [])
-                sparse = {int(i): float(v) for i, v in zip(indices, values)}
+                sparse = {int(i): float(v) for i, v in zip(indices, values, strict=False)}
             records.append(
                 VectorRecord(
                     id=payload.get("_id", str(p.id)),

@@ -10,10 +10,7 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from careercrew_ai.embedding import create_embedding
 from careercrew_ai.llm import create_llm
@@ -22,6 +19,8 @@ from careercrew_core.rag.chunking.contextualizer import Contextualizer
 from careercrew_core.rag.loaders.mineru_loader import ParsingError
 from careercrew_core.rag.pipeline_multimodal import MultimodalIngestionPipeline
 from careercrew_core.state.settings import load_settings
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:

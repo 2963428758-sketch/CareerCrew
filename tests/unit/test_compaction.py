@@ -11,26 +11,28 @@ from careercrew_core.memory.semantic import SemanticFactStore
 
 class FakeLLM:
     def invoke(self, prompt):
-        from langchain_core.messages import AIMessage
         return AIMessage(content="用户聊了大模型与 RAG，问过检索流程。")
 
 
 def _long_messages(n: int) -> list:
-    return [HumanMessage(content="这是第%d条很长很长的对话内容，关于大模型应用与 RAG 技术。" % i) for i in range(n)]
+    return [
+        HumanMessage(content=f"这是第{i}条很长很长的对话内容，关于大模型应用与 RAG 技术。")
+        for i in range(n)
+    ]
 
 
 def test_should_compact_over_threshold() -> None:
-    c = Compactor(FakeLLM(), token_threshold_ratio=0.5, retention_tokens=50)
+    c = Compactor(FakeLLM(), user_id="u1", token_threshold_ratio=0.5, retention_tokens=50)
     assert c.should_compact(_long_messages(30)) is True
 
 
 def test_should_compact_under_threshold() -> None:
-    c = Compactor(FakeLLM(), token_threshold_ratio=0.9, retention_tokens=100000)
+    c = Compactor(FakeLLM(), user_id="u1", token_threshold_ratio=0.9, retention_tokens=100000)
     assert c.should_compact(_long_messages(3)) is False
 
 
 def test_compact_keeps_recent_and_writes_entry() -> None:
-    c = Compactor(FakeLLM(), token_threshold_ratio=0.5, retention_tokens=30)
+    c = Compactor(FakeLLM(), user_id="u1", token_threshold_ratio=0.5, retention_tokens=30)
     em = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     msgs = _long_messages(20)
     new_msgs, entry = c.compact(msgs, em)
@@ -46,7 +48,7 @@ def test_compact_keeps_recent_and_writes_entry() -> None:
 
 
 def test_compact_under_threshold_noop() -> None:
-    c = Compactor(FakeLLM(), token_threshold_ratio=0.9, retention_tokens=100000)
+    c = Compactor(FakeLLM(), user_id="u1", token_threshold_ratio=0.9, retention_tokens=100000)
     em = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
     msgs = _long_messages(3)
     new_msgs, entry = c.compact(msgs, em)
@@ -63,8 +65,8 @@ def test_compact_flushes_to_semantic_facts() -> None:
 
     db = FakeMemoryDb()
     um = SemanticFactStore(db, user_id="u1")
-    c = Compactor(FlushLLM(), token_threshold_ratio=0.5, retention_tokens=30,
-                  user_model_store=um, user_id="u1")
+    c = Compactor(FlushLLM(), user_id="u1", token_threshold_ratio=0.5, retention_tokens=30,
+                  user_model_store=um)
     em = EpisodicMemory(db, user_id="u1", thread_id="t1")
     c.compact(_long_messages(20), em)
     model = um.load("u1")
@@ -83,8 +85,8 @@ def test_compact_flush_failure_does_not_block() -> None:
 
     db = FakeMemoryDb()
     um = SemanticFactStore(db, user_id="u1")
-    c = Compactor(BadLLM(), token_threshold_ratio=0.5, retention_tokens=30,
-                  user_model_store=um, user_id="u1")
+    c = Compactor(BadLLM(), user_id="u1", token_threshold_ratio=0.5, retention_tokens=30,
+                  user_model_store=um)
     em = EpisodicMemory(db, user_id="u1", thread_id="t1")
     new_msgs, entry = c.compact(_long_messages(20), em)
     assert entry is not None  # 压缩仍完成

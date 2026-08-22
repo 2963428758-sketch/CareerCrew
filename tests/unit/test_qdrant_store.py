@@ -108,7 +108,7 @@ def test_access_filter_forced_doc_whitelist_keeps_access_in_must(valid_config_da
     must 短路——他人 private 文档仅靠上游 resolve_mentions 兜底。此处断言序列化的
     Filter 把「public OR owner==user」作为嵌套 Filter 并入 must，与 doc 白名单做 AND。
     """
-    store = _store(valid_config_data)
+    _store(valid_config_data)  # 确保依赖的 store 构造路径可用
     flt = QdrantStore._filter_expr({"__access_user": "u_001", "doc": ["forced-other"]})
     assert flt is not None
     # 顶层无 should（访问条件不在 optional 位置）

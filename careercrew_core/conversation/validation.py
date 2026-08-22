@@ -118,7 +118,7 @@ def validate_attachment(filename: str, mime: str, content_head: bytes,
         body = content if content is not None else (content_head or b"")
         try:
             body.decode("utf-8")
-        except UnicodeDecodeError:
-            raise AttachmentValidationError("文本附件必须为合法 UTF-8 编码")
+        except UnicodeDecodeError as e:
+            raise AttachmentValidationError("文本附件必须为合法 UTF-8 编码") from e
 
     return {"extension": ext, "mime": mime_norm}
