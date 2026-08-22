@@ -1,11 +1,21 @@
 """本地账号认证 HTTP 接口。业务路由的主体绑定在下一阶段处理。"""
 from __future__ import annotations
 
+import logging
+import shutil
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import (
-    APIRouter, Cookie, Depends, File, HTTPException, Request, Response, UploadFile, status,
+    APIRouter,
+    Cookie,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
 )
 from fastapi.responses import FileResponse
 
@@ -13,18 +23,19 @@ from careercrew_api.auth.dependencies import get_auth_service, get_current_user,
 from careercrew_api.auth.service import (
     AccountDisabledError,
     AccountExistsError,
-    AuthService,
     AuthenticationError,
+    AuthService,
     LastAdminError,
     LoginLockedError,
     SelfAdminError,
 )
-from careercrew_api.oss import download_bytes, oss_config, upload_bytes
+from careercrew_api.oss import delete_object, download_bytes, oss_config, upload_bytes
+from careercrew_api.runtime import get_runtime
 from careercrew_api.schemas import (
     AccountListItem,
     ChangePasswordRequest,
-    CredentialsRequest,
     CreateUserRequest,
+    CredentialsRequest,
     PasswordResetRequest,
     PublicUser,
     TokenResponse,
@@ -32,7 +43,7 @@ from careercrew_api.schemas import (
     UserListResponse,
     UserPatchRequest,
 )
-from careercrew_api.storage import DATA_ROOT, resolve_under
+from careercrew_api.storage import DATA_ROOT, L, resolve_under
 
 router = APIRouter()
 _REFRESH_COOKIE = "careercrew_refresh"
@@ -126,6 +137,27 @@ def get_avatar(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="头像不存在或已被删除")
         return FileResponse(str(path))
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该用户尚未设置头像")
+
+
+def _purge_avatar_files(avatar_ref: str) -> None:
+    """删除账号后清理其头像存储（本地按用户目录整体清，OSS 删当前对象）；失败仅记录不阻断。"""
+    log = logging.getLogger("careercrew_api")
+    if avatar_ref.startswith("local:"):
+        # ref 形如 local:{user_id}/{name}；换过头像的用户目录里可能残留历史文件，整体清理
+        owner = avatar_ref[len("local:"):].split("/", 1)[0]
+        try:
+            shutil.rmtree(resolve_under(AVATAR_ROOT, owner), ignore_errors=True)
+        except OSError as err:
+            log.warning("delete avatar dir for %s failed: %s", owner, err)
+    elif avatar_ref.startswith("oss:"):
+        config = oss_config()
+        if config is None:
+            return
+        key = avatar_ref[len("oss:"):]
+        try:
+            delete_object(config, key)
+        except Exception as err:  # noqa: BLE001 - 头像清理失败不影响账号删除结果
+            log.warning("delete avatar object %s failed: %s", key, err)
 
 
 def _set_refresh_cookie(response: Response, auth: AuthService, refresh_token: str) -> None:
@@ -241,7 +273,7 @@ def create_user(
     actor: Annotated[dict[str, str], Depends(require_admin)],
     auth: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, str]:
-    """只有已认证管理员可开户；密码留空时默认 123456，首次登录强制改密。"""
+    """只有已认证管理员可开户；密码留空时默认 123456 并强制首登改密，自定义密码则不强制。"""
     try:
         return auth.create_user(actor, request.username, request.password, request.role)
     except AccountExistsError as err:
@@ -306,6 +338,64 @@ def reset_password(
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     return {"ok": True}
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: str,
+    admin: Annotated[dict[str, str], Depends(require_admin)],
+    auth: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict:
+    """删除账号并清理其全部业务数据：会话/消息/运行、反馈、记忆、附件（DB 行 + 磁盘文件）与头像。
+
+    保护：不能删自己；不能删除最后一名有效管理员。审计事件按设计保留。
+    业务数据清理依赖重组件运行时；不可用（未初始化/测试 Fake）时跳过清理仅删账号。
+    """
+    try:
+        rt = get_runtime()
+        rt._ensure_heavy()
+    except Exception:  # noqa: BLE001 - 运行时不可用：跳过业务数据清理
+        pass
+    else:
+        storage_keys: list[str] = []
+        try:
+            if rt.conversation_store is not None:
+                rt.conversation_store.db_delete_all_for_user(user_id)
+            if rt.memory_db is not None:
+                rt.memory_db.delete_all_for_user(user_id)
+            if rt.attachment_store is not None:
+                storage_keys = rt.attachment_store.delete_all_for_user(user_id)
+        except Exception as err:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="删除用户数据失败，已中止删除操作，请稍后重试",
+            ) from err
+        # 磁盘附件按 storage_key 删除（相对 attachments 根）；失败仅记录，不阻断账号删除
+        for key in storage_keys:
+            try:
+                path = resolve_under(L.attachments, *key.split("/"))
+                path.unlink(missing_ok=True)
+            except OSError as err:
+                logging.getLogger("careercrew_api").warning("delete attachment %s failed: %s", key, err)
+
+    # 删除前取头像引用（账号行删掉后就查不到了），删除成功后再清理存储
+    try:
+        avatar_ref = (auth.store.account_by_id(user_id) or {}).get("avatar") or ""
+    except Exception:  # noqa: BLE001 - 查询失败不阻断删除主流程
+        avatar_ref = ""
+    try:
+        result = auth.delete_user(admin, user_id)
+    except SelfAdminError as err:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="不能删除自己的账号") from err
+    except LastAdminError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="操作失败：系统至少需要保留一名有效管理员") from err
+    except KeyError as err:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="账号不存在或已被删除") from err
+    _purge_avatar_files(avatar_ref)
+    return {"ok": True, **result}
 
 
 @router.post("/password")

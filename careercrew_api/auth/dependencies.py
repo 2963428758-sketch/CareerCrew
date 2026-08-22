@@ -7,7 +7,7 @@ from typing import Annotated, TypeAlias
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from careercrew_api.auth.service import AuthService, AuthenticationError
+from careercrew_api.auth.service import AuthenticationError, AuthService
 from careercrew_api.auth.store import create_account_store
 from careercrew_core.state.settings import load_auth_settings
 

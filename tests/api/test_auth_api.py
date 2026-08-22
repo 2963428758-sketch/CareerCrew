@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-
 PASSWORD = "correct-horse-battery-staple"
 USER_PASSWORD = "member-password-123"  # 满足新密码策略（字母+数字）
 
@@ -14,8 +13,8 @@ def auth_client():
 
     from careercrew_api.auth.dependencies import get_auth_service
     from careercrew_api.auth.service import AuthService
-    from careercrew_core.state.settings import AuthSettings
     from careercrew_api.main import create_app
+    from careercrew_core.state.settings import AuthSettings
     from tests.fakes import FakeAccountStore
 
     settings = AuthSettings(
@@ -74,7 +73,7 @@ def test_password_login_protects_me_and_never_returns_refresh_token(auth_client)
 @pytest.mark.web
 def test_refresh_cookie_rotates_and_logout_invalidates_session(auth_client):
     _bootstrap(auth_client)
-    login = auth_client.post("/api/auth/login", json={"username": "admin", "password": PASSWORD})
+    auth_client.post("/api/auth/login", json={"username": "admin", "password": PASSWORD})
     old_cookie = auth_client.cookies.get("careercrew_refresh")
     assert old_cookie
 
@@ -111,7 +110,8 @@ def test_only_administrator_can_create_accounts(auth_client):
     assert member["role"] == "user"
     assert member["id"] != "u_001"
     assert "password" not in member
-    assert member["must_change_password"] is True
+    # 管理员自定义密码开户：视为已交付，不强制首登改密
+    assert member["must_change_password"] is False
 
     member_login = auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).json()
     member_headers = {"Authorization": f"Bearer {member_login['access_token']}"}
@@ -189,15 +189,8 @@ def test_admin_self_and_last_admin_guards(auth_client):
     # 有第二个 admin 后，第二个 admin 自改 → 403（SelfAdmin）
     assert auth_client.post("/api/auth/users", json={"username": "second", "password": USER_PASSWORD, "role": "admin"}, headers=admin_headers).status_code == 201
     second_id = auth_client.get("/api/auth/users", headers=admin_headers).json()["items"][1]["id"]
-    # 第二个 admin 也带强制改密标记：先改密再测 SelfAdmin 语义
-    second_login = auth_client.post("/api/auth/token", json={"username": "second", "password": USER_PASSWORD}).json()
-    second_change = auth_client.post(
-        "/api/auth/password",
-        json={"new_password": "second-password-456"},
-        headers={"Authorization": f"Bearer {second_login['access_token']}"},
-    )
-    assert second_change.status_code == 200
-    second_token = auth_client.post("/api/auth/token", json={"username": "second", "password": "second-password-456"}).json()["access_token"]
+    # 自定义密码开户不强制改密：second 直接登录即可调用管理端点
+    second_token = auth_client.post("/api/auth/token", json={"username": "second", "password": USER_PASSWORD}).json()["access_token"]
     second_headers = {"Authorization": f"Bearer {second_token}"}
     assert auth_client.patch(f"/api/auth/users/{second_id}", json={"status": "disabled"}, headers=second_headers).status_code == 403
 
@@ -251,6 +244,23 @@ def test_new_user_default_password_forced_change_blocks_business_api(auth_client
     assert fresh["user"]["must_change_password"] is False
     fresh_headers = {"Authorization": f"Bearer {fresh['access_token']}"}
     assert auth_client.get("/api/knowledge/upload/no-such-job", headers=fresh_headers).status_code == 404
+
+
+@pytest.mark.web
+def test_new_user_custom_password_can_login_without_forced_change(auth_client):
+    _bootstrap(auth_client)
+    admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
+    created = auth_client.post(
+        "/api/auth/users", json={"username": "direct", "password": USER_PASSWORD}, headers=admin_headers
+    )
+    assert created.status_code == 201
+    assert created.json()["must_change_password"] is False
+    login = auth_client.post("/api/auth/token", json={"username": "direct", "password": USER_PASSWORD})
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is False
+    # 无强制改密标记：业务 API 直接放行（不依赖 runtime 的端点返回 404 而非 403）
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert auth_client.get("/api/knowledge/upload/no-such-job", headers=headers).status_code == 404
 
 
 @pytest.mark.web
@@ -311,3 +321,88 @@ def test_login_lock_returns_429_with_retry_after(auth_client):
     locked = auth_client.post("/api/auth/token", json={"username": "admin", "password": PASSWORD})
     assert locked.status_code == 429
     assert locked.headers.get("retry-after")
+
+
+@pytest.mark.web
+def test_admin_deletes_user_and_data(auth_client):
+    """删除账号：普通用户可删；不能删自己；最后一名管理员不可删。"""
+    _bootstrap(auth_client)
+    admin_token = auth_client.post("/api/auth/token", json={"username": "admin", "password": PASSWORD}).json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # 建一个普通用户（自定义密码，无强制改密）并登录
+    created = auth_client.post("/api/auth/users", json={"username": "doomed", "password": USER_PASSWORD}, headers=admin_headers)
+    assert created.status_code == 201
+    doomed_id = created.json()["id"]
+
+    # 删除自己 → 403
+    assert auth_client.delete("/api/auth/users/u_001", headers=admin_headers).status_code == 403
+    # 删除不存在账号 → 404
+    assert auth_client.delete("/api/auth/users/u_no_such_user", headers=admin_headers).status_code == 404
+
+    # 删除普通用户 → 200，且账号消失、无法再登录
+    resp = auth_client.delete(f"/api/auth/users/{doomed_id}", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] is True
+    assert auth_client.post("/api/auth/token", json={"username": "doomed", "password": USER_PASSWORD}).status_code == 401
+    names = [u["username"] for u in auth_client.get("/api/auth/users", headers=admin_headers).json()["items"]]
+    assert "doomed" not in names
+
+    # 建第二个 admin 并登录：双管理员并存时，u_001 可被另一名管理员正常删除
+    second = auth_client.post(
+        "/api/auth/users",
+        json={"username": "second-admin", "password": USER_PASSWORD, "role": "admin"},
+        headers=admin_headers,
+    )
+    assert second.status_code == 201
+    second_login = auth_client.post("/api/auth/token", json={"username": "second-admin", "password": USER_PASSWORD})
+    assert second_login.status_code == 200
+    second_headers = {"Authorization": f"Bearer {second_login.json()['access_token']}"}
+    resp = auth_client.delete("/api/auth/users/u_001", headers=second_headers)
+    assert resp.status_code == 200, resp.text
+    assert auth_client.post("/api/auth/token", json={"username": "admin", "password": PASSWORD}).status_code == 401
+    names = [u["username"] for u in auth_client.get("/api/auth/users", headers=second_headers).json()["items"]]
+    assert names == ["second-admin"]
+    # 此后系统只剩最后一名管理员（second-admin）：HTTP 层删除者恒为另一名有效 admin，
+    # 故「删最后管理员 → 409」由服务层单测覆盖（test_cannot_delete_last_active_admin）
+
+
+@pytest.mark.web
+def test_delete_user_purges_local_avatar_files(auth_client, tmp_path, monkeypatch):
+    """删除账号时一并清理本地头像目录（含换过头像留下的历史文件）。"""
+    from careercrew_api.routers import auth as auth_router
+
+    # 头像落盘改到临时目录，避免污染 data/uploads；同时屏蔽本机 OSS 配置，强制走本地回退
+    monkeypatch.setattr(auth_router, "AVATAR_ROOT", tmp_path)
+    monkeypatch.setattr(auth_router, "oss_config", lambda: None)
+    _bootstrap(auth_client)
+    admin_token = auth_client.post("/api/auth/token", json={"username": "admin", "password": PASSWORD}).json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    created = auth_client.post(
+        "/api/auth/users",
+        json={"username": "painted", "password": USER_PASSWORD},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    painted_id = created.json()["id"]
+    login = auth_client.post("/api/auth/token", json={"username": "painted", "password": USER_PASSWORD})
+    user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    # 连传两次头像（模拟换头像：目录里应有两个文件）
+    png = b"\x89PNG\r\n\x1a\nfake-image"
+    for _ in range(2):
+        up = auth_client.post(
+            "/api/auth/avatar",
+            files={"file": ("a.png", png, "image/png")},
+            headers=user_headers,
+        )
+        assert up.status_code == 200, up.text
+    user_dir = tmp_path / painted_id
+    assert user_dir.is_dir()
+    assert len(list(user_dir.iterdir())) == 2
+
+    # 删除账号 → 用户头像目录整体清除
+    resp = auth_client.delete(f"/api/auth/users/{painted_id}", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    assert not user_dir.exists()

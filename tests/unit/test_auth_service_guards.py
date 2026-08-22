@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 
 from careercrew_api.auth.service import (
-    AuthService,
     AuthenticationError,
+    AuthService,
     LastAdminError,
     LoginLockedError,
     SelfAdminError,
@@ -71,9 +71,26 @@ def test_cannot_lose_last_active_admin(service):
         service.update_user(actor2, second["id"], status="disabled")
 
 
+def test_cannot_delete_last_active_admin(service):
+    """删除路径的最后管理员保护：目标为系统唯一有效 admin 时拒绝删除。
+
+    HTTP 层删除者恒为另一名有效 admin（require_admin 保证 active），永远会被
+    计入「剩余有效管理员」，故该分支只能由账号表之外的调用方触达——这里按
+    服务层语义直接构造 actor 验证。
+    """
+    admin = service.current_user(_login(service, "admin")[0])
+    member = service.create_user(admin, "member", USER_PASSWORD, "user")
+    outsider = {"id": "u_outside", "username": "outside", "role": "admin"}
+    with pytest.raises(LastAdminError):
+        service.delete_user(outsider, "u_001")  # u_001 是唯一 admin
+    # 唯一 admin 被保护后仍可正常删普通用户（非 admin 目标不触发保护）
+    result = service.delete_user(admin, member["id"])
+    assert result["deleted"] is True
+
+
 def test_create_user_default_password_forces_change(service):
     admin_actor = service.current_user(_login(service, "admin")[0])
-    member = service.create_user(admin_actor, "fresh", None, "user")  # 默认密码 123456
+    service.create_user(admin_actor, "fresh", None, "user")  # 默认密码 123456
     access, _ = _login(service, "fresh", "123456")
     user = service.current_user(access)
     assert user["username"] == "fresh"
@@ -82,6 +99,16 @@ def test_create_user_default_password_forces_change(service):
     service.change_own_password(user, "", USER_PASSWORD)
     fresh, _ = _login(service, "fresh", USER_PASSWORD)
     assert service.current_user(fresh)["must_change_password"] is False
+
+
+def test_create_user_custom_password_skips_forced_change(service):
+    admin_actor = service.current_user(_login(service, "admin")[0])
+    member = service.create_user(admin_actor, "direct", USER_PASSWORD, "user")
+    assert member["must_change_password"] is False
+    access, _ = _login(service, "direct", USER_PASSWORD)
+    user = service.current_user(access)
+    # 自定义密码开户：登录后无需改密，可直接正常使用
+    assert user["must_change_password"] is False
 
 
 def test_password_policy_rejects_weak_new_password(service):

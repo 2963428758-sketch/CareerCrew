@@ -1,8 +1,8 @@
 """账号持久化、密码哈希与 JWT/刷新会话服务。"""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
@@ -10,9 +10,10 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
 from careercrew_api.auth.store import (
-    AccountExistsError,
+    AccountExistsError as AccountExistsError,
+)
+from careercrew_api.auth.store import (
     AccountStore,
-    create_account_store,
     hash_token,
     new_refresh_token,
 )
@@ -74,11 +75,12 @@ class AuthService:
 
     def create_user(self, actor: dict[str, str], username: str,
                     password: str | None = None, role: str = "user") -> dict[str, str]:
-        initial = password or DEFAULT_INITIAL_PASSWORD
+        # 仅当走默认初始密码时才强制首次改密；管理员自定义密码视为已交付
         if password:
             validate_password_policy(password)
         created = self.store.create_account(
-            username, self.password_hasher.hash(initial), role, must_change=True,
+            username, self.password_hasher.hash(password or DEFAULT_INITIAL_PASSWORD),
+            role, must_change=not password,
         )
         self._audit(actor["id"], "user.create", created["id"], {"role": role})
         return created
@@ -249,6 +251,23 @@ class AuthService:
         )
         if active_admins == 0:
             raise LastAdminError("operation would remove the last active administrator")
+
+    def delete_user(self, actor: dict[str, str], user_id: str) -> dict[str, Any]:
+        """删除账号：不能删自己；不能删除最后一名有效管理员。
+
+        业务数据（会话/记忆/附件等）由路由层在调用本方法前清理；
+        本方法只负责账号行的保护校验、审计与硬删。
+        """
+        if actor["id"] == user_id:
+            raise SelfAdminError("administrators cannot delete their own account here")
+        target = self.store.account_by_id(user_id)
+        if not target:
+            raise KeyError(user_id)
+        if target["role"] == "admin" and target["status"] == "active":
+            self._ensure_remaining_active_admin(excluding=user_id)
+        deleted = self.store.delete_account(user_id)
+        self._audit(actor["id"], "user.delete", user_id, {"username": target.get("username")})
+        return {"deleted": deleted, "username": target.get("username")}
 
     def list_users(self, page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
         offset = max(page - 1, 0) * page_size

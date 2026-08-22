@@ -98,3 +98,23 @@ def download_bytes(config: dict, key: str) -> bytes:
     except urllib.error.HTTPError as err:
         body = err.read().decode("utf-8", errors="ignore").strip()
         raise RuntimeError(f"OSS GET failed: HTTP {err.code} {err.reason} {body[:400]}") from err
+
+
+def delete_object(config: dict, key: str, expires: int = 1800) -> None:
+    """通过预签名 DELETE 删除对象（删除用户头像等清理场景用）；非 2xx 抛 RuntimeError。"""
+    deadline = int(time.time()) + expires
+    string_to_sign = f"DELETE\n\n\n{deadline}\n/{config['bucket']}/{key}"
+    query = urllib.parse.urlencode({
+        "OSSAccessKeyId": config["ak"],
+        "Expires": str(deadline),
+        "Signature": _sign(config["sk"], string_to_sign),
+    })
+    url = f"https://{config['bucket']}.{config['endpoint']}/{urllib.parse.quote(key, safe='/')}?{query}"
+    request = urllib.request.Request(url, method="DELETE")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if response.status not in (200, 204):
+                raise RuntimeError(f"OSS DELETE failed: HTTP {response.status}")
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(f"OSS DELETE failed: HTTP {err.code} {err.reason} {body[:400]}") from err
