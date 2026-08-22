@@ -35,3 +35,34 @@ def test_rerank_failure_fallback() -> None:
 def test_rerank_empty_candidates() -> None:
     assert rerank(None, "q", []) == []
     assert rerank(FakeReranker(), "q", []) == []
+
+
+def test_siliconflow_reranker_failure_logs_warning(monkeypatch, caplog) -> None:
+    """SiliconFlowReranker 失败回退原序且 warning 留痕（对齐 5.7 + 可观测）。"""
+    from types import SimpleNamespace
+
+    from careercrew_ai.reranker.siliconflow_reranker import SiliconFlowReranker
+
+    settings = SimpleNamespace(rerank=SimpleNamespace(
+        model="BAAI/bge-reranker-v2-m3",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="test-key",
+        top_m=5,
+    ))
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        raise TimeoutError("rerank service hang")
+
+    monkeypatch.setattr(
+        "careercrew_ai.reranker.siliconflow_reranker.requests.post", fake_post
+    )
+
+    rr = SiliconFlowReranker(settings)
+    a = QueryResult(id="a", score=0.5, text="t-a", metadata={})
+    b = QueryResult(id="b", score=0.9, text="t-b", metadata={})
+    with caplog.at_level("WARNING", logger="careercrew_ai.reranker.siliconflow_reranker"):
+        out = rr.rerank("q", [a, b], top_k=2)
+
+    assert out == [a, b]  # 原序回退
+    assert any("rerank failed" in r.message for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records)

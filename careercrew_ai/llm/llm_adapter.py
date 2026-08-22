@@ -26,6 +26,7 @@ def create_llm(
 
     model_provider="openai" -> ChatOpenAI（OpenAI 兼容，base_url 切到硅基流动）。
     temperature/max_tokens 可临时覆盖，否则取配置默认。
+    timeout/max_retries 兜底：上游挂起时快速失败重试，而非干等到 SSE 层空闲超时。
     """
     cfg = settings.llm
     return init_chat_model(
@@ -35,4 +36,6 @@ def create_llm(
         api_key=cfg.api_key,
         temperature=temperature if temperature is not None else cfg.temperature,
         max_tokens=max_tokens if max_tokens is not None else cfg.max_tokens,
+        timeout=60,
+        max_retries=2,
     )

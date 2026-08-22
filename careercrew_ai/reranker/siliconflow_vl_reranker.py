@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import requests
@@ -16,6 +17,11 @@ from careercrew_ai.vector_store.base_vector_store import QueryResult
 
 if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
+
+logger = logging.getLogger(__name__)
+
+# 30 条候选的 rerank 正常几百毫秒；超长即视为服务异常，尽快降级回退原序
+_RERANK_TIMEOUT_S = 15
 
 
 class SiliconFlowVLReranker(BaseReranker):
@@ -49,7 +55,7 @@ class SiliconFlowVLReranker(BaseReranker):
                     "top_n": top_n,
                     "return_documents": False,
                 },
-                timeout=60,
+                timeout=_RERANK_TIMEOUT_S,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -71,4 +77,9 @@ class SiliconFlowVLReranker(BaseReranker):
                     )
             return ranked or candidates[:top_n]
         except Exception:
+            # 失败回退原序，但必须留痕：否则 rerank 服务挂了只会表现为"检索质量莫名下降"
+            logger.warning(
+                "vl_rerank failed（model=%s, candidates=%d）, fallback to original order",
+                self._model, len(candidates), exc_info=True,
+            )
             return candidates[:top_n] if top_k is not None else list(candidates)

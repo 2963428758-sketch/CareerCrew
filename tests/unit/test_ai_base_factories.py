@@ -20,7 +20,6 @@ from careercrew_ai.vector_store import (
 )
 from careercrew_core.state.settings import Settings
 
-
 # ── create_llm ──
 
 
@@ -45,6 +44,17 @@ def test_create_llm_override_temperature(valid_config_data: dict) -> None:
     settings = Settings.model_validate(valid_config_data)
     llm = create_llm(settings, temperature=0.0)
     assert llm.temperature == 0.0
+
+
+def test_create_llm_sets_timeout_and_max_retries(valid_config_data: dict) -> None:
+    """上游挂起时必须快速失败重试（timeout=60s, max_retries=2），而非干等到 SSE 空闲超时。"""
+    settings = Settings.model_validate(valid_config_data)
+    llm = create_llm(settings)
+    timeout = getattr(llm, "request_timeout", None)
+    assert timeout is not None, "ChatOpenAI 缺少 request_timeout"
+    seconds = timeout.total_seconds() if hasattr(timeout, "total_seconds") else float(timeout)
+    assert seconds == 60.0
+    assert getattr(llm, "max_retries", None) == 2
 
 
 # ── embedding factory + 契约 ──
