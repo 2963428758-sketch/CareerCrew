@@ -1,24 +1,20 @@
-"""TTL 清理脚本（fake store）单元测试。
+"""TTL 清理（fake store）单元测试。
 
 覆盖：只删 expires_at < now 且非 saved_to_knowledge 的附件；物理删文件 + DB 删行；
 saved_to_knowledge / 未过期 / expires_at=NULL 一律保留。
 """
 from __future__ import annotations
 
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
+from careercrew_api.maintenance import cleanup_expired_attachments as cleanup_expired
 from careercrew_core.conversation.attachments import (
     AttachmentStore,
     FakeAttachmentDb,
 )
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from cleanup_chat_attachments import cleanup_expired  # noqa: E402
 
 
 @pytest.fixture

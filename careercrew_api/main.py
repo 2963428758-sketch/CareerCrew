@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from careercrew_api.auth.middleware import TrustedOriginMiddleware
+from careercrew_api.logging_config import new_request_id, request_id_var, setup_logging
 from careercrew_api.routers import (
     agent,
     attachments,
@@ -39,6 +41,8 @@ from careercrew_core.state.settings import load_auth_settings
 logger = logging.getLogger("careercrew_api")
 
 DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
+
+setup_logging()
 
 
 def _has_cjk(text: str) -> bool:
@@ -81,6 +85,22 @@ async def lifespan(app: FastAPI):
     thread = threading.Thread(target=_loop, name="refresh-session-cleanup", daemon=True)
     thread.start()
 
+    # 附件 TTL 清理（每日一轮，启动即先跑一次；失败不中断服务）
+    from careercrew_api.maintenance import CLEANUP_INTERVAL_SECONDS, run_attachment_cleanup_once
+
+    def _attachment_loop() -> None:
+        while True:
+            try:
+                removed = run_attachment_cleanup_once()
+                if removed:
+                    logger.info("attachment TTL cleanup: %d items removed", len(removed))
+            except Exception:
+                logger.warning("attachment TTL cleanup failed, retry next cycle", exc_info=True)
+            if stop.wait(CLEANUP_INTERVAL_SECONDS):
+                return
+
+    threading.Thread(target=_attachment_loop, name="attachment-ttl-cleanup", daemon=True).start()
+
     # Auto Dream：每日低峰 consolidation（memory.consolidation.dream_schedule="HH:MM" 开启，off 关闭）
     from careercrew_api.deps import get_runtime_dep
 
@@ -113,6 +133,23 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ── request_id 关联：X-Request-ID 透传或生成，日志自动携带，响应头回写 ──
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        rid = (request.headers.get("X-Request-ID") or "").strip() or new_request_id()
+        request_id_var.set(rid)
+        start = time.perf_counter()
+        response = await call_next(request)
+        # task-per-request 隔离，不 reset：流式响应体（NDJSON）在 middleware
+        # 返回后仍需携带同一 request_id 排查跨 logger 报错。
+        response.headers["X-Request-ID"] = rid
+        logger.info(
+            "%s %s -> %d (%.0f ms)",
+            request.method, request.url.path, response.status_code,
+            (time.perf_counter() - start) * 1000,
+        )
+        return response
+
     # /api 路由
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     # threads（conversation Source of Truth）先于 data 注册，故 POST/PATCH/DELETE
@@ -131,6 +168,51 @@ def create_app() -> FastAPI:
     app.include_router(context.router, prefix="/api/context", tags=["context"])
     app.include_router(attachments.router, prefix="/api/chat/attachments", tags=["attachments"])
     app.include_router(agent.router, prefix="/api", tags=["agent"])
+
+    # ── 无鉴权探针（放 LB/K8s/监控后面；须注册在 SPA fallback 通配路由之前） ──
+    @app.get("/healthz")
+    async def healthz() -> dict:
+        """liveness：进程存活即 200，不触碰任何外部依赖（避免重启风暴）。"""
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        """readiness：基础设施可达性（Postgres/Qdrant）。任一不可达 → 503，LB 摘除流量。
+
+        有意绕过 runtime 重组件惰性初始化：探针只探测依赖连通性，不触发模型加载。
+        组件级明细仍走带鉴权的 GET /api/data/health。
+        """
+        import os
+
+        from qdrant_client import QdrantClient
+
+        from careercrew_core.state.settings import load_settings
+
+        checks: dict[str, str] = {}
+
+        try:
+            from careercrew_api.auth.dependencies import get_auth_service
+
+            store = get_auth_service().store
+            with store._connect() as conn:  # noqa: SLF001 — 探针复用账号库连接池
+                conn.execute("SELECT 1")
+            checks["postgres"] = "ok"
+        except Exception as exc:
+            checks["postgres"] = f"unavailable: {exc}"
+
+        try:
+            cfg = load_settings().vector_store
+            client = QdrantClient(url=cfg.url or os.environ.get("QDRANT_URL", ""), timeout=3)
+            client.get_collections()
+            checks["qdrant"] = "ok"
+        except Exception as exc:
+            checks["qdrant"] = f"unavailable: {exc}"
+
+        ok = all(v == "ok" for v in checks.values())
+        return JSONResponse(
+            status_code=200 if ok else 503,
+            content={"status": "ready" if ok else "not_ready", "checks": checks},
+        )
 
     # 生产模式：托管 careercrew_web/dist（SPA fallback）
     if DIST.exists():
