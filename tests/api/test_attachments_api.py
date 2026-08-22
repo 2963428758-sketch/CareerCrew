@@ -5,11 +5,13 @@
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from careercrew_core.conversation.attachments import (
-    FakeAttachmentDb,
     AttachmentStore,
+    FakeAttachmentDb,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
@@ -75,6 +77,7 @@ def test_upload_rejects_oversize(attach_client):
 def test_upload_bounded_read_no_full_buffer():
     """>25MB 上传走分块读取，拒绝前不会把整份内容缓冲进内存。"""
     import asyncio
+
     from careercrew_api.routers.attachments import _read_bounded
     from careercrew_core.conversation.validation import MAX_ATTACHMENT_SIZE
 
@@ -197,9 +200,6 @@ def test_cross_user_list_delete_content_isolated(tenant_api, tmp_path, monkeypat
 
 # ── save-to-knowledge（T3.3）：状态机 + 异步解析 + 入库 ──
 
-import threading
-import time
-
 
 def test_save_to_knowledge_returns_202_and_marks_parsing(attach_client):
     client, rt, lay = attach_client
@@ -255,7 +255,7 @@ def test_save_md_txt_fast_path_no_pipeline(attach_client, monkeypatch):
     这里断言 ingest_document 收到 doc_name 且文件为 .md（pipeline 内部再路由 md→markdown）。
     """
     client, rt, lay = attach_client
-    up = _upload(client, filename="note.md", content="# 标题\n\n正文内容".encode("utf-8"),
+    up = _upload(client, filename="note.md", content="# 标题\n\n正文内容".encode(),
                  mime="text/markdown").json()
     resp = client.post(f"/api/chat/attachments/{up['id']}/save-to-knowledge")
     assert resp.status_code == 202

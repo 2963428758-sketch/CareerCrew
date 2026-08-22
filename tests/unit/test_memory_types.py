@@ -6,9 +6,9 @@ from careercrew_core.memory.types import (
     MemoryPolicy,
     SemanticFact,
     TreeNode,
+    UserModel,
     UserPreferences,
     UserProfile,
-    UserModel,
 )
 
 

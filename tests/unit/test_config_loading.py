@@ -175,7 +175,6 @@ def test_invalid_loader_model_version(tmp_path: Path, valid_config_data: dict) -
 
 def test_auth_backend_postgres_falls_back_to_database_url(tmp_path, monkeypatch):
     from careercrew_core.state import settings as settings_module
-    from careercrew_core.state.settings import SettingsError
 
     config = tmp_path / "settings.yaml"
     config.write_text(

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from careercrew_ai.embedding import FakeEmbedding
-from careercrew_ai.vector_store import FakeVectorStore, QueryResult, VectorRecord
+from careercrew_ai.vector_store import FakeVectorStore, VectorRecord
 from careercrew_core.rag.retrieval.multimodal_search import MultimodalSearch
 from careercrew_core.state.settings import Settings
 

@@ -1,6 +1,8 @@
 """自动注入（读路径通道一）测试。"""
 from __future__ import annotations
 
+from datetime import UTC
+
 from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.memory.injection import MemoryInjector
@@ -55,9 +57,9 @@ def test_freshness_note_on_old_fact() -> None:
         description="技能 Java", source="t",
     )
     # 手动把 modified_at 改到 10 天前
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     db._facts[("u1", "profile.skills")]["modified_at"] = old
     policy = MemoryPolicyStore(db)
     policy.set_global(enabled=True)

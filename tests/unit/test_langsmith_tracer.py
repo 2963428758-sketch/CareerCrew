@@ -7,7 +7,7 @@ run 列表/详情序列化与根 run 过滤、404/503 分支。
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -189,8 +189,8 @@ def _make_run(
         id=run_id,
         name=name,
         run_type="chain",
-        start_time=datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc),
-        end_time=datetime(2026, 8, 11, 10, 0, 5, tzinfo=timezone.utc),
+        start_time=datetime(2026, 8, 11, 10, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 11, 10, 0, 5, tzinfo=UTC),
         status="success",
         error=None,
         metadata={"user_id": user_id, "thread_id": thread_id, "stage": stage},

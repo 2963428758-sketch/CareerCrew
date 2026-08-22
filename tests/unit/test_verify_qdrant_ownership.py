@@ -19,7 +19,6 @@ from verify_qdrant_ownership import (  # noqa: E402
     ORPHAN_OWNER,
     _classify_point,
     build_report,
-    scan_collection,
     snapshot_collection,
     verify_collection,
 )

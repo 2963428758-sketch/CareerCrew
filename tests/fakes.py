@@ -10,8 +10,8 @@ tests/integration/test_postgres_account_store.py 覆盖。
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import json
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
@@ -153,6 +153,15 @@ class FakeAccountStore(AccountStore):
             self.accounts[user_id]["status"] = status
         self.accounts[user_id]["updated_at"] = _now().isoformat()
         return self._public(self._row(user_id))
+
+    def delete_account(self, user_id: str) -> bool:
+        if user_id not in self.accounts:
+            return False
+        del self.accounts[user_id]
+        # 刷新会话随账号删除一并失效（与 Postgres FK ON DELETE CASCADE 语义一致）
+        for token in [t for t, s in list(self.sessions.items()) if s.get("user_id") == user_id]:
+            del self.sessions[token]
+        return True
 
     def update_password_hash(self, user_id: str, password_hash: str) -> None:
         self.accounts[user_id]["password_hash"] = password_hash

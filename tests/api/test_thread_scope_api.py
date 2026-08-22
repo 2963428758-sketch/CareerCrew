@@ -48,11 +48,11 @@ def tenant_api(tmp_path, monkeypatch):
 
     from careercrew_api.auth.dependencies import get_auth_service
     from careercrew_api.auth.service import AuthService
-    from tests.fakes import FakeAccountStore
     from careercrew_api.deps import get_runtime_dep
     from careercrew_api.main import create_app
     from careercrew_core.state.settings import AuthSettings
     from tests.api.conftest import FakeRuntime
+    from tests.fakes import FakeAccountStore
 
     settings = AuthSettings(
         environment="test",
@@ -81,16 +81,7 @@ def tenant_api(tmp_path, monkeypatch):
     bob_login = client.post(
         "/api/auth/token", json={"username": "bob", "password": bob_password}
     ).json()
-    # 新建用户带强制改密标记：先完成改密，业务 API 才放行
-    change = client.post(
-        "/api/auth/password",
-        json={"new_password": bob_password},
-        headers={"Authorization": f"Bearer {bob_login['access_token']}"},
-    )
-    assert change.status_code == 200
-    bob_login = client.post(
-        "/api/auth/token", json={"username": "bob", "password": bob_password}
-    ).json()
+    # 管理员显式设密 => 无强制改密标记，直接登录可用
     bob_headers = {"Authorization": f"Bearer {bob_login['access_token']}"}
     return client, {"alice": admin_headers, "bob": bob_headers}, {
         "alice": admin["id"], "bob": bob_login["user"]["id"],

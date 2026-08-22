@@ -5,15 +5,14 @@ update status/delete/expire(TTL) 清理，以及 store 层的所有权拒绝。
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
 from careercrew_core.conversation.attachments import (
-    AttachmentDb,
-    FakeAttachmentDb,
     AttachmentStore,
+    FakeAttachmentDb,
     OwnershipError,
 )
 
@@ -144,7 +143,7 @@ def test_count_nondeleted_per_thread(db):
 # ── DB 层：TTL / expire ──
 
 def test_list_expired_returns_past_expires_at(db):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past = now - timedelta(days=1)
     future = now + timedelta(days=1)
     db.create_attachment(**_db_kwargs(expires_at=past))
@@ -157,7 +156,7 @@ def test_list_expired_returns_past_expires_at(db):
 
 
 def test_expire_skips_saved_to_knowledge(db):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past = now - timedelta(days=1)
     db.create_attachment(**_db_kwargs(expires_at=past, status="saved_to_knowledge"))
     # saved_to_knowledge 应 expires_at=NULL；即使仍带过期时间也不应被清理
@@ -167,7 +166,7 @@ def test_expire_skips_saved_to_knowledge(db):
 
 
 def test_save_to_knowledge_clears_expires_at(db):
-    kw = _db_kwargs(expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    kw = _db_kwargs(expires_at=datetime.now(UTC) + timedelta(days=1))
     db.create_attachment(**kw)
     store = AttachmentStore(db)
     store.mark_saved(kw["attachment_id"], "u_1", knowledge_document_id=str(uuid4()))
@@ -209,5 +208,5 @@ def test_store_default_expires_about_7_days(store):
     exp = created["expires_at"]
     assert isinstance(exp, datetime)
     assert exp.tzinfo is not None and exp.utcoffset() == timedelta(0)
-    delta = exp - datetime.now(timezone.utc)
+    delta = exp - datetime.now(UTC)
     assert timedelta(days=6, hours=12) < delta < timedelta(days=7, hours=12)

@@ -17,7 +17,6 @@ from careercrew_ai.agents.langchain_agent import (
     build_agent,
     run_agent,
 )
-from careercrew_core.agents.base_agent import BaseAgent
 from tests.fakes import FakeChatModel
 
 

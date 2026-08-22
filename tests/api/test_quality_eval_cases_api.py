@@ -29,7 +29,7 @@ def _negative_with_context(runtime, user_id: str, legacy_thread: str,
 def test_promote_edit_approve_export_lifecycle(tenant_api):
     client, runtime, headers, ids = tenant_api
     alice = ids["alice"]
-    message = _negative_with_context(runtime, alice, "eval-lifecycle")
+    _negative_with_context(runtime, alice, "eval-lifecycle")
     feedback = runtime.conversation_store.list_quality_feedback()[0]
     feedback_id = feedback["feedback_id"]
 

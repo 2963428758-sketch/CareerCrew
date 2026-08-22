@@ -40,8 +40,7 @@ def test_menu_crud_and_export(tenant_api):
     alice = headers["alice"]
 
     # create conversation (legacy thread_id) + plan turn 落 message/run
-    created = _make_thread(client, alice, "t-menu-1", module="chat", title="求职咨询")
-    thread_uuid = created["thread_id"]
+    _make_thread(client, alice, "t-menu-1", module="chat", title="求职咨询")
     done = _plan_turn(client, alice, "t-menu-1")
     assert done.get("message_id")
 

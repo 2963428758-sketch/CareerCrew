@@ -5,7 +5,6 @@ import pytest
 
 from careercrew_core.conversation.export import build_json, build_markdown
 
-
 CONV = {"id": "u-1", "title": "求职咨询", "module": "chat", "created_at": "2026-01-01T00:00:00Z"}
 
 MESSAGES = [

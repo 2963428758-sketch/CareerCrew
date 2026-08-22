@@ -3,13 +3,9 @@ from __future__ import annotations
 
 from careercrew_core.tools.mcp.mock_apply import (
     HIGH_RISK_TOOLS,
-    accept_offer,
     register_high_risk_tools,
-    salary_talk_script,
-    send_greeting,
-    submit_application,
 )
-from careercrew_core.tools.registry import ToolRegistry, ToolSpec
+from careercrew_core.tools.registry import ToolRegistry
 
 
 def test_high_risk_tools_list() -> None:

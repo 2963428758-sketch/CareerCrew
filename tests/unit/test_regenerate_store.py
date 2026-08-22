@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from careercrew_core.conversation.db import FakeConversationDb
-from careercrew_core.conversation.store import ConversationStore, OwnershipError
+from careercrew_core.conversation.store import ConversationStore
 
 
 @pytest.fixture

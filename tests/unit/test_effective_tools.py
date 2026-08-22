@@ -4,7 +4,6 @@ from __future__ import annotations
 from careercrew_core.tools.capabilities import build_capabilities
 from careercrew_core.tools.effective import compute_effective_tools
 
-
 # ── effective_tools 纯函数矩阵（§16.3）──
 
 

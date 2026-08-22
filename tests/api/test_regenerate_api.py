@@ -12,11 +12,6 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-import pytest
-
-from careercrew_api.runtime import CareerCrewRuntime, ResourceNotFoundError
-from careercrew_core.conversation.store import ConversationStore
-
 
 def _run_client_stream(client, path, payload, *, idempotency_key=None):
     headers = {}

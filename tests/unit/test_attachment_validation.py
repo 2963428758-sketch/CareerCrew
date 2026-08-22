@@ -9,9 +9,9 @@ import pytest
 
 from careercrew_core.conversation.validation import (
     EXTENSION_WHITELIST,
+    MAX_ATTACHMENT_SIZE,
     MIME_TO_EXTENSION,
     AttachmentValidationError,
-    MAX_ATTACHMENT_SIZE,
     validate_attachment,
 )
 
@@ -135,7 +135,7 @@ def test_text_rejects_invalid_utf8_after_64_byte_head():
 
 def test_text_accepts_valid_utf8_full_body():
     # 全文均为合法 UTF-8 时通过。
-    body = "第".encode("utf-8") + b"a" * 200
+    body = "第".encode() + b"a" * 200
     result = validate_attachment(
         "x.txt", "text/plain", body[:64], size=len(body), content=body,
     )

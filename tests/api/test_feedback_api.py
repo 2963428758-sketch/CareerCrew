@@ -1,7 +1,7 @@
 """Feedback API contracts: server-derived ownership, snapshots, and deletion audit."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -100,7 +100,7 @@ def test_snapshot_redaction_bounds_replacement_and_deletion_audit(tenant_api):
     assert "C:\\Users\\alice" not in " ".join(texts)
     assert len(texts) == 6  # rated pair + at most two preceding user/assistant turns
     assert sum(len(text) for text in texts) <= 12_000
-    assert 89 <= (datetime.fromisoformat(snapshot["expires_at"]) - datetime.now(timezone.utc)).days <= 90
+    assert 89 <= (datetime.fromisoformat(snapshot["expires_at"]) - datetime.now(UTC)).days <= 90
     # Replacing with an unshared negative or a Like revokes the snapshot immediately.
     assert client.put(f"/api/messages/{current['id']}/feedback", headers=headers["alice"], json={
         "rating": "negative", "reason": "incorrect", "share_context": False,

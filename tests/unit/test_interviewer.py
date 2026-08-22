@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from careercrew_core.agents.interviewer import Interviewer, _parse_score, record_interview_qa, score_answer
+from careercrew_core.agents.interviewer import (
+    Interviewer,
+    _parse_score,
+    record_interview_qa,
+    score_answer,
+)
 from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.tools.internal.rag_query import make_rag_query_tool
-from careercrew_core.tools.internal.memory_write import make_memory_write_tool
 from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 from tests.fakes import FakeChatModel
 

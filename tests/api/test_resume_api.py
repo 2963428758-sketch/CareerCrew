@@ -37,7 +37,7 @@ def test_upload_text(client, fake_runtime):
     fake_runtime.upload_content = "这是一份简历文本"
     resp = client.post(
         "/api/resume/upload",
-        files={"file": ("resume.txt", io.BytesIO("这是一份简历文本".encode("utf-8")), "text/plain")},
+        files={"file": ("resume.txt", io.BytesIO("这是一份简历文本".encode()), "text/plain")},
     )
     assert resp.status_code == 202
     data = resp.json()

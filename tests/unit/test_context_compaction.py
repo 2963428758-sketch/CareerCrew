@@ -5,8 +5,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from careercrew_ai.agents.langchain_agent import (
     ContextCompactionMiddleware,
-    build_agent,
     _estimate_msg_tokens,
+    build_agent,
 )
 
 

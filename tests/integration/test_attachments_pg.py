@@ -6,8 +6,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -97,7 +96,7 @@ def test_expired_and_saved_to_knowledge(store_and_db):
     store, db = store_and_db
     uid = "u_001"
     tid = str(uuid4())
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = datetime.now(UTC) - timedelta(days=1)
     exp = store.create(tid, uid, "old.pdf", "o", "application/pdf", 1,
                        expires_at=past)
     # 保存到知识库：expires_at=NULL + status=saved_to_knowledge

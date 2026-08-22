@@ -65,7 +65,6 @@ def test_hitl_middleware_passes_non_hitl_through() -> None:
 
 def test_run_agent_surfaces_blocked_tool_calls() -> None:
     """真跑 create_agent：HITL 工具被拦截，blocked_tool_calls 记录且工具未执行副作用。"""
-    called: list[str] = []
     llm = FakeChatModel([
         AIMessage(content="", tool_calls=[_tc("submit_application", {"company": "字节"})]),
         AIMessage(content="无法投递：需要你确认"),

@@ -13,11 +13,10 @@ FastAPI 依赖链，验证：
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 import pytest
-
-from careercrew_api.sse import StreamCancelled
 
 
 def _valid_uuid(value: str) -> bool:
@@ -26,9 +25,6 @@ def _valid_uuid(value: str) -> bool:
         return True
     except (ValueError, AttributeError, TypeError):
         return False
-
-
-import re
 
 
 def _last_done(resp) -> dict:
@@ -260,7 +256,6 @@ def test_stream_error_marks_assistant_failed(client, fake_runtime):
     original = fake_runtime.run_match_stream
 
     def boom(thread_id, user_id, intent, cb=None, cancel_check=None, **kwargs):
-        from careercrew_api.chat_lifecycle import StreamResult
 
         ctx = fake_runtime._begin_chat_turn(
             thread_id, user_id, module="matcher", agent_id="job_matcher", user_text=intent,
@@ -276,7 +271,6 @@ def test_stream_error_marks_assistant_failed(client, fake_runtime):
         fake_runtime.run_match_stream = original
 
     # 通过 runtime 的对话存储直接断言消息状态
-    conv = fake_runtime.conversation_store.get_conversation("err-1", "u_001")
     msgs = fake_runtime.conversation_store.list_messages("err-1", "u_001")
     asst = [m for m in msgs if m["role"] == "assistant"][0]
     assert asst["status"] == "failed"

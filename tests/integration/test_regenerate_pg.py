@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 
 from careercrew_core.conversation.db import PostgresConversationDb
-from careercrew_core.conversation.store import ConversationStore, OwnershipError
+from careercrew_core.conversation.store import ConversationStore
 
 DSN = os.environ.get("POSTGRES_TEST_DSN", "").strip()
 

@@ -32,7 +32,7 @@ def test_knowledge_upload(client):
     """POST /api/knowledge/upload -> 202 {job_id}，轮询 GET /upload/{job_id} 直到 done。"""
     resp = client.post(
         "/api/knowledge/upload",
-        files={"file": ("note.md", "# 测试文档\n内容".encode("utf-8"), "text/markdown")},
+        files={"file": ("note.md", "# 测试文档\n内容".encode(), "text/markdown")},
     )
     assert resp.status_code == 202
     data = resp.json()

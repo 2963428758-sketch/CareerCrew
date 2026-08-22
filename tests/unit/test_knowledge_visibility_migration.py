@@ -7,8 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from migrate_knowledge_visibility import migrate_collection  # noqa: E402
-from careercrew_ai.vector_store.qdrant_store import QdrantStore
+
 from careercrew_ai.vector_store.base_vector_store import VectorRecord
+from careercrew_ai.vector_store.qdrant_store import QdrantStore
 
 
 def _seed_store(valid_config_data):

@@ -5,8 +5,8 @@ saved_to_knowledge / 未过期 / expires_at=NULL 一律保留。
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,7 +42,7 @@ def _seed(store, attachments_root, *, expires_at, status="uploaded", storage_key
 
 def test_cleanup_removes_expired_file_and_row(store, tmp_path):
     root = tmp_path / "attachments"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     aid = _seed(store, root, expires_at=now - timedelta(days=1))
     results = cleanup_expired(store, root, now=now, dry_run=False)
     assert len(results) == 1
@@ -54,7 +54,7 @@ def test_cleanup_removes_expired_file_and_row(store, tmp_path):
 
 def test_cleanup_skips_saved_to_knowledge(store, tmp_path):
     root = tmp_path / "attachments"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # saved_to_knowledge 即使带过期时间也保留
     _seed(store, root, expires_at=now - timedelta(days=1), status="saved_to_knowledge")
     results = cleanup_expired(store, root, now=now, dry_run=False)
@@ -63,7 +63,7 @@ def test_cleanup_skips_saved_to_knowledge(store, tmp_path):
 
 def test_cleanup_skips_future_and_null(store, tmp_path):
     root = tmp_path / "attachments"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed(store, root, expires_at=now + timedelta(days=1))
     # expires_at=NULL（已保存到知识库场景）
     _seed(store, root, expires_at=None)
@@ -73,7 +73,7 @@ def test_cleanup_skips_future_and_null(store, tmp_path):
 
 def test_cleanup_dry_run_does_not_delete(store, tmp_path):
     root = tmp_path / "attachments"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     aid = _seed(store, root, expires_at=now - timedelta(days=1))
     results = cleanup_expired(store, root, now=now, dry_run=True)
     assert len(results) == 1

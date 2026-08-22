@@ -25,7 +25,7 @@ def test_metrics_aggregates_with_coverage_and_version_trend(tenant_api):
     alice = ids["alice"]
     good = _assistant(runtime, alice, "metrics-good", "q1", "a1")
     bad = _assistant(runtime, alice, "metrics-bad", "q2", "a2", prompt_version="v1")
-    unrated = _assistant(runtime, alice, "metrics-unrated", "q3", "a3")
+    _assistant(runtime, alice, "metrics-unrated", "q3", "a3")
     assert client.put(f"/api/messages/{good['id']}/feedback", headers=headers["alice"], json={
         "rating": "positive",
     }).status_code == 200

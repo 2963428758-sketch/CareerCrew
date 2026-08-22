@@ -4,9 +4,9 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, HumanMessage
 
 from careercrew_core.agents.knowledge_advisor import (
-    KnowledgeAdvisor,
     _DEFAULT_PROMPT,
     _PROMPT_PATH,
+    KnowledgeAdvisor,
 )
 from tests.fakes import FakeChatModel
 

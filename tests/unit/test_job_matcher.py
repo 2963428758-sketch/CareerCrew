@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from careercrew_core.agents.job_matcher import JobMatcher, extract_profile_from_intent, score_jd_match
+from careercrew_core.agents.job_matcher import (
+    JobMatcher,
+    extract_profile_from_intent,
+    score_jd_match,
+)
 from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.tools.internal.memory_write import make_memory_write_tool
