@@ -19,6 +19,7 @@ from pydantic import BaseModel, field_validator
 
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
+from careercrew_api.limits import user_stream_slot
 from careercrew_api.routers.data import RetrievalScopeRequest
 from careercrew_api.runtime import (
     CareerCrewRuntime,
@@ -305,6 +306,7 @@ def regenerate_message(
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
     """重新生成最后一条完整 assistant 消息（§34）：复用 turn，新建 run + 新 message。
 

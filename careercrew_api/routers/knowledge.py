@@ -15,6 +15,7 @@ from careercrew_api import storage
 from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.auth.dependencies import CurrentUser, require_admin
 from careercrew_api.deps import get_runtime_dep
+from careercrew_api.limits import user_stream_slot
 from careercrew_api.mentions import MentionRejected
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
@@ -229,6 +230,7 @@ def ask_knowledge(
     req: KnowledgeAskRequest,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
     """知识库问答：KnowledgeAdvisor 基于检索流式回答。
 

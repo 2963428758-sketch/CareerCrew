@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from careercrew_api.attachment_context import AttachmentRejected, build_user_message
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
+from careercrew_api.limits import user_stream_slot
 from careercrew_api.mentions import MentionRejected
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
@@ -124,6 +125,7 @@ def consult(
     req: ConsultRequest,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
     """会诊总调度官：自动编排顾问 -> 多轮并行调度 -> 最终答案。"""
 

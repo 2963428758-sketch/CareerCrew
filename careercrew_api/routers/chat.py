@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
+from careercrew_api.limits import user_stream_slot
 from careercrew_api.mentions import MentionRejected
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import MatchRequest, ResumeRequest
@@ -68,6 +69,7 @@ def match(
     req: MatchRequest,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
     """阶段 match：JobMatcher 找匹配岗位，流式输出。"""
 
@@ -119,6 +121,7 @@ def resume(
     req: ResumeRequest,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
     """阶段 resume：ResumeAdvisor 按 JD 定制简历（带跨步骤历史），流式输出。"""
 
@@ -169,6 +172,7 @@ def plan(
     req: MatchRequest,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
     """求职对话：职业规划师主理（一站式画像/规划/匹配/简历/薪资），流式输出。"""
 
