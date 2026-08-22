@@ -2,6 +2,7 @@ import { create } from "zustand"
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
 import { notifyError } from "@/lib/toastBus"
+import { copyText } from "@/components/conversation/copy"
 
 export type ThreadModule = "chat" | "matcher" | "interview" | "knowledge" | "consult" | "resume"
 
@@ -338,10 +339,8 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   copyThreadId: async (tid) => {
-    try {
-      await navigator.clipboard.writeText(tid)
-    } catch {
-      window.prompt("会话 ID（可手动复制）", tid)
+    if (!(await copyText(tid))) {
+      notifyError(`复制失败，会话 ID：${tid}`)
     }
     set({ copiedThreadId: tid })
     setTimeout(() => {

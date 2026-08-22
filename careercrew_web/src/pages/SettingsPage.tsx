@@ -31,7 +31,13 @@ function avatarColor(username: string) {
  * 设置导航在外侧 SettingsSidebar（圆角工作区之外，与主侧边栏同构）。
  */
 export default function SettingsPage({ section }: { section: string }) {
-  const active = SETTINGS_SECTIONS.find((s) => s.key === section) ?? SETTINGS_SECTIONS[0]
+  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
+  const isReviewer = (auth.user?.role as string | undefined) === "quality_reviewer"
+  // 质检员无业务数据权限（能力画像/记忆后端 403），越权区块回退到「账号」
+  const allowed = SETTINGS_SECTIONS.filter(
+    (s) => !s.notForReviewer || !isReviewer
+  )
+  const active = allowed.find((s) => s.key === section) ?? allowed[0]
 
   return (
     <div className="flex h-full flex-col">

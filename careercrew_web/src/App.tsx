@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ComponentType } from "react"
-import { useLocation } from "react-router-dom"
+import { Navigate, useLocation } from "react-router-dom"
 import { Menu } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useThreadStore } from "@/store/threadStore"
@@ -151,10 +151,13 @@ export default function App() {
             (() => {
               const requested = resolvePage(location.pathname)
               const role = (auth.user?.role as string | undefined) ?? ""
-              const forbidden =
-                (location.pathname === "/admin/users" && role !== "admin") ||
-                (location.pathname.startsWith("/quality") && role !== "quality_reviewer")
-              const Page = forbidden ? ChatPage : requested
+              // 角色越权：不渲染目标页（后端也会 403），直接回各自首页
+              if (location.pathname === "/admin/users" && role !== "admin") return <Navigate to="/" replace />
+              if (location.pathname.startsWith("/quality") && role !== "quality_reviewer") return <Navigate to="/" replace />
+              if (role === "quality_reviewer" && !location.pathname.startsWith("/quality")) {
+                return <Navigate to="/quality" replace />
+              }
+              const Page = requested
               return <Page key={location.pathname} />
             })()
           )}

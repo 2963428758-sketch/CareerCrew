@@ -17,7 +17,7 @@ interface CreateUserDialogProps {
 export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogProps) {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
-  const [role, setRole] = useState<"user" | "admin">("user")
+  const [role, setRole] = useState<"user" | "admin" | "quality_reviewer">("user")
   const [error, setError] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
@@ -91,7 +91,7 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
         <div className="flex items-center justify-between gap-3 border-b border-[var(--border-soft)] px-5 py-4">
           <div className="min-w-0">
             <h3 className="text-[15px] font-medium text-ink">新建账号</h3>
-            <p className="mt-0.5 text-[12px] text-ink-faint">创建后首次登录需修改密码</p>
+            <p className="mt-0.5 text-[12px] text-ink-faint">密码留空时使用默认 123456，该账号首次登录需改密</p>
           </div>
           <Tooltip label="关闭">
             <button
@@ -128,17 +128,18 @@ export function CreateUserDialog({ open, onClose, onCreated }: CreateUserDialogP
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="留空默认 123456；自定义 8-64 位含字母和数字"
+              placeholder="留空默认 123456（首登需改密）；自定义密码可直接登录"
             />
           </label>
           <label className="block">
             <span className="mb-1 flex items-center gap-1 text-[12.5px] font-medium text-ink">角色</span>
             <select
               value={role}
-              onChange={(e) => setRole(e.target.value as "user" | "admin")}
+              onChange={(e) => setRole(e.target.value as "user" | "admin" | "quality_reviewer")}
               className="h-9 w-full rounded-[7px] border border-input bg-workspace px-3 text-[13px] outline-none transition-colors duration-100 focus-visible:ring-2 focus-visible:ring-ring/40"
             >
               <option value="user">普通用户</option>
+              <option value="quality_reviewer">质检员</option>
               <option value="admin">管理员</option>
             </select>
           </label>

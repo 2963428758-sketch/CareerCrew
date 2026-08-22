@@ -160,6 +160,16 @@
   animation: workingPulse 1.6s ease-in-out infinite;
 }
 
+/* 全局 toast：自顶部轻微滑入 */
+.toast-slide-in {
+  animation: toastSlideIn 0.28s cubic-bezier(0.21, 1.02, 0.73, 1);
+}
+
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateY(-10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 @keyframes workingPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
@@ -196,6 +206,7 @@
 @media (prefers-reduced-motion: reduce) {
   .typing-cursor::after { animation: none; }
   .stream-fade-in { animation: none; }
+  .toast-slide-in { animation: none; }
   .working-pulse { animation: none; }
   .anchor-highlight { animation: none; }
 }

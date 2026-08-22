@@ -33,8 +33,11 @@ export function SettingsSidebar({
   const navigate = useNavigate()
   const compact = collapsed && !overlay
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
-  // 非管理员隐藏 adminOnly 区块（用户管理等）
-  const sections = SETTINGS_SECTIONS.filter((s) => !s.adminOnly || auth.user?.role === "admin")
+  // 非管理员隐藏 adminOnly 区块（用户管理等）；质检员隐藏 notForReviewer 区块（能力画像/记忆等，后端对其 403）
+  const isReviewer = auth.user?.role === "quality_reviewer"
+  const sections = SETTINGS_SECTIONS.filter((s) => !s.adminOnly || auth.user?.role === "admin").filter(
+    (s) => !s.notForReviewer || !isReviewer
+  )
 
   return (
     <>

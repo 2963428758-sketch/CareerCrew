@@ -7,6 +7,12 @@
       "runtimeArgs": ["--prefix", "careercrew_web", "run", "dev", "--", "--port", "5174"],
       "port": 5174,
       "autoPort": true
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "F:\\Python_develop\\miniconda3\\envs\\careercrew\\Scripts\\uvicorn.exe",
+      "runtimeArgs": ["careercrew_api.main:app", "--reload", "--port", "8000"],
+      "port": 8000
     }
   ]
 }

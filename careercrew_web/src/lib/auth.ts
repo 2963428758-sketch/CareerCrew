@@ -3,7 +3,7 @@ import { apiErrorText, networkErrorText } from "@/lib/errors"
 export interface AuthUser {
   id: string
   username: string
-  role: "admin" | "user"
+    role: "admin" | "user" | "quality_reviewer"
   /** 显示名（可修改，用于界面展示）；为空时前端回退显示 username */
   display_name?: string | null
   /** 新建/重置密码后为 true：进入系统前必须修改密码（后端业务 API 会 403 拦截） */

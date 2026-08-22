@@ -50,6 +50,8 @@ interface AppSidebarProps {
 export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen, onOverlayClose, auth }: AppSidebarProps) {
   const navigate = useNavigate()
   const compact = collapsed && !overlay
+  /** 质检员是只读审查角色：业务功能（对话/会诊等）后端一律 403，界面整体隐藏 */
+  const isReviewer = (auth?.role as string | undefined) === "quality_reviewer"
 
   /** 新对话：跳回求职规划模块并开启新会话（与 ChatPage「新对话」同一逻辑）。 */
   const handleNewTask = () => {
@@ -115,34 +117,39 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
           )}
         </div>
 
-        {/* 主操作：新对话 */}
-        <div className="px-2">
-          <Tooltip label={compact ? "新对话" : undefined}>
-            <button
-              onClick={handleNewTask}
-              aria-label={compact ? "新对话" : undefined}
-              className={cn(
-                "flex w-full items-center rounded-[7px] text-[13px] font-medium text-ink transition-colors duration-100 hover:bg-[var(--hover)]",
-                compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px]"
-              )}
-            >
-              <SquarePen className="h-4 w-4 shrink-0 text-ink-soft" strokeWidth={1.7} />
-              {!compact && <span className="flex-1 text-left">新对话</span>}
-            </button>
-          </Tooltip>
-        </div>
+        {/* 主操作：新对话（质检员无业务会话权限，隐藏） */}
+        {!isReviewer && (
+          <div className="px-2">
+            <Tooltip label={compact ? "新对话" : undefined}>
+              <button
+                onClick={handleNewTask}
+                aria-label={compact ? "新对话" : undefined}
+                className={cn(
+                  "flex w-full items-center rounded-[7px] text-[13px] font-medium text-ink transition-colors duration-100 hover:bg-[var(--hover)]",
+                  compact ? "h-[34px] justify-center" : "h-[34px] gap-[9px] px-[9px]"
+                )}
+              >
+                <SquarePen className="h-4 w-4 shrink-0 text-ink-soft" strokeWidth={1.7} />
+                {!compact && <span className="flex-1 text-left">新对话</span>}
+              </button>
+            </Tooltip>
+          </div>
+        )}
 
         {/* 模块导航 */}
         {compact ? (
           <div className="mt-3" />
         ) : (
-          <p className="mb-[5px] mt-4 px-[11px] text-[11px] font-medium text-ink-faint">求职助手</p>
+          <p className="mb-[5px] mt-4 px-[11px] text-[11px] font-medium text-ink-faint">
+            {isReviewer ? "质量审查" : "求职助手"}
+          </p>
         )}
         <div className="flex flex-col gap-[2px] px-2">
           {NAV.filter(
             (item) =>
               (!item.adminOnly || auth?.role === "admin") &&
-              (!item.reviewerOnly || (auth?.role as string) === "quality_reviewer")
+              (!item.reviewerOnly || (auth?.role as string) === "quality_reviewer") &&
+              (auth?.role !== "quality_reviewer" || !!item.reviewerOnly)
           ).map((item) => (
             <Tooltip key={item.to} label={compact ? item.label : undefined}>
               <NavLink
@@ -174,8 +181,8 @@ export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen,
           ))}
         </div>
 
-        {/* 对话历史（当前模块） */}
-        {!compact && <ThreadList />}
+        {/* 对话历史（当前模块；质检员无业务会话，隐藏） */}
+        {!compact && !isReviewer && <ThreadList />}
 
         {/* 底部：用户区 + 主题（设置入口在用户菜单内） */}
         <div className="mt-auto flex shrink-0 flex-col gap-[2px] px-2 pb-2">

@@ -5,6 +5,7 @@ import { Tooltip } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { useThreadStore } from "@/store/threadStore"
 import { downloadBlob } from "@/lib/conversationExport"
+import { copyText } from "@/components/conversation/copy"
 import { notifyError, notifyInfo } from "@/lib/toastBus"
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
@@ -84,12 +85,11 @@ export function ConversationMenu({
   }
 
   const handleCopyId = async () => {
-    try {
-      await navigator.clipboard.writeText(threadId)
+    if (await copyText(threadId)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch {
-      window.prompt("会话 ID（可手动复制）", threadId)
+    } else {
+      notifyError(`复制失败，会话 ID：${threadId}`)
     }
   }
 
