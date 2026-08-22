@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +30,7 @@ def cleanup_expired(store, attachments_root: Path, now: datetime | None = None,
     from careercrew_api.storage import resolve_under
 
     results: list[str] = []
-    expired = store.expired_attachments(now=now or datetime.now(timezone.utc))
+    expired = store.expired_attachments(now=now or datetime.now(UTC))
     for row in expired:
         # storage_key 相对 attachments 根；resolve_under 防目录穿越。
         try:

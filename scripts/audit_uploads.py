@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from careercrew_api.storage import L, layout
+from careercrew_api.storage import L
 
 RESUME_HINT = ("简历", "resume", "Resume", "RESUME")
 _SKIP_PARTS = ("resumes_raw", "knowledge_raw", "resume_threads")

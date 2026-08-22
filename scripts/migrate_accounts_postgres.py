@@ -7,10 +7,10 @@ SQLite 文件改名为 <原名>.pre-postgres-<时间戳>.bak（默认启用于 a
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
-from pathlib import Path
 import sqlite3
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_SQLITE = PROJECT_ROOT / "data" / "db" / "accounts.db"

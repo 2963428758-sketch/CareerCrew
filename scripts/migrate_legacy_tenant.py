@@ -16,16 +16,16 @@ Examples::
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import hashlib
 import json
-from pathlib import Path
 import re
 import shutil
 import sqlite3
 import sys
-from typing import Iterable
 import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_USER_ID = "u_001"
@@ -38,7 +38,7 @@ class MigrationResult:
     conflicts: int = 0
     messages: list[str] = field(default_factory=list)
 
-    def extend(self, other: "MigrationResult") -> None:
+    def extend(self, other: MigrationResult) -> None:
         self.changed += other.changed
         self.conflicts += other.conflicts
         self.messages.extend(other.messages)
