@@ -8,7 +8,6 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-
 app = Server("mock-jobs")
 
 
@@ -40,7 +39,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             {"company": "TestCorp2", "title": "Java 后端开发", "skills": ["Java"], "score": 0.5},
         ][:top_k]
         return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))])
-    raise ValueError(f"Unknown tool: {params.name}")
+    raise ValueError(f"Unknown tool: {name}")
 async def main() -> None:
     async with stdio_server() as (read, write):
         await app.run(read, write, initialization_options=app.create_initialization_options())
