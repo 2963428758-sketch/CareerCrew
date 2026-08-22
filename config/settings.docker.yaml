@@ -1,0 +1,131 @@
+# CareerCrew 容器部署配置（docker-compose 配套）
+# 与 settings.yaml 结构一致，差异仅三处：vector_store.url 指向 qdrant 服务名、
+# embedding.model_path 指向容器内挂载路径、langsmith 默认关闭。
+# 启用方式：环境变量 CAREERCREW_SETTINGS_PATH=/app/config/settings.docker.yaml
+# （compose 已设置，本地开发不受影响。）
+
+llm:
+  provider: openai
+  model: "zai-org/GLM-4.5V"
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
+  temperature: 0.3
+  max_tokens: 2048
+
+embedding:
+  provider: bge_m3_local
+  model: BAAI/bge-m3
+  model_path: /models/bge-m3        # compose 挂载宿主机 ./models/bge-m3
+  use_fp16: false
+  batch_size: 12
+
+rerank:
+  backend: siliconflow
+  model: BAAI/bge-reranker-v2-m3
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
+  top_m: 30
+
+vector_store:
+  backend: qdrant
+  url: http://qdrant:6333           # compose 服务名
+  api_key: ""
+  collections:
+    knowledge: careercrew_mm
+    episodic_memory: careercrew_episodic_v2
+
+rag:
+  retrieval:
+    mode: hybrid
+    fusion_algorithm: rrf
+    top_k_dense: 20
+    top_k_sparse: 20
+    top_k_final: 10
+  chunking:
+    strategy: recursive
+    chunk_size: 800
+    chunk_overlap: 100
+    contextual: false               # 生产默认关闭（LLM 成本）；按知识库开启见 README
+  loaders:
+    backend: mineru
+    provider: api
+    api_key: "${MINERU_API_KEY}"
+    model_version: vlm
+    poll_interval: 5
+    timeout: 1800
+    output_dir: /app/data/parsed
+    device: cpu
+    method: auto
+    formula: true
+    table: true
+    language: ch
+
+vlm:
+  model: zai-org/GLM-4.5V
+  rerank_model: Qwen/Qwen3-VL-Reranker-8B
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key: "${SILICONFLOW_API_KEY}"
+
+supervisor:
+  checkpointer:
+    backend: postgres
+    url: "${DATABASE_URL}"
+  max_consecutive_agent_turns: 10
+
+memory:
+  enabled: false
+  postgres:
+    dsn: "${DATABASE_URL}"
+  episodic:
+    collection: careercrew_episodic_v2
+    vectorize: true
+  compaction:
+    enabled: true
+    token_threshold_ratio: 0.7
+    retention_tokens: 20000
+  router:
+    top_n: 5
+    max_inject_tokens: 2000
+  consolidation:
+    min_interval_hours: 24
+    min_sessions: 5
+    # dream_schedule 在 docker 变体不预设（容器时区不定），需要时手动加：
+    # dream_schedule: "03:30"
+
+tools:
+  registry:
+    internal: [rag_query, memory_search, memory_write, profile_update, search_jobs, salary_query, read_image, submit_application]
+    mcp: [mcp_jobs, google_mcp]
+  hitl:
+    requires_confirmation:
+      - submit_application
+
+hitl:
+  default_policy: confirm
+
+langsmith:
+  enabled: false                    # 需要追踪时置 true 并提供 LANGSMITH_API_KEY
+  project: careercrew
+  api_key: "${LANGSMITH_API_KEY}"
+  masking: true
+  max_chars: 2000
+
+oss:
+  endpoint: "${OSS_ENDPOINT}"
+  access_key_id: "${OSS_ACCESS_KEY_ID}"
+  access_key_secret: "${OSS_ACCESS_KEY_SECRET}"
+  bucket_name: "${OSS_BUCKET_NAME}"
+  dir_prefix: uploads
+
+auth:
+  environment: production           # compose 部署视为生产（强制 jwt_secret ≥32 字符）
+  database_url: "${AUTH_DATABASE_URL}"
+  trusted_origins: ["http://localhost:8000", "http://127.0.0.1:8000"]  # 有域名/LB 时在此追加
+  login_max_failures: 5
+  login_failure_window_minutes: 15
+  login_lock_minutes: 15
+  cleanup_interval_hours: 6
+  jwt_secret: "${AUTH_JWT_SECRET}"
+  access_token_minutes: 15
+  refresh_token_days: 7
+  cookie_secure: false              # 上 HTTPS/LB 后必须改 true

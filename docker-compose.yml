@@ -1,0 +1,59 @@
+# CareerCrew 一键编排：postgres + qdrant + app（克隆即跑）
+# 用法：
+#   cp .env.example .env   # 填 SILICONFLOW_API_KEY / AUTH_JWT_SECRET 等
+#   docker compose up -d --build
+# BGE-M3 模型权重需提前放到 ./models/bge-m3（见 README「容器部署」）
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: careercrew
+      POSTGRES_PASSWORD: careercrew
+      POSTGRES_DB: careercrew
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careercrew -d careercrew"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  qdrant:
+    image: qdrant/qdrant:latest        # 生产建议固定到具体版本 tag
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      CAREERCREW_SETTINGS_PATH: /app/config/settings.docker.yaml
+      DATABASE_URL: postgresql+psycopg://careercrew:careercrew@postgres:5432/careercrew
+      # AUTH_DATABASE_URL 未设置时回退 DATABASE_URL（settings.py 约定），无需单设
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models/bge-m3:/models/bge-m3:ro     # BGE-M3 权重（宿主机准备）
+      - app_uploads:/app/data                 # 上传附件/解析产物/OSS 回退目录
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 120s                      # 首次惰性初始化（含模型加载）较慢
+
+volumes:
+  pgdata:
+  qdrant_storage:
+  app_uploads:

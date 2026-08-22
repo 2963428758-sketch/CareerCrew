@@ -22,8 +22,12 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 # ── 默认配置路径：careercrew_core/state/settings.py -> parents[2] = 项目根 ──
+# 容器部署可用 CAREERCREW_SETTINGS_PATH 指向 config/settings.docker.yaml 等变体
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "settings.yaml"
+_settings_override = os.environ.get("CAREERCREW_SETTINGS_PATH", "").strip()
+DEFAULT_CONFIG_PATH = (
+    Path(_settings_override) if _settings_override else PROJECT_ROOT / "config" / "settings.yaml"
+)
 
 # ${VAR} 环境变量占位（仅 A-Za-z_ 开头的标识符）
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -73,6 +77,7 @@ class EmbeddingSettings(BaseModel):
     model_path: str
     use_fp16: bool = False
     batch_size: int = 12
+    device: str = "cpu"  # BGE-M3 推理设备：cpu（默认，避免 GPU OOM）| cuda（有卡机型显著提速）
 
 
 class RerankSettings(BaseModel):
