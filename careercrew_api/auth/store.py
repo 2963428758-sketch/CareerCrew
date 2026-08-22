@@ -6,12 +6,12 @@ list_accounts / rotate）一律剔除 password_hash。时间戳统一 ISO8601 UT
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import secrets
 import threading
+from abc import ABC, abstractmethod
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -72,6 +72,9 @@ class AccountStore(ABC):
     @abstractmethod
     def update_account(self, user_id: str, *, role: str | None = None,
                        status: str | None = None) -> dict[str, Any]: ...
+
+    @abstractmethod
+    def delete_account(self, user_id: str) -> bool: ...
 
     @abstractmethod
     def update_password_hash(self, user_id: str, password_hash: str) -> None: ...
@@ -142,6 +145,14 @@ class PostgresAccountStore(AccountStore):
         self._connected = False
         self._ensure_lock = threading.Lock()
         self._connect_timeout = 5
+        self._pool = None  # 惰性：首次操作时从共享池注册表取
+
+    def _get_pool(self):
+        if self._pool is None:
+            from careercrew_core.pg_pool import get_shared_pool
+
+            self._pool = get_shared_pool(self._dsn)
+        return self._pool
 
     def _ensure(self) -> None:
         if self._connected:
@@ -211,12 +222,9 @@ class PostgresAccountStore(AccountStore):
 
     def _connect(self):
         self._ensure()
-        import psycopg
-        import psycopg.rows
-
-        return psycopg.connect(
-            self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
-        )
+        # 返回 pool.connection() 上下文管理器：with 退出时提交/回滚并归还连接，
+        # 调用点的 `with self._connect() as conn[, conn.transaction()]` 语义不变。
+        return self._get_pool().connection()
 
     def _as_text(self, row: dict | None) -> dict[str, Any] | None:
         if row is None:
@@ -294,6 +302,13 @@ class PostgresAccountStore(AccountStore):
             )
             row = conn.execute("SELECT * FROM auth_accounts WHERE id = %s", (user_id,)).fetchone()
         return self._public(self._as_text(row))
+
+    def delete_account(self, user_id: str) -> bool:
+        """硬删账号。业务数据（会话/记忆/附件等）由调用方在路由层先行清理；
+        刷新会话随 FK ON DELETE CASCADE 一并删除，审计事件按设计保留（actor_id 冗余）。"""
+        with self._connect() as conn, conn.transaction():
+            cur = conn.execute("DELETE FROM auth_accounts WHERE id = %s", (user_id,))
+        return bool(cur.rowcount)
 
     def update_password_hash(self, user_id: str, password_hash: str) -> None:
         with self._connect() as conn, conn.transaction():

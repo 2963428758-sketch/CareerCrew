@@ -8,15 +8,16 @@ Postgres 库（生产）；FakeMemoryDb 供单测（与 BaseVectorStore/FakeVect
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from functools import wraps
 import threading
+from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from functools import wraps
 from typing import Any
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _row_to_dict(row: Any) -> dict:
@@ -25,11 +26,15 @@ def _row_to_dict(row: Any) -> dict:
 
 
 def _synchronized(fn):
-    """PostgresMemoryDb 单连接非线程安全：所有公开方法串行化（RLock 可重入）。"""
+    """公开方法串行化（RLock 可重入）；Postgres 实现同时从共享池借出连接。"""
 
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
-        with self.write_lock:
+        borrow = getattr(self, "_borrow", None)  # 仅 PostgresMemoryDb 提供
+        if borrow is None:
+            with self.write_lock:
+                return fn(self, *args, **kwargs)
+        with self.write_lock, borrow():
             return fn(self, *args, **kwargs)
 
     return wrapper
@@ -143,60 +148,82 @@ class MemoryDb(ABC):
     @abstractmethod
     def delete_thread(self, user_id: str, thread_id: str) -> int: ...
 
+    @abstractmethod
+    def delete_all_for_user(self, user_id: str) -> None: ...
+
 
 class PostgresMemoryDb(MemoryDb):
-    """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
+    """Postgres 实现（psycopg 3）。连接从共享池借还；首次操作才建表。
+
+    write_lock 保留：EpisodicMemory.write 的「取 id → 找父节点 → 插入」跨方法
+    序列必须在同一把锁内完成（episodic.py 外层持同一把锁，可重入）；单方法内
+    多语句的原子性由池连接的事务边界保证（退出时统一提交/回滚）。
+    """
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._conn = None
-        # 单 psycopg 连接被多个请求线程（并行会话）共用，psycopg 连接非线程安全；
-        # RLock 保证同一线程内嵌套调用可重入，跨线程操作串行化。
         self.write_lock = threading.RLock()
+        self._schema_ready = False
+        self._tls = threading.local()  # 当前方法借出的连接，_ensure() 取用
+
+    @contextmanager
+    def _borrow(self):
+        """从共享池借出连接并挂到 thread-local；嵌套调用各自借还、外层句柄保持有效。"""
+        from careercrew_core.pg_pool import get_shared_pool
+
+        with get_shared_pool(self._dsn).connection() as conn:
+            prev = getattr(self._tls, "conn", None)
+            self._tls.conn = conn
+            try:
+                if not self._schema_ready:
+                    self._ensure_schema(conn)
+                    self._schema_ready = True
+                yield conn
+            finally:
+                self._tls.conn = prev
 
     def _ensure(self):
-        if self._conn is not None:
-            return self._conn
-        try:
-            import psycopg
-        except ImportError as e:  # pragma: no cover - env 缺依赖时给可读错误
-            raise RuntimeError(
-                "PostgresMemoryDb 需要 psycopg：pip install 'psycopg[binary]'"
-            ) from e
-        self._conn = psycopg.connect(self._dsn, row_factory=psycopg.rows.dict_row)
-        self._conn.execute("CREATE TABLE IF NOT EXISTS episodic_events ("
+        """返回当前方法借出的池连接（仅可在被 @_synchronized 包裹的方法体内调用）。"""
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            raise RuntimeError("PostgresMemoryDb._ensure() 只能在数据库方法内部调用")
+        return conn
+
+    def _ensure_schema(self, conn) -> None:
+        """幂等建表 + 既有库迁移（原惰性 DDL，冻结到首个借出的连接上执行）。"""
+        conn.execute("CREATE TABLE IF NOT EXISTS episodic_events ("
                            "id TEXT NOT NULL, user_id TEXT NOT NULL, thread_id TEXT NOT NULL, "
                            "parent_id TEXT, type TEXT NOT NULL, content JSONB NOT NULL DEFAULT '{}'::jsonb, "
                            "ts TEXT NOT NULL, PRIMARY KEY (user_id, id))")
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_user_thread "
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_user_thread "
                            "ON episodic_events(user_id, thread_id, ts)")
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_user_type "
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_user_type "
                            "ON episodic_events(user_id, type)")
-        self._conn.execute("CREATE TABLE IF NOT EXISTS semantic_facts ("
+        conn.execute("CREATE TABLE IF NOT EXISTS semantic_facts ("
                            "user_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, "
                            "description TEXT NOT NULL DEFAULT '', content JSONB NOT NULL DEFAULT '{}'::jsonb, "
                            "source TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 1.0, "
                            "version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, "
                            "modified_at TEXT NOT NULL, PRIMARY KEY (user_id, name))")
-        self._conn.execute("CREATE TABLE IF NOT EXISTS user_memory_policy ("
+        conn.execute("CREATE TABLE IF NOT EXISTS user_memory_policy ("
                            "user_id TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT false, "
                            "generate BOOLEAN NOT NULL DEFAULT true, use BOOLEAN NOT NULL DEFAULT true, "
                            "updated_at TEXT NOT NULL)")
-        self._conn.execute("CREATE TABLE IF NOT EXISTS memory_global_policy ("
+        conn.execute("CREATE TABLE IF NOT EXISTS memory_global_policy ("
                            "id INTEGER PRIMARY KEY CHECK (id = 1), "
                            "enabled BOOLEAN NOT NULL DEFAULT false, "
                            "generate BOOLEAN NOT NULL DEFAULT true, use BOOLEAN NOT NULL DEFAULT true, "
                            "updated_at TEXT NOT NULL)")
-        self._conn.execute("CREATE TABLE IF NOT EXISTS threads ("
+        conn.execute("CREATE TABLE IF NOT EXISTS threads ("
                            "user_id TEXT NOT NULL, thread_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', "
                            "module TEXT NOT NULL DEFAULT 'chat', pinned BOOLEAN NOT NULL DEFAULT false, "
                            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
                            "PRIMARY KEY (user_id, thread_id))")
         # 会话检索范围（知识库分类等）元数据；历史行回退 NULL（前端视为"全部"）。
         # 目录守卫 + 短锁超时：避免在并发连接持有 threads 事务时被 ALTER 永久阻塞。
-        self._conn.execute("SET lock_timeout = '5s'")
+        conn.execute("SET lock_timeout = '5s'")
         try:
-            self._conn.execute(
+            conn.execute(
                 "DO $$ BEGIN "
                 "IF NOT EXISTS (SELECT 1 FROM information_schema.columns "
                 "WHERE table_name = 'threads' AND column_name = 'retrieval_scope') THEN "
@@ -204,9 +231,8 @@ class PostgresMemoryDb(MemoryDb):
                 "END IF; END $$"
             )
         finally:
-            self._conn.execute("SET lock_timeout = '0'")
-        self._conn.commit()
-        return self._conn
+            conn.execute("SET lock_timeout = '0'")
+        conn.commit()
 
     # ── episodic ──
 
@@ -494,6 +520,14 @@ class PostgresMemoryDb(MemoryDb):
         conn.commit()
         return cur.rowcount or 0
 
+    @_synchronized
+    def delete_all_for_user(self, user_id) -> None:
+        """账号删除：清空该用户全部记忆数据（情景/事实/策略/线程元数据）。"""
+        conn = self._ensure()
+        for table in ("episodic_events", "semantic_facts", "user_memory_policy", "threads"):
+            conn.execute(f"DELETE FROM {table} WHERE user_id=%s", (user_id,))
+        conn.commit()
+
 
 class FakeMemoryDb(MemoryDb):
     """内存实现（单测用），接口与 PostgresMemoryDb 一致。"""
@@ -658,6 +692,16 @@ class FakeMemoryDb(MemoryDb):
             del self._threads[(user_id, thread_id)]
             return 1
         return 0
+
+    def delete_all_for_user(self, user_id) -> None:
+        with self.write_lock:
+            for key in [k for k in self._episodic if k[0] == user_id]:
+                del self._episodic[key]
+            for key in [k for k in self._facts if k[0] == user_id]:
+                del self._facts[key]
+            self._policies.pop(user_id, None)
+            for key in [k for k in self._threads if k[0] == user_id]:
+                del self._threads[key]
 
 
 def create_memory_db(settings) -> MemoryDb:

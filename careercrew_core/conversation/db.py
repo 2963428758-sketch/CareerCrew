@@ -10,10 +10,10 @@ ALTER TABLE ADD COLUMN IF NOT EXISTS 幂等迁移、psycopg dict_row、
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from functools import wraps
 import threading
+from abc import ABC, abstractmethod
+from datetime import UTC, datetime
+from functools import wraps
 from typing import Any
 from uuid import UUID
 
@@ -21,7 +21,7 @@ from careercrew_core.conversation.uuid7 import uuid7
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _snapshot_active(snapshot: dict) -> bool:
@@ -32,8 +32,8 @@ def _snapshot_active(snapshot: dict) -> bool:
     if not isinstance(expires_at, datetime):
         return False
     if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    return expires_at > datetime.now(timezone.utc)
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at > datetime.now(UTC)
 
 
 class SequenceCollision(Exception):
@@ -158,6 +158,9 @@ class ConversationDb(ABC):
 
     @abstractmethod
     def delete_conversation(self, user_id: str, conversation_id: str) -> bool: ...
+
+    @abstractmethod
+    def delete_all_for_user(self, user_id: str) -> int: ...
 
     @abstractmethod
     def list_runs(self, user_id: str, thread_id: str) -> list[dict]: ...
@@ -285,22 +288,28 @@ class ConversationDb(ABC):
 
 
 class PostgresConversationDb(ConversationDb):
-    """Postgres 实现（psycopg 3）。连接惰性建立：首次操作才 connect + 建表。"""
+    """Postgres 实现（psycopg 3）。连接从共享池借还；首次操作才建表。"""
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._connected = False
         self.write_lock = threading.RLock()
         self._connect_timeout = 5
+        self._pool = None  # 惰性：首次操作时从共享池注册表取
+
+    def _get_pool(self):
+        if self._pool is None:
+            from careercrew_core.pg_pool import get_shared_pool
+
+            self._pool = get_shared_pool(self._dsn)
+        return self._pool
 
     def _connect(self):
         if not self._connected:
             self._ensure()
-        import psycopg
-
-        return psycopg.connect(
-            self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
-        )
+        # 返回 pool.connection() 上下文管理器：with 退出时提交/回滚并归还连接，
+        # 调用点的 `with self._connect() as conn[, conn.transaction()]` 语义不变。
+        return self._get_pool().connection()
 
     @_synchronized
     def _ensure(self):
@@ -794,6 +803,40 @@ class PostgresConversationDb(ConversationDb):
                 (conversation_id, user_id),
             )
         return bool(cur.rowcount)
+
+    @_synchronized
+    def delete_all_for_user(self, user_id) -> int:
+        """账号删除时硬删该用户全部会话及子表行，返回删除的会话数。"""
+        with self._connect() as conn, conn.transaction():
+            # regeneration_keys 孤儿清理（同 clear_conversation 的既有模式）
+            conn.execute(
+                "DELETE FROM regeneration_keys WHERE message_id IN "
+                "(SELECT id FROM messages WHERE user_id=%s)",
+                (user_id,),
+            )
+            # 反馈快照与审计子行（feedback_reviews/feedback_review_events 随 FK 级联）
+            conn.execute(
+                "DELETE FROM feedback_snapshots WHERE feedback_id IN "
+                "(SELECT id FROM message_feedback WHERE user_id=%s)",
+                (user_id,),
+            )
+            conn.execute("DELETE FROM message_feedback WHERE user_id=%s", (user_id,))
+            conn.execute(
+                "DELETE FROM agent_run_tool_calls WHERE run_id IN "
+                "(SELECT id FROM agent_runs WHERE user_id=%s)",
+                (user_id,),
+            )
+            conn.execute(
+                "DELETE FROM agent_run_retrievals WHERE run_id IN "
+                "(SELECT id FROM agent_runs WHERE user_id=%s)",
+                (user_id,),
+            )
+            conn.execute("DELETE FROM agent_runs WHERE user_id=%s", (user_id,))
+            conn.execute("DELETE FROM messages WHERE user_id=%s", (user_id,))
+            conn.execute("DELETE FROM conversation_turns WHERE user_id=%s", (user_id,))
+            cur = conn.execute("DELETE FROM conversations WHERE user_id=%s", (user_id,))
+            n = cur.rowcount
+        return n
 
     @_synchronized
     def list_runs(self, user_id, thread_id) -> list[dict]:
@@ -1644,6 +1687,18 @@ class FakeConversationDb(ConversationDb):
             if cid == conversation_id:
                 del self._legacy_map[legacy]
         return True
+
+    def delete_all_for_user(self, user_id) -> int:
+        """账号删除：硬删该用户全部会话及子表行，返回会话数。"""
+        with self.write_lock:
+            conv_ids = [cid for cid, c in self._conversations.items() if c["user_id"] == user_id]
+            for cid in conv_ids:
+                self.clear_conversation(user_id, cid)
+                self._conversations.pop(cid, None)
+            for legacy, cid in list(self._legacy_map.items()):
+                if cid in conv_ids or self._conversations.get(cid, {}).get("user_id") == user_id:
+                    del self._legacy_map[legacy]
+            return len(conv_ids)
 
     def list_runs(self, user_id, thread_id) -> list[dict]:
         rows = [r for r in self._runs.values()
