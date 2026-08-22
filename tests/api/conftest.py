@@ -58,20 +58,18 @@ class FakeRuntime:
             "u_001": self.knowledge_docs,
         }
         self.resume_library_items: dict[str, list[tuple[str, str]]] = {}
+        from careercrew_core.conversation.attachments import AttachmentStore, FakeAttachmentDb
+        from careercrew_core.conversation.db import FakeConversationDb
+        from careercrew_core.conversation.store import ConversationStore
         from careercrew_core.memory.db import FakeMemoryDb
         from careercrew_core.memory.injection import MemoryInjector
         from careercrew_core.memory.policy import MemoryPolicyStore
         from careercrew_core.memory.router import MemoryRouter
-        from careercrew_core.memory.semantic import SemanticFactStore
         from careercrew_core.memory.threads import ThreadStore
-        from careercrew_core.conversation.db import FakeConversationDb
-        from careercrew_core.conversation.store import ConversationStore
-        from careercrew_core.conversation.attachments import FakeAttachmentDb, AttachmentStore
 
         self.memory_db = FakeMemoryDb()
         self.conversation_store = ConversationStore(FakeConversationDb())
         self.attachment_store = AttachmentStore(FakeAttachmentDb())
-        self.fact_store = SemanticFactStore(self.memory_db, user_id="u_001")
         self.policy_store = MemoryPolicyStore(self.memory_db)
         self.thread_store = ThreadStore(self.memory_db)
         self.memory_router = MemoryRouter()
@@ -174,6 +172,9 @@ class FakeRuntime:
     def _ensure_heavy(self) -> None:
         return None
 
+    def _ensure_stores(self) -> None:
+        return None
+
     def _conversation_model(self) -> str:
         return "fake-model"
 
@@ -238,7 +239,7 @@ class FakeRuntime:
             "vector_store": "fake", "ready": True,
         }
 
-    def get_cycle(self, thread_id: str, user_id: str = "u_001"):
+    def get_cycle(self, thread_id: str, user_id: str):
         class FakeCycle:
             def __init__(self_inner):
                 self_inner.job_matcher = None
@@ -872,7 +873,7 @@ class FakeRuntime:
         return items
 
     def resolve_mentions(self, user_id: str, mentions: list[dict]) -> list[dict]:
-        from careercrew_api.mentions import resolve_mentions as _resolve, MentionRejected
+        from careercrew_api.mentions import resolve_mentions as _resolve
 
         docs = []
         for owner, doc_list in self.knowledge_docs_by_user.items():
@@ -968,22 +969,12 @@ def build_tenant_client(tmp_path, monkeypatch, *, quality_reviewer: str = "carol
             headers=alice_headers,
         )
         assert created.status_code == 201, created.text
+        # 管理员显式设密 => 无强制改密标记，直接登录可用
         login = client.post(
             "/api/auth/token",
             json={"username": username, "password": TENANT_MEMBER_PASSWORD},
         ).json()
-        # 新建用户带强制改密标记：先改密，业务 API 才放行
-        change = client.post(
-            "/api/auth/password",
-            json={"new_password": TENANT_MEMBER_PASSWORD},
-            headers={"Authorization": f"Bearer {login['access_token']}"},
-        )
-        assert change.status_code == 200
-        relogin = client.post(
-            "/api/auth/token",
-            json={"username": username, "password": TENANT_MEMBER_PASSWORD},
-        ).json()
-        return {"Authorization": f"Bearer {relogin['access_token']}"}, relogin["user"]
+        return {"Authorization": f"Bearer {login['access_token']}"}, login["user"]
 
     bob_headers, bob_user = _member("bob", "user")
     reviewer_headers, reviewer_user = _member(quality_reviewer, "quality_reviewer")

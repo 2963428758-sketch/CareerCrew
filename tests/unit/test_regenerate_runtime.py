@@ -30,6 +30,7 @@ def _make_runtime(store: ConversationStore) -> CareerCrewRuntime:
     rt = CareerCrewRuntime.__new__(CareerCrewRuntime)
     # 不触发 __init__ 的线程锁等，直接打桩所需属性
     rt._initialized = True
+    rt._stores_ready = True  # 存储层由本测试手动注入，跳过 _ensure_stores 的真实初始化
     rt.settings = None
     rt.llm = None
     rt.embedding = None
@@ -38,8 +39,6 @@ def _make_runtime(store: ConversationStore) -> CareerCrewRuntime:
     rt.multimodal_search = None
     rt.ingest_pipeline = None
     rt.memory_db = None
-    rt.episodic = None
-    rt.fact_store = None
     rt.policy_store = None
     rt.thread_store = None
     rt.memory_router = None
@@ -135,7 +134,6 @@ def _dispatch(rt, result_map, calls_list):
 
 def _run_regenerate(rt, message_id, user_id="u_1", idempotency_key=None):
     store = rt.conversation_store
-    sw = dict(user_id=user_id, key=idempotency_key)
     if idempotency_key:
         existing = store.get_regeneration(user_id, idempotency_key)
         if existing:
