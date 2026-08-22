@@ -19,10 +19,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from careercrew_api import storage
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime
-from careercrew_api import storage
 from careercrew_core.conversation.attachments import OwnershipError
 from careercrew_core.conversation.validation import (
     MAX_ATTACHMENT_SIZE,
@@ -221,7 +221,6 @@ def _default_parse_and_ingest(
     owner=当前用户、visibility=private、category 自动识别（category=""）。返回
     {knowledge_document_id, doc_id, points}。
     """
-    doc_id = attachment_id  # 服务端生成的稳定 UUID，避免用原始文件名（可能含中文/路径符）
     # output_dir：按用户/附件隔离的解析产物目录（与 knowledge.py 上传端点对齐）
     output_dir = storage.resolve_under(storage.L.parsed_knowledge, user_id, attachment_id)
     result = rt.ingest_document(

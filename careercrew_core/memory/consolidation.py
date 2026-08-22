@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from careercrew_core.memory.db import MemoryDb
 from careercrew_core.memory.types import SemanticFact
@@ -17,7 +17,7 @@ _MARKER = "__consolidation__"
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Consolidator:
@@ -52,7 +52,7 @@ class Consolidator:
             return self._count_sessions(user_id) >= self._min_sessions
         try:
             last = datetime.fromisoformat(state["last_consolidated_at"].replace("Z", "+00:00"))
-            hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+            hours = (datetime.now(UTC) - last).total_seconds() / 3600
         except Exception:
             hours = 0.0
         sessions = self._count_sessions(user_id)
@@ -127,7 +127,7 @@ class Consolidator:
     def _prune(self, user_id: str, facts: list[SemanticFact]) -> int:
         """删除「低置信度 + 超过 stale_days 未更新」的事实（不含 marker/mastery）。"""
         pruned = 0
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for f in facts:
             if f.name in (_MARKER, "interview_mastery"):
                 continue

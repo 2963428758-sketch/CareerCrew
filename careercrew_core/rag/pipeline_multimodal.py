@@ -35,7 +35,7 @@ class MultimodalIngestionPipeline:
         self,
         embedding: BaseEmbedding,
         store: BaseVectorStore,
-        contextualizer: "Contextualizer | None" = None,
+        contextualizer: Contextualizer | None = None,
         contextual: bool = True,
         object_extraction: bool = True,
         output_dir: str | Path = "./data/parsed",

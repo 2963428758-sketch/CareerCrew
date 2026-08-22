@@ -49,7 +49,7 @@ def _sources_payload(results: list[QueryResult]) -> list[dict]:
 
 
 def vlm_answer(
-    settings: "Settings",
+    settings: Settings,
     question: str,
     results: list[QueryResult],
     llm=None,

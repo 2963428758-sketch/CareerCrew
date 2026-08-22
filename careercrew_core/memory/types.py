@@ -38,7 +38,7 @@ class TreeNode(BaseModel):
     """树节点（entry + children），供树遍历。"""
 
     entry: MemoryEntry
-    children: list["TreeNode"] = Field(default_factory=list)
+    children: list[TreeNode] = Field(default_factory=list)
 
 
 class SemanticFact(BaseModel):

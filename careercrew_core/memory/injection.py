@@ -5,13 +5,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from careercrew_core.memory.episodic import EpisodicMemory
 from careercrew_core.memory.policy import MemoryPolicyStore
 from careercrew_core.memory.router import MemoryRouter
 from careercrew_core.memory.semantic import SemanticFactStore
-from careercrew_core.memory.types import SemanticFact
 from careercrew_core.memory.vector_index import VectorIndex
 
 
@@ -20,7 +19,7 @@ def _age_note(modified_at: str) -> str:
         return ""
     try:
         mtime = datetime.fromisoformat(modified_at.replace("Z", "+00:00"))
-        days = (datetime.now(timezone.utc) - mtime).total_seconds() / 86400
+        days = (datetime.now(UTC) - mtime).total_seconds() / 86400
     except Exception:
         return ""
     if days <= 1:

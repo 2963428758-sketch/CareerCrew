@@ -27,7 +27,7 @@ class FeedbackRequest(BaseModel):
     share_context: bool = False
 
     @model_validator(mode="after")
-    def validate_reason(self) -> "FeedbackRequest":
+    def validate_reason(self) -> FeedbackRequest:
         if self.rating == "negative" and self.reason not in _NEGATIVE_REASONS:
             raise ValueError("负面反馈必须选择有效原因")
         if self.rating == "positive" and self.reason is not None:
@@ -42,6 +42,7 @@ def _not_found() -> HTTPException:
 @router.put("/messages/{message_id}/feedback")
 def put_feedback(message_id: str, req: FeedbackRequest, current_user: CurrentUser,
                  rt=Depends(get_runtime_dep)) -> dict:
+    rt._ensure_heavy()
     try:
         feedback = rt.conversation_store.put_feedback(
             current_user["id"], message_id, rating=req.rating, reason=req.reason,
@@ -59,6 +60,7 @@ def put_feedback(message_id: str, req: FeedbackRequest, current_user: CurrentUse
 @router.delete("/messages/{message_id}/feedback")
 def delete_feedback(message_id: str, current_user: CurrentUser,
                     rt=Depends(get_runtime_dep)) -> dict:
+    rt._ensure_heavy()
     try:
         deleted = rt.conversation_store.delete_feedback(current_user["id"], message_id)
     except OwnershipError as exc:
@@ -69,6 +71,7 @@ def delete_feedback(message_id: str, current_user: CurrentUser,
 @router.get("/threads/{thread_id}/feedback")
 def list_feedback(thread_id: str, current_user: CurrentUser,
                   rt=Depends(get_runtime_dep)) -> list[dict]:
+    rt._ensure_heavy()
     try:
         feedback = rt.conversation_store.list_feedback(current_user["id"], thread_id)
     except OwnershipError as exc:

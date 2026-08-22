@@ -11,17 +11,17 @@ from __future__ import annotations
 
 import json
 import operator
-from typing import Annotated, Callable, TypedDict
+from collections.abc import Callable
+from typing import Annotated
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from langgraph.graph import END, START, StateGraph, add_messages
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
-from careercrew_core.state.thread_state import CareerCrewState, merge_dicts
+from careercrew_core.state.thread_state import CareerCrewState
 from careercrew_core.supervisor.consult import _synthesize, opinion_fallback
-
 
 AGENT_DESCRIPTIONS = {
     "salary_negotiator": "薪资谈判师：谈薪策略、薪资数据、offer 比较与话术。",

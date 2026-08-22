@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from careercrew_api.runtime import CareerCrewRuntime
+    pass
 
 # 单个附件注入上限（字符）；超过截断，防止上下文爆炸
 _ATTACHMENT_TEXT_LIMIT = 30_000

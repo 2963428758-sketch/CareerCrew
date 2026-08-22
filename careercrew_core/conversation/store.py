@@ -9,9 +9,9 @@ UUIDv7 生成 id；legacy `t-${Date.now()}` 线程 ID 通过 conversations.legac
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from careercrew_core.conversation.db import (
     ConversationDb,
@@ -234,6 +234,13 @@ class ConversationStore:
         conv = self._require_owned(thread_id, user_id)
         return self._db.delete_conversation(user_id, conv["id"])
 
+    def db_delete_all_for_user(self, user_id: str) -> int:
+        """账号删除：硬删该用户全部会话及子表行（管理端点专用，绕过所有权校验）。
+
+        命名以 db_ 开头标明这是存储层直通操作，与面向用户会话的 delete_conversation 区分。
+        """
+        return self._db.delete_all_for_user(user_id)
+
     def list_runs(self, thread_id: str, user_id: str) -> list[dict]:
         """按会话返回全部 agent_runs（按 created_at 升序）。"""
         conv = self._require_owned(thread_id, user_id)
@@ -362,7 +369,7 @@ class ConversationStore:
             snapshot_fields = {
                 "id": str(uuid7()), "snapshot_json": snapshot, "redaction_version": version,
                 "redaction_count": count,
-                "expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
+                "expires_at": (datetime.now(UTC) + timedelta(days=90)).isoformat(),
             }
         return self._db.replace_feedback_with_snapshot(user_id, {
             "id": str(uuid7()), "thread_id": message["thread_id"], "turn_id": message["turn_id"],

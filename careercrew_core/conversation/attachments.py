@@ -13,10 +13,10 @@ expires_at=NULL（取消 TTL）。
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
-from functools import wraps
 import threading
+from abc import ABC, abstractmethod
+from datetime import UTC, datetime, timedelta
+from functools import wraps
 from typing import Any
 from uuid import UUID
 
@@ -31,7 +31,7 @@ def _now() -> datetime:
     破坏 7 天 TTL）。所有 created_at / last_used_at / expires_at 的比较与写入
     都使用本 helper 产出的 aware-UTC datetime。
     """
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # §14.5：最后活动后 7 天清理
@@ -95,6 +95,9 @@ class AttachmentDb(ABC):
 
     @abstractmethod
     def delete_attachment(self, user_id: str, attachment_id: str) -> bool: ...
+
+    @abstractmethod
+    def delete_all_for_user(self, user_id: str) -> list[dict]: ...
 
     @abstractmethod
     def count_nondeleted(self, user_id: str, thread_id: str) -> int: ...
@@ -228,6 +231,17 @@ class PostgresAttachmentDb(AttachmentDb):
         return bool(cur.rowcount)
 
     @_synchronized
+    def delete_all_for_user(self, user_id) -> list[dict]:
+        """账号删除：删该用户全部附件行，返回被删行的 storage_key 列表（供磁盘清理）。"""
+        with self._connect() as conn, conn.transaction():
+            rows = conn.execute(
+                "SELECT storage_key FROM chat_attachments WHERE user_id=%s",
+                (user_id,),
+            ).fetchall()
+            conn.execute("DELETE FROM chat_attachments WHERE user_id=%s", (user_id,))
+        return [r["storage_key"] for r in rows]
+
+    @_synchronized
     def count_nondeleted(self, user_id, thread_id) -> int:
         with self._connect() as conn, conn.transaction():
             row = conn.execute(
@@ -319,6 +333,14 @@ class FakeAttachmentDb(AttachmentDb):
             return True
         return False
 
+    def delete_all_for_user(self, user_id) -> list[dict]:
+        """账号删除：删该用户全部附件行，返回 storage_key 列表（供磁盘清理）。"""
+        with self.write_lock:
+            keys = [r["storage_key"] for r in self._rows.values() if r["user_id"] == user_id]
+            for aid in [aid for aid, r in self._rows.items() if r["user_id"] == user_id]:
+                del self._rows[aid]
+            return keys
+
     def count_nondeleted(self, user_id, thread_id) -> int:
         return sum(
             1 for r in self._rows.values()
@@ -382,6 +404,10 @@ class AttachmentStore:
     def count_nondeleted(self, user_id: str, thread_id: str) -> int:
         return self._db.count_nondeleted(user_id, thread_id)
 
+    def delete_all_for_user(self, user_id: str) -> list[dict]:
+        """账号删除：删该用户全部附件行，返回 storage_key 列表（路由层负责磁盘清理）。"""
+        return self._db.delete_all_for_user(user_id)
+
     # ── update / delete ──
 
     def update_status(self, user_id: str, attachment_id: str, status: str,
@@ -416,7 +442,7 @@ class AttachmentStore:
 
     def expired_attachments(self, now: datetime | None = None) -> list[dict]:
         """返回已过期（expires_at < now）且未保存到知识库的附件行。"""
-        ref = now or datetime.now(timezone.utc)
+        ref = now or datetime.now(UTC)
         return self._db.list_expired(ref)
 
 

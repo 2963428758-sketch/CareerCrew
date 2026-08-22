@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from careercrew_ai.embedding.base_embedding import BaseEmbedding
 from careercrew_ai.reranker.base_reranker import BaseReranker

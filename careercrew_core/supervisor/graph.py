@@ -7,7 +7,7 @@ checkpointer 持久化 thread 状态（B1）。agent 在执行中可改 stage �
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from langgraph.graph import END, START, StateGraph
 

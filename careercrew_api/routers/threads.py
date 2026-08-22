@@ -98,7 +98,7 @@ class ThreadRenameRequest(BaseModel):
     title: str | None = None
     pinned: bool | None = None
     module: str | None = None
-    retrieval_scope: "RetrievalScopeRequest | None" = None
+    retrieval_scope: RetrievalScopeRequest | None = None
 
 
 @router.post("/threads")
@@ -106,7 +106,7 @@ def create_thread(req: ThreadCreateRequest, current_user: CurrentUser,
                   rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
     """新建会话：conversation 表登记（服务端生成 UUID 或复用 legacy），并存 memory 线程元数据。"""
     user_id = current_user["id"]
-    rt._ensure_heavy()
+    rt._ensure_stores()
     # 缺省 thread_id → 服务端生成 UUID；显式提供则按 legacy 映射复用/新建
     from careercrew_core.conversation.uuid7 import uuid7
 
@@ -139,7 +139,8 @@ def list_messages(thread_id: str, current_user: CurrentUser,
                   rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> list[dict]:
     """返回会话全部消息（按 turn sequence_no + created_at 排序），支持 UUID 或 legacy id。"""
     user_id = current_user["id"]
-    rt._ensure_heavy()
+    # 仅读 conversation 表（Source of Truth），走轻量存储层：AI 栈故障不影响历史恢复。
+    rt._ensure_stores()
     try:
         msgs = rt.conversation_store.list_messages(thread_id, user_id)
     except OwnershipError as e:
@@ -171,7 +172,7 @@ def rename_thread(thread_id: str, req: ThreadRenameRequest, current_user: Curren
     跨用户/不存在 → 404（除非法范围仍按 legacy 422）。
     """
     user_id = current_user["id"]
-    rt._ensure_heavy()
+    rt._ensure_stores()
 
     # legacy 语义：先经由 thread_store 更新（含 pinned/module/retrieval_scope 归一化）
     try:
@@ -210,7 +211,7 @@ def delete_conversation(thread_id: str, current_user: CurrentUser,
     删成功（或本就是纯 legacy 线程）才返回成功；两者都不存在（或跨用户）→ 404。
     """
     user_id = current_user["id"]
-    rt._ensure_heavy()
+    rt._ensure_stores()
 
     # 1) 先删 legacy thread_store（sidebar 元数据 + 情景事件）；失败即中止、上抛，
     #    避免 conversation 先删而后 legacy 清理失败造成部分删除。
@@ -243,7 +244,7 @@ def clear_conversation(thread_id: str, current_user: CurrentUser,
     （「清空后切走再切回，旧消息复活」）。episodic 清理失败不阻断清空主流程。
     """
     user_id = current_user["id"]
-    rt._ensure_heavy()
+    rt._ensure_stores()
     try:
         removed = rt.conversation_store.clear_conversation(thread_id, user_id)
     except OwnershipError as e:
@@ -277,7 +278,7 @@ def export_conversation(
     from careercrew_core.conversation.export import build_json_text, build_markdown
 
     user_id = current_user["id"]
-    rt._ensure_heavy()
+    rt._ensure_stores()
     if format not in ("md", "json"):
         raise HTTPException(status_code=400, detail="format 必须为 md 或 json")
 

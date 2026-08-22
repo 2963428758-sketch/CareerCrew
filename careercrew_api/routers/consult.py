@@ -14,11 +14,11 @@ from collections.abc import Generator
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from careercrew_api.attachment_context import AttachmentRejected, build_user_message
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
-from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.mentions import MentionRejected
-from careercrew_api.attachment_context import AttachmentRejected, build_user_message
+from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
 from careercrew_api.sse import (
     STREAM_IDLE_TIMEOUT_SECONDS,
@@ -110,7 +110,10 @@ def _persist_form_profile(rt, user_id: str, profile: dict[str, str]) -> None:
         mapped["profile.current_position"] = ""
     if mapped:
         try:
-            rt.fact_store.update(user_id, mapped, source="consult_form")
+            from careercrew_core.memory.semantic import SemanticFactStore
+
+            store = SemanticFactStore(rt.memory_db, user_id)
+            store.update(user_id, mapped, source="consult_form")
         except Exception:
             import logging
             logging.getLogger(__name__).exception("persist consult profile failed")
@@ -182,12 +185,13 @@ def consult(
                 effective_tools=effective,
             )
             try:
+                from langchain_core.messages import HumanMessage
+
                 from careercrew_core.supervisor.consult_orchestrator import (
                     USER_INPUT_FIELDS,
                     build_consult_orchestrator_graph,
                     synthesize_fallback,
                 )
-                from langchain_core.messages import HumanMessage
 
                 try:
                     pending_id = rt.record_user_message(
@@ -200,7 +204,10 @@ def consult(
                 # 读取失败（后端未初始化等）则退化为仅用请求携带的 profile。
                 merged_profile: dict[str, str] = {}
                 try:
-                    model = rt.fact_store.load(user_id)
+                    from careercrew_core.memory.semantic import SemanticFactStore
+
+                    store = SemanticFactStore(rt.memory_db, user_id)
+                    model = store.load(user_id)
                     merged_profile = _profile_from_model(model)
                 except Exception:
                     merged_profile = {}

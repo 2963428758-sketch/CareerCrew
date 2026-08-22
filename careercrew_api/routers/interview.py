@@ -8,15 +8,15 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
+from careercrew_api.mentions import MentionRejected
 from careercrew_api.runtime import (
     CareerCrewRuntime,
     RuntimeInitError,
     _observability_from_result,
 )
-from careercrew_api.mentions import MentionRejected
-from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.schemas import (
     InterviewChatMessage,
     InterviewChatRequest,
@@ -111,6 +111,7 @@ def questions(
         def run_fn(cb):
             nonlocal result
             from langchain_core.messages import HumanMessage
+
             from careercrew_api.attachment_context import build_user_message
 
             user_id = current_user["id"]
@@ -219,6 +220,7 @@ def chat(
         def run_fn(cb):
             nonlocal result
             from langchain_core.messages import HumanMessage
+
             from careercrew_api.attachment_context import build_user_message
 
             user_id = current_user["id"]
@@ -301,9 +303,6 @@ def chat(
                 parsed = _parse_score(content, 10)
                 extra = {"score": parsed["score"], "feedback": parsed["feedback"]}
             try:
-                last_user = next(
-                    (m.content for m in reversed(req.messages) if m.role == "user"), req.topic
-                )
                 rt.record_thread_messages(
                     current_user["id"], req.thread_id, user_text="", agent_text=content,
                     module="interview",

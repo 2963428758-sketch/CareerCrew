@@ -66,7 +66,7 @@ def aggregate_salaries(jobs: list[dict]) -> dict:
         return {"sample_count": 0, "total_count": total}
     mins = [s["salary_k"]["min_k"] for s in parsed]
     maxs = [s["salary_k"]["max_k"] for s in parsed]
-    midpoints = [(a + b) / 2 for a, b in zip(mins, maxs)]
+    midpoints = [(a + b) / 2 for a, b in zip(mins, maxs, strict=False)]
     with_months = [s for s in parsed if s["salary_k"].get("months")]
     annual = None
     if with_months:

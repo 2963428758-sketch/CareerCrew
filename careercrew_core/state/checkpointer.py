@@ -41,13 +41,13 @@ def tenant_checkpoint_config(
     return out
 
 
-def get_checkpointer(settings: Settings) -> "BaseCheckpointSaver":
+def get_checkpointer(settings: Settings) -> BaseCheckpointSaver:
     """按 settings.supervisor.checkpointer.backend 创建 checkpointer（仅支持 postgres，lazy import）。"""
     cfg = settings.supervisor.checkpointer
     backend = cfg.backend
     if backend == "postgres":
-        from langgraph.checkpoint.postgres import PostgresSaver
         import psycopg
+        from langgraph.checkpoint.postgres import PostgresSaver
 
         dsn = cfg.url or settings.memory.postgres.dsn
         if not dsn:

@@ -14,8 +14,8 @@ GET /upload/{job_id} 轮询进度（queued -> parse -> done），解析结果
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import re
 import threading
 import time
@@ -23,14 +23,15 @@ import uuid
 from collections.abc import Generator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from careercrew_api import storage
+from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
-from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.mentions import MentionRejected
-from careercrew_api.attachment_context import AttachmentRejected
+from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
 from careercrew_api.sse import (
     CancellationEvent,
@@ -40,7 +41,6 @@ from careercrew_api.sse import (
     stage_event,
     stream_agent,
 )
-from careercrew_api import storage
 
 router = APIRouter()
 
@@ -292,8 +292,8 @@ def library_content(resume_id: str, current_user: CurrentUser) -> dict:
     """读取某份简历的解析文本（供「用于当前对话」复用）。"""
     try:
         lib_dir = _resume_lib_dir(current_user["id"], resume_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}") from ve
     meta_path = lib_dir / "meta.json"
     txt_path = lib_dir / "content.txt"
     try:
@@ -310,8 +310,8 @@ def delete_library(resume_id: str, current_user: CurrentUser) -> dict:
     """从简历库删除某份简历（文本 + 元数据）。"""
     try:
         lib_dir = _resume_lib_dir(current_user["id"], resume_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}") from ve
     meta_path = lib_dir / "meta.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -400,6 +400,7 @@ def chat(
         def run_fn(cb):
             nonlocal result
             from langchain_core.messages import HumanMessage
+
             from careercrew_api.attachment_context import build_user_message
 
             user_id = current_user["id"]

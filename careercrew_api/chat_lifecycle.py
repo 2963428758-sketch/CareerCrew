@@ -13,7 +13,7 @@ record_thread_messages）在 runtime 层继续保留不动。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from careercrew_core.conversation.store import ConversationStore
 from careercrew_core.memory.redaction import redact_secrets
@@ -46,12 +46,12 @@ class TurnContext:
     model: str
     prompt_version: str = "unversioned"
     agent_version: str = "unversioned"
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     user_id: str = ""
     langsmith_run_id: str | None = None
 
     def latency_ms(self) -> int:
-        return int((datetime.now(timezone.utc) - self.started_at).total_seconds() * 1000)
+        return int((datetime.now(UTC) - self.started_at).total_seconds() * 1000)
 
     def done_fields(self, status: str = "completed") -> dict:
         """组装 §9 done 事件字段（content 之外的部分）。"""

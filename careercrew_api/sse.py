@@ -63,7 +63,7 @@ class CancellationEvent:
             raise StreamCancelled()
 
 
-def put_guaranteed(q: "queue.Queue", item: Any, cancel: CancellationEvent | None = None) -> None:
+def put_guaranteed(q: queue.Queue, item: Any, cancel: CancellationEvent | None = None) -> None:
     """终态事件受控投递：队列满时轮询重试；取消已设置则放弃（消费者已消失）。"""
     while True:
         try:
@@ -90,7 +90,7 @@ def stream_agent(
     - 异常 -> 最后 yield ``{type:error, message}``
     - 生成器关闭（客户端断开）-> ``cancel.set()``，worker 在检查点停止
     """
-    q: "queue.Queue" = queue.Queue(maxsize=max_q)
+    q: queue.Queue = queue.Queue(maxsize=max_q)
     err: dict[str, BaseException] = {}
     dropped = [0]
     cev = cancel or CancellationEvent()

@@ -170,11 +170,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="HTTP 绑定地址（默认 127.0.0.1）")
     args = parser.parse_args()
     # 预热：langchain/transformers 等重导入在主线程完成，避免事件循环线程内 import 死锁
+    from careercrew_ai.llm import create_llm  # noqa: F401
+    from careercrew_ai.vector_store import create_vector_store  # noqa: F401
     from careercrew_core.rag.pipeline_multimodal import MultimodalIngestionPipeline  # noqa: F401
     from careercrew_core.rag.retrieval.multimodal_search import MultimodalSearch  # noqa: F401
     from careercrew_core.tools.internal.read_image import make_read_image_tool  # noqa: F401
-    from careercrew_ai.llm import create_llm  # noqa: F401
-    from careercrew_ai.vector_store import create_vector_store  # noqa: F401
     if args.http:
         server = FastMCP("careercrew-mm-rag", host=args.host, port=args.port)
         _bind(server)

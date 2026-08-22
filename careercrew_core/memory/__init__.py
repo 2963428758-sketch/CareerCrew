@@ -21,9 +21,9 @@ from careercrew_core.memory.types import (
     MemoryPolicy,
     SemanticFact,
     TreeNode,
+    UserModel,
     UserPreferences,
     UserProfile,
-    UserModel,
 )
 from careercrew_core.memory.vector_index import VectorIndex
 
