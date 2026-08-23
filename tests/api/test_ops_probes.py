@@ -15,14 +15,16 @@ class TestHealthProbes:
         assert resp.json() == {"status": "ok"}
 
     def test_readyz_schema(self, client):
-        """readiness 返回结构化检查项；无真库环境下逐项 unavailable → 503。"""
+        """readiness 返回结构化检查项；每项 ok 或 unavailable（CI 有真库无 qdrant → 部分可用）。"""
         resp = client.get("/readyz")
         assert resp.status_code in (200, 503)
         body = resp.json()
         assert set(body["checks"]) == {"postgres", "qdrant"}
+        values = body["checks"].values()
+        assert all(v == "ok" or v.startswith("unavailable") for v in values)
         if resp.status_code == 503:
             assert body["status"] == "not_ready"
-            assert all(v.startswith("unavailable") for v in body["checks"].values())
+            assert any(v.startswith("unavailable") for v in values)
 
     def test_request_id_echo_and_generate(self, client):
         """X-Request-ID 透传；未携带时生成并回写。"""
