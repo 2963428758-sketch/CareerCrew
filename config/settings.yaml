@@ -44,6 +44,9 @@ rag:
     top_k_dense: 20
     top_k_sparse: 20
     top_k_final: 10
+    crag: false                  # M5：检索质量自评估（incorrect -> LLM 重写重检一轮）
+    colbert_rerank: false        # M7：ColBERT late-interaction 本地精排（需同开 colbert_store）
+    colbert_store: false         # M7：摄取时把 colbert 矩阵写入 payload（库体积显著增大）
   chunking:
     strategy: recursive          # recursive | semantic
     chunk_size: 800
@@ -99,6 +102,10 @@ memory:
 
 # ── 工具层 ──
 tools:
+  search:
+    boss_cdp_url: ""             # Boss直聘 CDP 后端（N1）：Chrome --remote-debugging-port=9222
+                                 # 后填 http://127.0.0.1:9222 启用；空=仅猎聘 MCP 渠道
+    boss_city: ""                # 可选城市代码（如北京 101010100）；空=全国
   registry:
     # internal 须与 `_make_tools(kind)` 实际构造的工具集对齐：search_jobs(matcher) /
     # salary_query(planner+salary) / read_image(knowledge) 均真实落入 bound tools，
@@ -112,6 +119,12 @@ tools:
 # ── HITL 默认策略 ──
 hitl:
   default_policy: confirm        # 默认 HITL，仅低风险自动化
+
+# ── HR 回复监听（投递闭环：招呼发出 -> 回复捕获 -> 情景记忆 -> 顾问接聊） ──
+hr_monitor:
+  enabled: false                 # 需 Boss CDP 渠道（tools.search.boss_cdp_url）已配置
+  interval_minutes: 30           # 轮询间隔
+  cdp_url: ""                    # 空=复用 tools.search.boss_cdp_url
 
 # ── LangSmith 全链路追踪 ──
 langsmith:

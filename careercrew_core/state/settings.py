@@ -101,6 +101,9 @@ class RetrievalSettings(BaseModel):
     top_k_dense: int
     top_k_sparse: int
     top_k_final: int
+    crag: bool = False            # M5：检索质量自评估 + incorrect 重写重检（默认关）
+    colbert_rerank: bool = False  # M7：ColBERT late-interaction 本地精排（默认关）
+    colbert_store: bool = False   # M7：摄取时把 colbert token 矩阵写入 payload（默认关，库膨胀）
 
 
 class ChunkingSettings(BaseModel):
@@ -205,9 +208,17 @@ class ToolsHitlSettings(BaseModel):
     requires_confirmation: list[str]
 
 
+class SearchSettings(BaseModel):
+    """岗位搜索渠道（N1）：Boss CDP 后端默认禁用，配置调试端口后启用。"""
+
+    boss_cdp_url: str = ""  # 例 http://127.0.0.1:9222；空=禁用 Boss 渠道
+    boss_city: str = ""     # 可选城市代码（如北京 101010100）；空=全国
+
+
 class ToolsSettings(BaseModel):
     registry: RegistrySettings
     hitl: ToolsHitlSettings
+    search: SearchSettings = SearchSettings()
 
 
 class HitlSettings(BaseModel):
@@ -266,6 +277,14 @@ class OSSSettings(BaseModel):
     dir_prefix: str = "uploads"  # 对象键前缀（头像最终落在 {dir_prefix}/avatars/...）
 
 
+class HrMonitorSettings(BaseModel):
+    """HR 回复监听（E 批次）：定时拉取 Boss 未读会话写入情景记忆。"""
+
+    enabled: bool = False
+    interval_minutes: int = 30
+    cdp_url: str = ""  # 空=复用 tools.search.boss_cdp_url
+
+
 class Settings(BaseModel):
     """顶层配置，结构与 config/settings.yaml 一一对应。"""
 
@@ -282,6 +301,7 @@ class Settings(BaseModel):
     langsmith: LangSmithSettings
     auth: AuthSettings = AuthSettings()
     oss: OSSSettings = OSSSettings()
+    hr_monitor: HrMonitorSettings = HrMonitorSettings()
 
 
 # ── 环境变量替换 ──
