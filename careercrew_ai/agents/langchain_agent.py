@@ -463,7 +463,11 @@ def run_agent(
     if max_reached:
         content = stop_content or _MAX_ITERATIONS_PROMPT
     else:
-        content = iterations[-1].content if iterations else ""
+        # 多轮 ReAct 的最终可见内容 = 全部非空模型文本按序拼接（与流式回调
+        # 所见一致）。常见形态：报告正文 -> memory_write/profile_update 收尾
+        # 工具 -> 一句收尾语；若只取 iterations[-1] 会把正文丢得只剩一句。
+        texts = [it.content.strip() for it in iterations if it.content and it.content.strip()]
+        content = "\n\n".join(texts)
     if failed:
         stopped_reason = "error"
     elif max_reached:
