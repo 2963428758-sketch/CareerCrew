@@ -16,6 +16,7 @@ max_iterations 用 middleware 实现（``before_model`` 计数 + ``wrap_model_ca
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -83,6 +84,10 @@ class MaxIterationsMiddleware(AgentMiddleware):
     def __init__(self, max_iters: int) -> None:
         super().__init__()
         self.max_iters = max_iters
+        # 工具结果体积上限（字符）：rag_query 等检索工具的返回会作为 ToolMessage
+        # 常驻后续所有迭代的上下文，无上限时单次 run 可膨胀至数十万真实 token。
+        # 保留头尾：头是正文要点，尾常是图片引用行。
+        self.tool_result_max_chars = int(os.environ.get("TOOL_RESULT_MAX_CHARS", "6000"))
 
     def before_model(
         self, state: AgentExecState, runtime: Any
@@ -99,15 +104,33 @@ class MaxIterationsMiddleware(AgentMiddleware):
         return handler(request)
 
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
-        """工具异常转 ToolMessage 回喂，不中断循环（对齐旧 ReactLoop 行为）。"""
+        """工具异常转 ToolMessage 回喂，不中断循环（对齐旧 ReactLoop 行为）；
+        成功结果做体积钳制，防止大块检索内容长期驻留上下文。"""
         try:
-            return handler(request)
+            return self._clamp_tool_message(handler(request))
         except Exception as e:  # noqa: BLE001 - 回喂错误信息，不吞其他环节
             return ToolMessage(
                 content=f"Error: {e}",
                 tool_call_id=request.tool_call["id"],
                 name=request.tool_call.get("name"),
             )
+
+    def _clamp_tool_message(self, msg: Any) -> Any:
+        if not isinstance(msg, ToolMessage) or not isinstance(msg.content, str):
+            return msg
+        limit = self.tool_result_max_chars
+        text = msg.content
+        if len(text) <= limit:
+            return msg
+        head_keep = max(limit - 200, 0)
+        head = text[:head_keep]
+        tail = text[-200:] if len(text) > limit else ""
+        notice = f"\n\n[工具结果过长已截断：原始 {len(text)} 字符]"
+        return ToolMessage(
+            content=head + tail + notice,
+            tool_call_id=msg.tool_call_id,
+            name=msg.name,
+        )
 
 
 class HitlMiddleware(AgentMiddleware):
@@ -331,11 +354,24 @@ class ContextCompactionMiddleware(AgentMiddleware):
         return "\n".join(f"- {p}" for p in parts if p)
 
 
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f\uff01-\uff5e]")
+
+
 def _estimate_msg_tokens(msg: BaseMessage) -> int:
-    # 只按内容长度估算。不能用 usage_metadata.input_tokens：那是一条消息生成时
-    # **整个上下文**的 token 数（可达数万），会把单条消息误估成超大，
-    # 导致小对话误触发压缩、空消息被单独分块，进而产生只有"AIMessage:"的空摘要调用。
-    return len(str(msg.content)) // 4 + 4
+    """按内容估算 token 数（CJK 感知）。
+
+    中文在主流分词器（DeepSeek/GPT/Qwen）下约 1 字 ≈ 0.6~1 token，英文约
+    4 字符 ≈ 1 token。此前统一 len//4 会把中文内容低估 3~4 倍，导致
+    ContextCompactionMiddleware 的阈值判定几乎永不触发——实测上下文膨胀到
+    单次调用 6万~20万 真实 token 而压缩从未发生（LangSmith trace 佐证）。
+
+    不能用 usage_metadata.input_tokens 估算单条消息：那是一条消息生成时
+    **整个上下文**的 token 数（可达数万），会把小对话误判为超限。
+    """
+    text = str(msg.content)
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    other = len(text) - cjk
+    return cjk + other // 4 + 8
 
 
 def build_agent(
