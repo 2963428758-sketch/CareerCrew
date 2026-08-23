@@ -26,7 +26,6 @@ dependencies = [
     "alembic>=1.13",
     "langsmith>=0.10",
     "FlagEmbedding>=1.4.0",
-    "modelscope>=1.39.0",
     "sentence-transformers>=5.0.0",
     "pydantic>=2.7.0",
     "PyYAML>=6.0",
@@ -35,6 +34,7 @@ dependencies = [
     "requests>=2.31.0",
     "pymupdf>=1.24.0",
     "mcp>=1.20,<2",
+    "patchright>=1.49",  # N1：CDP 接管用户已登录 Chrome（Boss直聘渠道），无需下载浏览器
 ]
 
 [project.optional-dependencies]

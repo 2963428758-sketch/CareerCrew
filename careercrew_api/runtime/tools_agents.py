@@ -150,6 +150,7 @@ class ToolsAgentsMixin:
                     allowed: list[str] | None = None):
         """构造 agent 工具集；必须显式携带认证用户的 episodic 上下文。"""
         from careercrew_core.memory.semantic import SemanticFactStore
+        from careercrew_core.tools.browser.boss_apply import make_send_greeting_tool
         from careercrew_core.tools.internal.memory_search import make_memory_search_tool
         from careercrew_core.tools.internal.memory_write import make_memory_write_tool
         from careercrew_core.tools.internal.profile_update import make_profile_update_tool
@@ -157,7 +158,7 @@ class ToolsAgentsMixin:
         from careercrew_core.tools.internal.read_image import make_read_image_tool
         from careercrew_core.tools.internal.salary_query import make_salary_query_tool
         from careercrew_core.tools.internal.search_jobs import make_search_jobs_tool
-        from careercrew_core.tools.mcp.mock_apply import submit_application
+        from careercrew_core.tools.mcp.mock_apply import send_greeting, submit_application
         from careercrew_core.tools.registry import ToolRegistry, ToolSpec
 
         if episodic is None:
@@ -184,11 +185,33 @@ class ToolsAgentsMixin:
                 return {**base, "doc": list(forced_doc_ids)}
             return base
 
+        # M5 CRAG：rag.retrieval.crag 开启时为 rag_query 注入评估器
+        # （incorrect -> LLM 重写查询重检一轮）；默认 None 行为不变。
+        crag_factory = None
+        try:
+            if self.settings.rag.retrieval.crag:
+                from careercrew_ai.llm import create_llm
+                from careercrew_core.rag.retrieval.retrieval_assessor import RetrievalAssessor
+
+                crag_llm = create_llm(self.settings, max_tokens=256)
+
+                def _crag_factory(search_fn):
+                    return RetrievalAssessor(crag_llm, search_fn)
+
+                crag_factory = _crag_factory
+        except Exception:
+            pass
+
         if kind == "matcher":
-            tools.register(ToolSpec(tool=make_search_jobs_tool(self.jobs_store)))
-            tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
+            boss_cfg = getattr(self.settings.tools, "search", None)
+            tools.register(ToolSpec(tool=make_search_jobs_tool(
+                self.jobs_store,
+                boss_cdp_url=getattr(boss_cfg, "boss_cdp_url", "") or "",
+                boss_city=getattr(boss_cfg, "boss_city", "") or "",
             )))
+            tools.register(ToolSpec(tool=make_rag_query_tool(
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
+                )))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_profile_update_tool(
@@ -197,23 +220,31 @@ class ToolsAgentsMixin:
             # T3.5 HITL MVP 的实际生产绑定：投递动作必须先经过
             # HitlMiddleware；当前无 approve/reject 恢复协议时绝不执行工具函数。
             tools.register(ToolSpec(tool=submit_application, requires_confirmation=True))
+            # N2：配置 Boss CDP 后 send_greeting 变真（详情页发起沟通+发送+验证+
+            # apply_attempt 留痕），未配置时注册 mock 版保持原行为。
+            boss_cdp = getattr(boss_cfg, "boss_cdp_url", "") or ""
+            greeting_tool = (
+                make_send_greeting_tool(cdp_url=boss_cdp, episodic_factory=lambda: ep)
+                if boss_cdp else send_greeting
+            )
+            tools.register(ToolSpec(tool=greeting_tool, requires_confirmation=True))
         elif kind == "resume":
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
-            )))
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
+                )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="resume_advisor")))
         elif kind == "interviewer":
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
-            )))
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
+                )))
             tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
             tools.register(ToolSpec(tool=mem_search))
         elif kind == "salary":
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
-            )))
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
+                )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source=kind)))
@@ -222,8 +253,8 @@ class ToolsAgentsMixin:
         elif kind == "planner":
             # 职业规划师：求职对话页的主理 agent，职责聚焦求职规划
             tools.register(ToolSpec(tool=make_rag_query_tool(
-                hs, categories=cats, filters=_rag_filters({"user_id": user_id}),
-            )))
+                hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
+                )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
                 source="career_planner")))
@@ -237,7 +268,7 @@ class ToolsAgentsMixin:
                 kf["doc"] = list(forced_doc_ids)
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, sink=rag_sink, categories=rag_category or None,
-                filters=kf,
+                filters=kf, assessor=crag_factory,
             )))
             # 个人背景问题（学校/专业/教育等）常藏在简历页图里，允许顾问按需读图
             tools.register(ToolSpec(tool=make_read_image_tool(
