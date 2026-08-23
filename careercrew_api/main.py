@@ -101,6 +101,19 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target=_attachment_loop, name="attachment-ttl-cleanup", daemon=True).start()
 
+    # HR 回复监听（E 批次）：定时拉 Boss 未读会话写入情景记忆；默认关闭
+    from careercrew_api.deps import get_runtime_dep
+    from careercrew_api.hr_monitor import start_hr_monitor
+
+    try:
+        rt = get_runtime_dep()
+        hm = rt.settings.hr_monitor
+        cdp = (hm.cdp_url or getattr(rt.settings.tools.search, "boss_cdp_url", "") or "").strip()
+        start_hr_monitor(get_runtime_dep, get_auth_service, hm.enabled and bool(cdp),
+                         hm.interval_minutes, stop)
+    except Exception:
+        logger.warning("hr_monitor 配置读取失败，本轮不启动", exc_info=True)
+
     # Auto Dream：每日低峰 consolidation（memory.consolidation.dream_schedule="HH:MM" 开启，off 关闭）
     from careercrew_api.deps import get_runtime_dep
 
