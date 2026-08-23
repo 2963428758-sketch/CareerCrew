@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.records import LongTermMemoryRepository, build_legacy_backfill
+from careercrew_core.memory.vector_outbox import drain_vector_outbox, reconcile_vector_ids
 
 
 def test_backfill_dry_run_excludes_transcripts_and_is_idempotent() -> None:
@@ -52,3 +53,23 @@ def test_changed_fact_supersedes_and_same_fact_accumulates_sources() -> None:
     assert changed_created and current["id"] != first["id"]
     assert repo.list_relations(current["id"])[0]["relation_type"] == "supersedes"
     assert len(repo.list_active("u1")) == 1
+
+
+def test_outbox_retries_and_soft_delete_are_vector_safe() -> None:
+    class Indexer:
+        def __init__(self): self.upserted, self.deleted = [], []
+        def upsert_memory(self, record): self.upserted.append(record["id"])
+        def delete_memory(self, memory_id): self.deleted.append(memory_id)
+
+    db = FakeMemoryDb()
+    db.upsert_fact("u1", "profile.direction", "profile", "方向", {"direction": "AI"}, "form", 1)
+    repo = LongTermMemoryRepository(db)
+    record, _ = repo.upsert(build_legacy_backfill(db, ["u1"]).candidates[0])
+    indexer = Indexer()
+
+    assert drain_vector_outbox(repo, indexer) == {"processed": 1, "failed": 0}
+    assert indexer.upserted == [record["id"]]
+    assert repo.soft_delete("u1", record["id"])
+    assert drain_vector_outbox(repo, indexer) == {"processed": 1, "failed": 0}
+    assert indexer.deleted == [record["id"]]
+    assert reconcile_vector_ids({"a", "b"}, {"b", "c"}) == {"missing": ["a"], "orphaned": ["c"]}

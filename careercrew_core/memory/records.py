@@ -288,10 +288,43 @@ class LongTermMemoryRepository:
             (user_id, limit),
         ).fetchall()])
 
+    def get(self, memory_id: str) -> dict[str, Any] | None:
+        if self._fake:
+            row = self._fake_state()["records"].get(memory_id)
+            return dict(row) if row else None
+        return self._pg(lambda conn: (dict(row) if (row := conn.execute(
+            "SELECT id,user_id,memory_type,category,normalized_key,canonical_hash,display_text,"
+            "confidence,importance,status,row_version,created_at,updated_at "
+            "FROM memory_records WHERE id=%s", (memory_id,),
+        ).fetchone()) else None))
+
+    def soft_delete(self, user_id: str, memory_id: str) -> bool:
+        """立即从 active 集合移除并排队向量 delete，不物理抹除审计数据。"""
+        if self._fake:
+            record = self._fake_state()["records"].get(memory_id)
+            if not record or record["user_id"] != user_id or record["status"] == "deleted":
+                return False
+            record["status"] = "deleted"
+            record["updated_at"] = now_iso()
+            self.enqueue_vector(memory_id, user_id, "delete")
+            return True
+        def _delete(conn):
+            row = conn.execute(
+                "UPDATE memory_records SET status='deleted',updated_at=now(),row_version=row_version+1 "
+                "WHERE id=%s AND user_id=%s AND status<>'deleted' RETURNING id",
+                (memory_id, user_id),
+            ).fetchone()
+            if not row:
+                return False
+            self._enqueue_vector_pg(conn, memory_id, user_id, "delete")
+            return True
+        return self._pg(_delete)
+
     def enqueue_vector(self, memory_id: str, user_id: str, operation: str) -> None:
         if self._fake:
-            self._fake_state()["outbox"][str(uuid.uuid4())] = {
-                "id": str(uuid.uuid4()), "memory_id": memory_id, "user_id": user_id,
+            outbox_id = str(uuid.uuid4())
+            self._fake_state()["outbox"][outbox_id] = {
+                "id": outbox_id, "memory_id": memory_id, "user_id": user_id,
                 "operation": operation, "attempts": 0, "processed_at": None, "available_at": now_iso(),
             }
             return
@@ -303,6 +336,67 @@ class LongTermMemoryRepository:
             "INSERT INTO memory_vector_outbox (id,memory_id,user_id,operation,payload) VALUES (%s,%s,%s,%s,'{}'::jsonb)",
             (str(uuid.uuid4()), memory_id, user_id, operation),
         )
+
+    def claim_vector_outbox(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """领取到期未处理任务；多 worker 时 Postgres 使用 SKIP LOCKED。"""
+        if self._fake:
+            rows = [row for row in self._fake_state()["outbox"].values() if row["processed_at"] is None]
+            rows.sort(key=lambda row: (row["available_at"], row["id"]))
+            for row in rows[:limit]:
+                row["attempts"] += 1
+            return [dict(row) for row in rows[:limit]]
+        def _claim(conn):
+            rows = conn.execute(
+                "SELECT id,memory_id,user_id,operation,payload,attempts,available_at FROM memory_vector_outbox "
+                "WHERE processed_at IS NULL AND available_at<=now() ORDER BY available_at,id "
+                "FOR UPDATE SKIP LOCKED LIMIT %s", (limit,),
+            ).fetchall()
+            claimed = [dict(row) for row in rows]
+            for row in claimed:
+                conn.execute("UPDATE memory_vector_outbox SET attempts=attempts+1 WHERE id=%s", (row["id"],))
+                row["attempts"] += 1
+            return claimed
+        return self._pg(_claim)
+
+    def complete_vector_outbox(self, outbox_id: str) -> None:
+        if self._fake:
+            row = self._fake_state()["outbox"].get(outbox_id)
+            if row:
+                row["processed_at"] = now_iso()
+                row["last_error"] = None
+            return
+        self._pg(lambda conn: conn.execute(
+            "UPDATE memory_vector_outbox SET processed_at=now(),last_error=NULL WHERE id=%s", (outbox_id,),
+        ))
+
+    def fail_vector_outbox(self, outbox_id: str, error: str, *, retry_seconds: int = 60) -> None:
+        if self._fake:
+            row = self._fake_state()["outbox"].get(outbox_id)
+            if row:
+                row["last_error"] = error[:1000]
+            return
+        self._pg(lambda conn: conn.execute(
+            "UPDATE memory_vector_outbox SET last_error=%s,available_at=now() + (%s * interval '1 second') WHERE id=%s",
+            (error[:1000], retry_seconds, outbox_id),
+        ))
+
+    def record_trace(self, user_id: str, *, policy_snapshot: dict[str, Any],
+                     candidates: list[dict[str, Any]] | None = None,
+                     skipped: list[dict[str, Any]] | None = None,
+                     written_memory_ids: list[str] | None = None) -> None:
+        data = {
+            "policy_snapshot": policy_snapshot, "candidates": candidates or [], "skipped": skipped or [],
+            "written_memory_ids": written_memory_ids or [],
+        }
+        if self._fake:
+            self._fake_state()["traces"][str(uuid.uuid4())] = {"user_id": user_id, **data}
+            return
+        self._pg(lambda conn: conn.execute(
+            "INSERT INTO agent_run_memory_traces (id,user_id,policy_snapshot,candidates,skipped,written_memory_ids) "
+            "VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)",
+            (str(uuid.uuid4()), user_id, json.dumps(data["policy_snapshot"]), json.dumps(data["candidates"]),
+             json.dumps(data["skipped"]), json.dumps(data["written_memory_ids"])),
+        ))
 
     def apply_backfill(self, report: BackfillReport) -> dict[str, int]:
         created = existing = 0
