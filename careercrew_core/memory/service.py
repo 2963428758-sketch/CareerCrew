@@ -171,16 +171,31 @@ class MemoryService:
 
         普通聊天、泛化问答和临时诉求在候选阶段即被拒绝，且策略关闭时不会读取或写入。
         """
-        self._require_generate(user_id, manual=False)
         from careercrew_core.memory.candidates import extract_candidates
 
+        self._require_generate(user_id, manual=False)
+        policy = self.effective_policy(user_id)
+        candidates = extract_candidates(text)
         saved: list[SemanticFact] = []
-        for candidate in extract_candidates(text):
-            model = self.update_profile(user_id, {candidate.field: candidate.value}, source=source)
-            field_type, key = ALLOWED_FIELDS[candidate.field]
+        for candidate in candidates:
+            self.update_profile(user_id, {candidate.field: candidate.value}, source=source)
             fact = SemanticFactStore(self._db, user_id).get_fact(candidate.field)
             if fact is not None:
                 saved.append(fact)
+        try:
+            written_ids = [
+                record["id"] for candidate in candidates
+                if (record := self.records.find_active(user_id, f"semantic:{candidate.field.casefold()}"))
+            ]
+            self.records.record_trace(
+                user_id, policy_snapshot=policy.model_dump(),
+                candidates=[{"field": item.field, "reason": item.reason} for item in candidates],
+                skipped=[] if candidates else [{"reason": "negative_rule_or_no_stable_fact"}],
+                written_memory_ids=written_ids,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("memory trace write failed", exc_info=True)
         return saved
 
     def write_event(self, user_id: str, event_type: str, content: dict | str, *,
@@ -263,9 +278,20 @@ class MemoryService:
 
     def search(self, user_id: str, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
         """策略受控的基础检索；管理读取与 Agent 检索保持明确分离。"""
-        if not self.effective_policy(user_id).can_use:
+        policy = self.effective_policy(user_id)
+        if not policy.can_use:
             return []
-        return self.list_records(user_id, query=query, limit=limit)["items"]
+        results = self.list_records(user_id, query=query, limit=limit)["items"]
+        try:
+            self.records.record_trace(
+                user_id, policy_snapshot=policy.model_dump(),
+                retrieved_memory_ids=[str(row["id"]) for row in results],
+                candidates=[],
+                skipped=[],
+            )
+        except Exception:
+            pass
+        return results
 
     def delete(self, user_id: str, *, kind: str = "", name: str | None = None,
                entry_id: str | None = None, thread_id: str | None = None,

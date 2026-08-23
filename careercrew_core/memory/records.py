@@ -397,19 +397,25 @@ class LongTermMemoryRepository:
     def record_trace(self, user_id: str, *, policy_snapshot: dict[str, Any],
                      candidates: list[dict[str, Any]] | None = None,
                      skipped: list[dict[str, Any]] | None = None,
+                     retrieved_memory_ids: list[str] | None = None,
+                     injected_memory_ids: list[str] | None = None,
                      written_memory_ids: list[str] | None = None) -> None:
         data = {
             "policy_snapshot": policy_snapshot, "candidates": candidates or [], "skipped": skipped or [],
+            "retrieved_memory_ids": retrieved_memory_ids or [],
+            "injected_memory_ids": injected_memory_ids or [],
             "written_memory_ids": written_memory_ids or [],
         }
         if self._fake:
             self._fake_state()["traces"][str(uuid.uuid4())] = {"user_id": user_id, **data}
             return
         self._pg(lambda conn: conn.execute(
-            "INSERT INTO agent_run_memory_traces (id,user_id,policy_snapshot,candidates,skipped,written_memory_ids) "
-            "VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)",
+            "INSERT INTO agent_run_memory_traces (id,user_id,policy_snapshot,candidates,skipped,"
+            "retrieved_memory_ids,injected_memory_ids,written_memory_ids) "
+            "VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)",
             (str(uuid.uuid4()), user_id, json.dumps(data["policy_snapshot"]), json.dumps(data["candidates"]),
-             json.dumps(data["skipped"]), json.dumps(data["written_memory_ids"])),
+             json.dumps(data["skipped"]), json.dumps(data["retrieved_memory_ids"]),
+             json.dumps(data["injected_memory_ids"]), json.dumps(data["written_memory_ids"])),
         ))
 
     def apply_backfill(self, report: BackfillReport) -> dict[str, int]:

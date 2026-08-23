@@ -109,6 +109,27 @@ def test_service_mirrors_explicit_facts_with_source_lineage() -> None:
     assert service.records.list_sources(record["id"])[0]["source_type"] == "explicit"
 
 
+def test_candidate_capture_records_policy_candidates_and_skip_reason() -> None:
+    service, db = _service()
+
+    service.capture_text_candidates("u1", "我有 3 年 Java 后端经验")
+    service.capture_text_candidates("u1", "Java 的 HashMap 是什么")
+
+    traces = list(db._long_term_memory["traces"].values())
+    assert traces[0]["policy_snapshot"]["memory_enabled"] is True
+    assert traces[0]["candidates"][0]["field"] == "profile.experience_years"
+    assert traces[1]["skipped"][0]["reason"] == "negative_rule_or_no_stable_fact"
+
+
+def test_search_trace_records_retrieved_ids() -> None:
+    service, db = _service()
+    service.save_explicit("u1", name="preferences.work_mode", value="远程")
+    results = service.search("u1", "远程")
+
+    traces = list(db._long_term_memory["traces"].values())
+    assert traces[-1]["retrieved_memory_ids"] == [results[0]["id"]]
+
+
 def test_new_active_records_win_over_legacy_projection_and_delete_is_soft() -> None:
     service, _ = _service()
     service.save_explicit("u1", name="preferences.work_mode", value="远程")
