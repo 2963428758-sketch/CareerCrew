@@ -317,3 +317,9 @@ px playwright install chromium
 - ~~hr_monitor 多账号会话归属映射~~ ✅ 已完成：回复按 application 投递事件路由到对应账号（公司归一+职位消歧），并加 (company,message) 轮询去重
 - M7 Qdrant multivector：仍延后（需重建索引）
 - contextual 知识库级开关：仍延后（现全局开关）
+
+### 遗留项清零（2026-08-23 续）
+- ~~M7 Qdrant multivector~~ ✅：vector_store.colbert_multivector 开启 → text_colbert 命名向量（MAX_SIM）+ ColBERTQdrantReranker 服务端打分；顺带修复 payload 循环把 colbert 矩阵字符串化导致本地精排从未生效的历史缺陷。注意：开启后旧数据需重新摄取才有精排效果
+- ~~contextual 知识库级开关~~ ✅：rag.chunking.contextual_by_category（{分类id: bool}）覆盖全局默认，摄取管线按 category 逐次判定
+
+三项遗留全部清零。
