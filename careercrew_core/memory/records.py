@@ -135,29 +135,52 @@ class LongTermMemoryRepository:
 
     def upsert(self, item: BackfillItem, *, capture_mode: str = "migration",
                importance: float = 0.5, confidence: float = 1.0) -> tuple[dict[str, Any], bool]:
-        """按 user + normalized key 幂等写入，返回 (record, created)。"""
+        """写入当前值；同值合并来源，异值 supersede 旧值。"""
         if self._fake:
             state = self._fake_state()
             for record in state["records"].values():
                 if (record["user_id"], record["normalized_key"], record["status"]) == (
                     item.user_id, item.normalized_key, "active",
                 ):
-                    return dict(record), False
+                    if record["canonical_hash"] == canonical_hash(item.payload.get("value")):
+                        record["last_confirmed_at"] = item.occurred_at or now_iso()
+                        record["updated_at"] = now_iso()
+                        self.add_source(record["id"], item.source_type, {"legacy_id": item.legacy_id})
+                        return dict(record), False
+                    record["status"] = "superseded"
+                    record["updated_at"] = now_iso()
+                    old_id = record["id"]
+                    break
+            else:
+                old_id = None
             record = self._new_record(item, capture_mode, importance, confidence)
             state["records"][record["id"]] = record
             self.add_source(record["id"], item.source_type, {"legacy_id": item.legacy_id})
+            if old_id:
+                self.add_relation(record["id"], old_id, "supersedes")
             self.enqueue_vector(record["id"], item.user_id, "upsert")
             return dict(record), True
 
         def _write(conn):
             row = conn.execute(
-                "SELECT id, user_id, memory_type, category, normalized_key, display_text, status, "
+                "SELECT id, user_id, memory_type, category, normalized_key, canonical_hash, display_text, status, "
                 "row_version, created_at, updated_at FROM memory_records "
                 "WHERE user_id=%s AND normalized_key=%s AND status='active' LIMIT 1",
                 (item.user_id, item.normalized_key),
             ).fetchone()
             if row:
-                return dict(row), False
+                current = dict(row)
+                if current["canonical_hash"] == canonical_hash(item.payload.get("value")):
+                    conn.execute(
+                        "UPDATE memory_records SET last_confirmed_at=%s,updated_at=now(),row_version=row_version+1 WHERE id=%s",
+                        (item.occurred_at or now_iso(), current["id"]),
+                    )
+                    self._add_source_pg(conn, current["id"], item.source_type, {"legacy_id": item.legacy_id})
+                    return current, False
+                conn.execute(
+                    "UPDATE memory_records SET status='superseded',updated_at=now(),row_version=row_version+1 WHERE id=%s",
+                    (current["id"],),
+                )
             record = self._new_record(item, capture_mode, importance, confidence)
             conn.execute(
                 "INSERT INTO memory_records (id,user_id,memory_type,category,capture_mode,normalized_key,"
@@ -181,6 +204,8 @@ class LongTermMemoryRepository:
                      json.dumps(item.payload.get("value"), ensure_ascii=False)),
                 )
             self._add_source_pg(conn, record["id"], item.source_type, {"legacy_id": item.legacy_id})
+            if row:
+                self._add_relation_pg(conn, record["id"], dict(row)["id"], "supersedes")
             self._enqueue_vector_pg(conn, record["id"], item.user_id, "upsert")
             return record, True
         return self._pg(_write)
@@ -207,6 +232,34 @@ class LongTermMemoryRepository:
             return
         self._pg(lambda conn: self._add_source_pg(conn, memory_id, source_type, metadata))
 
+    def add_relation(self, from_memory_id: str, to_memory_id: str, relation_type: str) -> None:
+        if self._fake:
+            state = self._fake_state()
+            state["relations"][str(uuid.uuid4())] = {
+                "from_memory_id": from_memory_id, "to_memory_id": to_memory_id,
+                "relation_type": relation_type, "created_at": now_iso(),
+            }
+            return
+        self._pg(lambda conn: self._add_relation_pg(conn, from_memory_id, to_memory_id, relation_type))
+
+    def list_sources(self, memory_id: str) -> list[dict[str, Any]]:
+        if self._fake:
+            return [dict(row) for row in self._fake_state()["sources"].get(memory_id, [])]
+        return self._pg(lambda conn: [dict(row) for row in conn.execute(
+            "SELECT id,source_type,source_excerpt_redacted,asserted_by,evidence_strength,observed_at "
+            "FROM memory_sources WHERE memory_id=%s ORDER BY observed_at", (memory_id,),
+        ).fetchall()])
+
+    def list_relations(self, memory_id: str) -> list[dict[str, Any]]:
+        if self._fake:
+            return [dict(row) for row in self._fake_state()["relations"].values()
+                    if row["from_memory_id"] == memory_id or row["to_memory_id"] == memory_id]
+        return self._pg(lambda conn: [dict(row) for row in conn.execute(
+            "SELECT from_memory_id,to_memory_id,relation_type,confidence,metadata,created_at "
+            "FROM memory_relations WHERE from_memory_id=%s OR to_memory_id=%s ORDER BY created_at",
+            (memory_id, memory_id),
+        ).fetchall()])
+
     @staticmethod
     def _add_source_pg(conn, memory_id: str, source_type: str, metadata: dict[str, Any]) -> None:
         conn.execute(
@@ -214,6 +267,13 @@ class LongTermMemoryRepository:
             "VALUES (%s,%s,%s,%s,%s)",
             (str(uuid.uuid4()), memory_id, source_type,
              json.dumps(metadata, ensure_ascii=False, sort_keys=True), "migration"),
+        )
+
+    @staticmethod
+    def _add_relation_pg(conn, from_memory_id: str, to_memory_id: str, relation_type: str) -> None:
+        conn.execute(
+            "INSERT INTO memory_relations (id,from_memory_id,to_memory_id,relation_type) VALUES (%s,%s,%s,%s)",
+            (str(uuid.uuid4()), from_memory_id, to_memory_id, relation_type),
         )
 
     def list_active(self, user_id: str, *, limit: int = 1000) -> list[dict[str, Any]]:

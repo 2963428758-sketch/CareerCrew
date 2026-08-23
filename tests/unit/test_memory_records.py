@@ -33,3 +33,22 @@ def test_backfill_uses_user_scope_for_same_legacy_name() -> None:
 
     assert len(repo.list_active("u1")) == 1
     assert len(repo.list_active("u2")) == 1
+
+
+def test_changed_fact_supersedes_and_same_fact_accumulates_sources() -> None:
+    db = FakeMemoryDb()
+    db.upsert_fact("u1", "profile.direction", "profile", "方向", {"direction": "Java"}, "form", 1)
+    repo = LongTermMemoryRepository(db)
+    first_report = build_legacy_backfill(db, ["u1"])
+    first, created = repo.upsert(first_report.candidates[0])
+    again, created_again = repo.upsert(first_report.candidates[0])
+
+    db.upsert_fact("u1", "profile.direction", "profile", "方向", {"direction": "AI"}, "form", 1)
+    changed = build_legacy_backfill(db, ["u1"]).candidates[0]
+    current, changed_created = repo.upsert(changed)
+
+    assert created and not created_again and again["id"] == first["id"]
+    assert len(repo.list_sources(first["id"])) == 2
+    assert changed_created and current["id"] != first["id"]
+    assert repo.list_relations(current["id"])[0]["relation_type"] == "supersedes"
+    assert len(repo.list_active("u1")) == 1

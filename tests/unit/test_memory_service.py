@@ -97,3 +97,13 @@ def test_delete_removes_the_matching_vector_point() -> None:
 
     assert removed == 1
     assert vector.deleted == ["event-1"]
+
+
+def test_service_mirrors_explicit_facts_with_source_lineage() -> None:
+    service, _ = _service()
+
+    service.save_explicit("u1", name="preferences.work_mode", value="远程")
+    record = service.records.list_active("u1")[0]
+
+    assert record["normalized_key"] == "semantic:preferences.work_mode"
+    assert service.records.list_sources(record["id"])[0]["source_type"] == "explicit"

@@ -76,6 +76,39 @@ class MemoryService:
         self._feature_enabled = feature_enabled
         self._vector_index = vector_index
         self._vector_store = vector_store
+        from careercrew_core.memory.records import LongTermMemoryRepository
+        self.records = LongTermMemoryRepository(db)
+
+    def _mirror_fact(self, fact: SemanticFact, *, capture_mode: str) -> None:
+        """兼容画像投影的同时维护可演进记录与来源；未执行迁移时不阻断主业务。"""
+        from careercrew_core.memory.records import BackfillItem
+        item = BackfillItem(
+            user_id=fact.user_id, memory_type="semantic", category=fact.type,
+            normalized_key=f"semantic:{fact.name.casefold()}", display_text=fact.description or fact.name,
+            payload={"value": fact.content, "legacy_name": fact.name}, source_type=fact.source or "service",
+            legacy_id=fact.name, occurred_at=fact.modified_at or None,
+        )
+        try:
+            self.records.upsert(item, capture_mode=capture_mode, confidence=fact.confidence)
+        except Exception:
+            # 旧部署在运行 Alembic 前仍应保持兼容画像可用；管理员可通过回填脚本补齐。
+            import logging
+            logging.getLogger(__name__).warning("new memory record mirror failed", exc_info=True)
+
+    def _mirror_event(self, user_id: str, entry: MemoryEntry, *, thread_id: str) -> None:
+        from careercrew_core.memory.records import BackfillItem
+        item = BackfillItem(
+            user_id=user_id, memory_type="episodic", category=entry.type,
+            normalized_key=f"event:{entry.type}:{entry.id}",
+            display_text=f"{entry.type}: {entry.content}",
+            payload={"value": entry.content, "thread_id": thread_id}, source_type="verified_event",
+            legacy_id=entry.id, occurred_at=entry.ts or None,
+        )
+        try:
+            self.records.upsert(item, capture_mode="verified_event")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("new memory event mirror failed", exc_info=True)
 
     def effective_policy(self, user_id: str) -> EffectiveMemoryPolicy:
         raw = self._policy_store.effective(user_id, self._feature_enabled)
@@ -98,7 +131,14 @@ class MemoryService:
     def update_profile(self, user_id: str, fields: dict[str, Any], *, source: str = "api",
                        manual: bool = False) -> UserModel:
         self._require_generate(user_id, manual=manual)
-        return SemanticFactStore(self._db, user_id).update(user_id, fields, source=source)
+        model = SemanticFactStore(self._db, user_id).update(user_id, fields, source=source)
+        store = SemanticFactStore(self._db, user_id)
+        for name, value in fields.items():
+            if value not in (None, "", []):
+                fact = store.get_fact(name)
+                if fact is not None:
+                    self._mirror_fact(fact, capture_mode="form" if manual else "automatic")
+        return model
 
     def load_profile(self, user_id: str) -> UserModel:
         """用户管理自己的画像不属于 Agent 检索，不受 can_use 限制。"""
@@ -119,10 +159,12 @@ class MemoryService:
             content = {content_key: value}
         else:
             fact_type, content = "explicit", {"value": value}
-        return SemanticFactStore(self._db, user_id).upsert_fact(
+        fact = SemanticFactStore(self._db, user_id).upsert_fact(
             name=name, type=fact_type, content=content, source="explicit",
             confidence=1.0, description=description or f"用户明确要求记住：{name}",
         )
+        self._mirror_fact(fact, capture_mode="explicit")
+        return fact
 
     def capture_text_candidates(self, user_id: str, text: str, *, source: str = "conversation") -> list[SemanticFact]:
         """把通过高精度规则的用户自述写为结构化事实。
@@ -152,6 +194,7 @@ class MemoryService:
         self._require_generate(user_id, manual=manual)
         entry = MemoryEntry(type=event_type, content=content, parentId=parent_id)
         stored = EpisodicMemory(self._db, user_id=user_id, thread_id=thread_id).write(entry)
+        self._mirror_event(user_id, stored, thread_id=thread_id)
         if self._vector_index is not None:
             self._vector_index.index_entry(stored)
         return stored
