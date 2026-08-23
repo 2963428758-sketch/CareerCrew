@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import traceback
@@ -75,12 +76,28 @@ async def lifespan(app: FastAPI):
     stop = threading.Event()
     interval = max(get_auth_service().settings.cleanup_interval_hours, 1) * 3600
 
+    def _cleanup_once() -> None:
+        try:
+            removed = get_auth_service().store.delete_expired_refresh_sessions()
+            if removed:
+                logger.info("refresh session cleanup: %d sessions removed", removed)
+        except Exception:
+            logger.warning("refresh session cleanup failed", exc_info=True)
+
     def _loop() -> None:
+        _cleanup_once()  # 启动即先清一轮（与附件 TTL 清理口径一致），此后按间隔
         while not stop.wait(interval):
-            try:
-                get_auth_service().store.delete_expired_refresh_sessions()
-            except Exception:
-                pass  # 清理失败不中断服务；下一轮重试
+            _cleanup_once()
+
+    # 进程内任务表（resume/knowledge 上传 job）按单进程假设实现：
+    # uvicorn --workers >1 时任务状态会查不到，启动即提醒部署侧。
+    workers = int(os.environ.get("WEB_CONCURRENCY", "1") or "1")
+    if workers > 1:
+        logger.warning(
+            "WEB_CONCURRENCY=%d：上传任务表为进程内实现，多 worker 下"
+            " GET /upload/{job_id} 将跨进程失效；如需横向扩容请改外部存储",
+            workers,
+        )
 
     thread = threading.Thread(target=_loop, name="refresh-session-cleanup", daemon=True)
     thread.start()

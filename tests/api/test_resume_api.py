@@ -97,7 +97,11 @@ def test_upload_error_job(client, fake_runtime):
     assert resp.status_code == 202
     job = _poll_job(client, resp.json()["job_id"])
     assert job["status"] == "error"
-    assert "MinerU boom" in job["error"]
+    # 解析错误经 _parse_resume_file 包装为中文业务异常（含格式上下文），
+    # friendly_error 对中文业务信息原样透传
+    assert job["error"]
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in job["error"])
+    assert "解析失败" in job["error"]
 
 
 @pytest.mark.web

@@ -78,7 +78,11 @@ def test_knowledge_upload_error(client, fake_runtime):
 
     assert job is not None
     assert job["status"] == "error"
-    assert "MinerU boom" in job["error"]
+    # 错误信息收敛后不再透传原始异常文本（防内部细节泄露），但必须有
+    # 用户可读的中文提示
+    assert job["error"]
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in job["error"])
+    assert "MinerU boom" not in job["error"]
 
 
 @pytest.mark.web

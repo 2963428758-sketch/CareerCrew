@@ -27,6 +27,7 @@ Task 3 增强（取消 / 背压 / 统一超时）：
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -34,9 +35,14 @@ import time
 from collections.abc import Callable, Generator
 from typing import Any
 
+logger = logging.getLogger("careercrew_api.sse")
+
 STREAM_IDLE_TIMEOUT_SECONDS = float(
     os.environ.get("CONSULT_STREAM_IDLE_TIMEOUT_SECONDS", "300")
 )
+
+# 用户可见错误里原始异常文本的截断上限（防内部路径/长堆栈刷屏与信息泄露）
+_ERROR_DETAIL_MAX_CHARS = 200
 
 _SENTINEL = object()
 
@@ -139,6 +145,11 @@ def stream_agent(
         raise
     finally:
         t.join(timeout=1)
+        if t.is_alive():
+            # 协作式取消的固有窗口：worker 正卡在一次 LLM/工具调用里，
+            # 会运行到下一个检查点才停（token 消耗到自然边界为止）。留痕便于
+            # 排查「取消后仍有少量消耗」与高并发取消下的线程堆积。
+            logger.debug("stream worker still running after client disconnect")
 
 
 def stage_event(stage: str) -> str:
@@ -158,33 +169,54 @@ def error_event(message: str) -> str:
     return json.dumps({"type": "error", "message": message}, ensure_ascii=False) + "\n"
 
 
-def friendly_error(exc: BaseException) -> str:
-    """把底层异常转成用户可读的中文提示（保留原始信息便于排查）。
+def _clip_detail(msg: str) -> str:
+    """截断原始异常细节（单行化 + 限长），保留排查线索又不刷屏/泄露堆栈。"""
+    one_line = " ".join(msg.split())
+    if len(one_line) <= _ERROR_DETAIL_MAX_CHARS:
+        return one_line
+    return one_line[:_ERROR_DETAIL_MAX_CHARS] + "…"
 
-    覆盖常见故障类：网络连接、超时、API Key、额度/限流、模型不可用、上下文过长；
-    已是中文的业务异常原样返回，其余统一加「生成失败：」前缀。
+
+def _trace_id() -> str:
+    """当前请求关联 ID（X-Request-ID），供用户反馈时与服务端日志对账。"""
+    try:
+        from careercrew_api.logging_config import request_id_var
+
+        rid = request_id_var.get("")
+        return f"，追踪号 {rid}" if rid else ""
+    except Exception:  # noqa: BLE001 - 取不到追踪号不影响错误提示本身
+        return ""
+
+
+def friendly_error(exc: BaseException) -> str:
+    """把底层异常转成用户可读的中文提示。
+
+    覆盖常见故障类：网络连接、超时、API Key、额度/限流、模型不可用、上下文过长，
+    附截断后的原始细节辅助排查；未知类别不透传原始异常（可能含内部路径/
+    供应商端点），改给通用提示 + 追踪号。已是中文的业务异常原样返回。
     """
     msg = str(exc).strip() or type(exc).__name__
     if any("\u4e00" <= ch <= "\u9fff" for ch in msg):
-        return msg
+        return _clip_detail(msg)
     lowered = msg.lower()
+    detail = _clip_detail(msg)
     if any(k in lowered for k in ("connection", "connect", "refused", "network",
                                    "name or service not known", "unreachable")):
-        return f"无法连接到 AI 服务，请检查网络或服务配置：{msg}"
+        return f"无法连接到 AI 服务，请检查网络或服务配置：{detail}"
     if "timeout" in lowered or "timed out" in lowered:
-        return f"AI 服务响应超时，请稍后重试：{msg}"
+        return f"AI 服务响应超时，请稍后重试：{detail}"
     if any(k in lowered for k in ("api key", "apikey", "unauthorized", "authentication",
                                   "invalid token", "credentials")) or "401" in msg:
-        return f"AI 服务密钥无效或已过期，请检查配置：{msg}"
+        return f"AI 服务密钥无效或已过期，请检查配置：{detail}"
     if any(k in lowered for k in ("quota", "rate limit", "too many requests")) or "429" in msg:
-        return f"AI 服务额度不足或请求过于频繁，请稍后重试：{msg}"
+        return f"AI 服务额度不足或请求过于频繁，请稍后重试：{detail}"
     if "model" in lowered and any(k in lowered for k in ("not found", "not exist",
                                                          "not available", "does not exist")):
-        return f"AI 模型不可用，请检查模型配置：{msg}"
+        return f"AI 模型不可用，请检查模型配置：{detail}"
     if any(k in lowered for k in ("maximum context", "context length", "out of memory",
                                   "token limit")):
-        return f"对话内容过长，请新开一个会话再试：{msg}"
-    return f"生成失败：{msg}"
+        return f"对话内容过长，请新开一个会话再试：{detail}"
+    return f"生成失败，请稍后重试{_trace_id()}"
 
 
 def turn_done_fields(turn) -> dict:
