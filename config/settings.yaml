@@ -33,6 +33,9 @@ vector_store:
   backend: qdrant
   url: http://localhost:6333
   api_key: ""
+  colbert_multivector: false    # M7：ColBERT 原生 multivector（服务端 MAX_SIM），
+                                # 需与 rag.retrieval.colbert_rerank 同开；存量集合自动补加向量字段，
+                                # 旧数据需重新摄取才有精排效果
   collections:
     knowledge: careercrew_mm
     episodic_memory: careercrew_episodic_v2
@@ -46,14 +49,15 @@ rag:
     top_k_sparse: 20
     top_k_final: 10
     crag: false                  # M5：检索质量自评估（incorrect -> LLM 重写重检一轮）
-    colbert_rerank: false        # M7：ColBERT late-interaction 本地精排（需同开 colbert_store）
-    colbert_store: false         # M7：摄取时把 colbert 矩阵写入 payload（库体积显著增大）
+    colbert_rerank: false        # M7：ColBERT late-interaction 精排总开关
+    colbert_store: false         # M7：payload 方案（本地 MaxSim）；multivector 开启时无需
   chunking:
-    strategy: recursive          # recursive | semantic
+    strategy: recursive
     chunk_size: 800
     chunk_overlap: 100
-    contextual: false            # Contextual Chunking：每块一次 LLM 调用，摄取成本高，
-                                 # 默认关闭；需要更强检索召回时改为 true（知识库级粒度待做）
+    contextual: false            # 全局默认：每块一次 LLM 调用，摄取成本高
+    contextual_by_category: {}   # 知识库级覆盖（M 批次）：{分类id: true/false}，
+                                 # 未声明的分类回落上方全局值。例：{"interview": true}
   loaders:
     backend: mineru              # MinerU 子进程解析（PDF/图片/docx/pptx/xlsx）
     provider: api                # api（云端精准解析，推荐，本机零推理负载）| local（本地子进程）

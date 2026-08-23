@@ -19,6 +19,7 @@ def _seed_store(valid_config_data):
     store._client = QdrantClient(":memory:")
     store._collection = "careercrew_mm"
     store._dim = 1024
+    store._cfg = type("C", (), {"colbert_multivector": False})()  # __new__ 绕过了 __init__
     store._ensure_collection()
     store.upsert([VectorRecord(
         id="doc-p0", dense=[0.1] * 1024,

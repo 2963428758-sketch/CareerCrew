@@ -49,6 +49,7 @@ class QdrantStore(BaseVectorStore):
         cfg = settings.vector_store
         self._collection = collection_name or cfg.collections["knowledge"]
         self._dim = dim
+        self._cfg = cfg
 
         url = (cfg.url or "").strip()
         if url == ":memory:":
@@ -65,15 +66,34 @@ class QdrantStore(BaseVectorStore):
     def _ensure_collection(self) -> None:
         from qdrant_client.models import (
             Distance,
+            MultiVectorComparator,
+            MultiVectorConfig,
             PayloadSchemaType,
             SparseVectorParams,
             VectorParams,
         )
 
+        colbert_params: dict[str, VectorParams] = {}
+        if getattr(self._cfg, "colbert_multivector", False):
+            # M7：ColBERT token 矩阵原生 multivector（MAX_SIM 服务端精排）
+            colbert_params["text_colbert"] = VectorParams(
+                size=self._dim, distance=Distance.COSINE,
+                multivector_config=MultiVectorConfig(comparator=MultiVectorComparator.MAX_SIM),
+            )
+
         if self._client.collection_exists(self._collection):
+            # 存量集合补加 text_colbert（旧点无该向量，需重新摄取才有精排数据）
+            if colbert_params:
+                try:
+                    self._client.update_collection(
+                        self._collection, vectors_config=colbert_params,
+                    )
+                except Exception:
+                    pass  # 已存在/版本不支持等，忽略
             return
         vectors_config: dict[str, VectorParams] = {
             "text_dense": VectorParams(size=self._dim, distance=Distance.COSINE),
+            **colbert_params,
         }
         self._client.create_collection(
             collection_name=self._collection,
@@ -167,6 +187,7 @@ class QdrantStore(BaseVectorStore):
 
         if not records:
             return
+        use_mv = getattr(self._cfg, "colbert_multivector", False)
         points = []
         for r in records:
             vectors: dict[str, Any] = {"text_dense": self._to_list(r.dense)}
@@ -175,8 +196,20 @@ class QdrantStore(BaseVectorStore):
                     indices=[int(k) for k in r.sparse.keys()],
                     values=[float(v) for v in r.sparse.values()],
                 )
+            metadata = dict(r.metadata or {})
+            # M7：multivector 模式下 colbert 矩阵进命名向量（服务端 MAX_SIM），
+            # 不再落入 payload（避免字符串化与双份存储）
+            if use_mv:
+                cb = metadata.pop("colbert", None)
+                if cb:
+                    try:
+                        vectors["text_colbert"] = [
+                            [float(x) for x in row] for row in cb
+                        ]
+                    except Exception:
+                        pass  # 矩阵格式异常时跳过该路，dense/sparse 不受影响
             payload: dict[str, Any] = {"_id": r.id, "text": (r.text or "")[:8192]}
-            for k, v in (r.metadata or {}).items():
+            for k, v in metadata.items():
                 if isinstance(v, (str, int, float, bool)):
                     payload[k] = v
                 elif v is not None:
@@ -197,6 +230,44 @@ class QdrantStore(BaseVectorStore):
         if not ranked:
             return []
         return self._rrf_fuse(ranked, top_k=top_k)
+
+    def colbert_scores(
+        self,
+        query_matrix: list[list[float]],
+        ids: list[str],
+        filters: dict | None = None,
+    ) -> dict[str, float]:
+        """M7 multivector：对给定候选点做服务端 MAX_SIM 打分。
+
+        query_matrix：查询的 token 级矩阵 (n_query_tokens, dim)。
+        返回 {原始 id: score}；候选缺失/异常时该 id 无条目。
+        """
+        if not query_matrix or not ids:
+            return {}
+        from qdrant_client.models import FieldCondition, Filter, MatchAny
+
+        try:
+            flt = self._filter_expr(filters)
+            must = list(getattr(flt, "must", []) or []) if flt is not None else []
+            must.append(FieldCondition(key="_id", match=MatchAny(any=list(ids))))
+            res = self._client.query_points(
+                self._collection,
+                query=query_matrix,
+                using="text_colbert",
+                query_filter=Filter(must=must),
+                limit=len(ids),
+                with_payload=["_id"],
+                with_vectors=False,
+            )
+        except Exception:
+            # 集合无 text_colbert 向量路（legacy/未开启 multivector）等：优雅空结果
+            return {}
+        out: dict[str, float] = {}
+        for h in res.points:
+            sid = (h.payload or {}).get("_id")
+            if sid:
+                out[str(sid)] = float(h.score)
+        return out
 
     def query_routes(
         self,

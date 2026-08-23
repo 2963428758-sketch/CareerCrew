@@ -93,6 +93,10 @@ class VectorStoreSettings(BaseModel):
     url: str = "http://localhost:6333"
     api_key: str = ""
     collections: dict[str, str]
+    # M7：ColBERT 原生 multivector（MAX_SIM 服务端精排）。开启后建表带 text_colbert
+    # 向量；存量集合自动 patch 补加（旧点需重新摄取才有该向量）。与
+    # rag.retrieval.colbert_rerank 配合使用。
+    colbert_multivector: bool = False
 
 
 class RetrievalSettings(BaseModel):
@@ -110,7 +114,9 @@ class ChunkingSettings(BaseModel):
     strategy: str
     chunk_size: int
     chunk_overlap: int
-    contextual: bool
+    contextual: bool = False  # 全局默认；被 contextual_by_category 按分类覆盖
+    # 知识库级开关：{category: true/false}，未声明的分类回落全局 contextual
+    contextual_by_category: dict[str, bool] = {}
 
 
 class LoadersSettings(BaseModel):

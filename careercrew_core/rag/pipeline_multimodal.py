@@ -52,11 +52,14 @@ class MultimodalIngestionPipeline:
         chunk_size: int = 800,
         chunk_overlap: int = 100,
         colbert_store: bool = False,
+        contextual_resolver=None,
     ) -> None:
         self._embedding = embedding
         self._store = store
         self._contextualizer = contextualizer
         self._colbert_store = colbert_store
+        # 知识库级开关（M 批次）：resolver(category)->bool，优先于全局 contextual
+        self._contextual_resolver = contextual_resolver
         self._contextual = contextual and contextualizer is not None
         self._object_extraction = object_extraction
         self._output_dir = Path(output_dir)
@@ -96,6 +99,18 @@ class MultimodalIngestionPipeline:
             timeout=self._loader_timeout,
         )
 
+    def _ctx_enabled(self, category: str | None = None) -> bool:
+        """本分类是否启用 Contextual Chunking：resolver 优先，回落全局开关。"""
+        if self._contextualizer is None:
+            return False
+        flag = self._contextual
+        if self._contextual_resolver is not None and category is not None:
+            try:
+                flag = bool(self._contextual_resolver(category))
+            except Exception:
+                pass  # resolver 故障回落全局默认
+        return flag
+
     def ingest_text(
         self,
         text: str,
@@ -126,7 +141,7 @@ class MultimodalIngestionPipeline:
         doc_id = Path(source).stem if source else "doc"
         texts_to_embed: list[str] = []
         for c in chunks:
-            if self._contextual and self._contextualizer:
+            if self._ctx_enabled(category):
                 c = self._contextualizer.contextualize(c, text)
             texts_to_embed.append(c.contextualized_text or c.text)
         if progress_cb:
@@ -241,7 +256,7 @@ class MultimodalIngestionPipeline:
             texts = []
             for pg in non_empty_pages:
                 text_to_embed = pg.markdown
-                if self._contextual and self._contextualizer:
+                if self._ctx_enabled(category):
                     ctx = self._contextualizer.contextualize(
                         _SimpleChunk(pg.markdown), doc_text
                     )

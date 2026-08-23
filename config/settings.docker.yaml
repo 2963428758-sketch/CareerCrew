@@ -31,6 +31,7 @@ vector_store:
   backend: qdrant
   url: http://qdrant:6333           # compose 服务名
   api_key: ""
+  colbert_multivector: false        # M7：与 rag.retrieval.colbert_rerank 同开（见主配置注释）
   collections:
     knowledge: careercrew_mm
     episodic_memory: careercrew_episodic_v2

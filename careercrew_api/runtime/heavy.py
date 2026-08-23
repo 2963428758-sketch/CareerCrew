@@ -19,7 +19,19 @@ if TYPE_CHECKING:
     from careercrew_core.workflow.job_cycle import JobCycle
 
 
-pass
+def _resolve_contextual(settings, category: str | None) -> bool:
+    """M 批次：Contextual Chunking 的知识库级开关。
+
+    contextual_by_category[category] 优先；未声明回落全局 rag.chunking.contextual。
+    """
+    try:
+        chunking = settings.rag.chunking
+        override = getattr(chunking, "contextual_by_category", None) or {}
+        if category and category in override:
+            return bool(override[category])
+        return bool(chunking.contextual)
+    except Exception:
+        return False
 
 
 
@@ -162,14 +174,21 @@ class HeavyInitMixin:
         llm = create_llm(settings, max_tokens=1024)
         rr = SiliconFlowVLReranker(settings)
 
-        # M7：ColBERT late-interaction 本地精排（rag.retrieval.colbert_rerank 开启，
-        # 且摄取侧 colbert_store 同开才有数据；无数据候选稳定降级保持原序）
+        # M7：ColBERT late-interaction 精排（rag.retrieval.colbert_rerank 总开关）。
+        # colbert_multivector=True → 服务端 MAX_SIM（text_colbert 命名向量）；
+        # 否则本地 MaxSim（依赖 payload 中的 colbert 数据，无数据稳定降级原序）。
         post_rr = None
         try:
             if settings.rag.retrieval.colbert_rerank:
-                from careercrew_ai.vector_store.colbert import ColBERTLocalReranker
+                from careercrew_ai.vector_store.colbert import (
+                    ColBERTLocalReranker,
+                    ColBERTQdrantReranker,
+                )
 
-                post_rr = ColBERTLocalReranker(embedding)
+                if getattr(settings.vector_store, "colbert_multivector", False):
+                    post_rr = ColBERTQdrantReranker(embedding, store)
+                else:
+                    post_rr = ColBERTLocalReranker(embedding)
         except Exception:
             pass
         hs = MultimodalSearch(
@@ -177,12 +196,18 @@ class HeavyInitMixin:
             post_reranker=post_rr,
         )
 
+        # 摄取侧：multivector 或 payload 本地精排任一开启都需要 colbert 数据
+        need_colbert = bool(getattr(settings.rag.retrieval, "colbert_store", False)) or (
+            settings.rag.retrieval.colbert_rerank
+            and getattr(settings.vector_store, "colbert_multivector", False)
+        )
         pipe = MultimodalIngestionPipeline(
             embedding, store,
-            # Contextual Chunking 遵循配置（rag.chunking.contextual，默认 false——
-            # 每块一次 LLM 调用，摄取成本高；README 口径与默认值保持一致）
+            # Contextual Chunking 遵循配置（rag.chunking.contextual 全局默认，
+            # contextual_by_category 按分类覆盖；每块一次 LLM 调用成本高）
             contextual=settings.rag.chunking.contextual,
-            colbert_store=bool(getattr(settings.rag.retrieval, "colbert_store", False)),
+            contextual_resolver=lambda cat: _resolve_contextual(settings, cat),
+            colbert_store=need_colbert,
             output_dir=settings.rag.loaders.output_dir,
             loader_provider=settings.rag.loaders.provider,
             loader_api_key=settings.rag.loaders.api_key,
