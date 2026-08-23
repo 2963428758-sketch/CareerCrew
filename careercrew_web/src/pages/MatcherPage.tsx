@@ -101,6 +101,8 @@ export default function MatcherPage() {
     setVersionSelections({})
     setMessages([])
     void restoreHistory(tid).then((restored) => {
+      // latest-wins：快速连续切换会话时丢弃迟到的旧响应，防止覆盖新会话消息
+      if (useThreadStore.getState().currentThreadByModule.matcher !== tid) return
       const msgs: MatcherMessage[] = restored.map((r) => ({
         id: nextId(),
         role: r.role,

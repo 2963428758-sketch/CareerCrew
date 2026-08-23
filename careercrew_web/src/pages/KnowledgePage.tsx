@@ -111,6 +111,8 @@ export default function KnowledgePage() {
     setMessages([])
     setPreviewUrl(null)
     void restoreHistory(tid).then((restored) => {
+      // latest-wins：快速连续切换会话时丢弃迟到的旧响应，防止覆盖新会话消息
+      if (useThreadStore.getState().currentThreadByModule.knowledge !== tid) return
       const msgs: KnowledgeMessage[] = restored.map((r) => {
         const sources = Array.isArray(r.metadata?.sources)
           ? (r.metadata.sources as KnowledgeSource[])
