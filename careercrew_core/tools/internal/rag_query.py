@@ -23,8 +23,11 @@ def make_rag_query_tool(
     sink: Callable[[QueryResult], None] | None = None,
     categories: str | list[str] | None = None,
     filters: dict | None = None,
+    assessor=None,
 ) -> BaseTool:
-    """构造 rag_query 工具。categories 限定检索分类（str 或 list），None/空 = 检索全部。"""
+    """构造 rag_query 工具。categories 限定检索分类（str 或 list），None/空 = 检索全部。
+
+    assessor：M5 CRAG 工厂 (search_fn) -> RetrievalAssessor，None 关闭（默认）。"""
     bound: list[str] = [categories] if isinstance(categories, str) else list(categories or [])
     scope = "、".join(category_label(c) for c in bound) if bound else "全部"
     desc = (
@@ -40,6 +43,15 @@ def make_rag_query_tool(
         results = mm_search.search(
             query, top_k=top_k, filters=scoped_filters or None,
         )
+        # M5 CRAG：incorrect 时评估器重写查询重检一轮（assessor 内部持有 search_fn）
+        if assessor is not None and results:
+            def _search(q: str):
+                return mm_search.search(q, top_k=top_k, filters=scoped_filters or None)
+
+            try:
+                results, _meta = assessor.run(query, top_k)
+            except Exception:
+                pass  # 评估链路故障不阻塞检索主路径
         if not results:
             return "（无检索结果）"
         lines = []

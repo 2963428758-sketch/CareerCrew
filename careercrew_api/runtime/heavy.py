@@ -161,8 +161,20 @@ class HeavyInitMixin:
 
         llm = create_llm(settings, max_tokens=1024)
         rr = SiliconFlowVLReranker(settings)
+
+        # M7：ColBERT late-interaction 本地精排（rag.retrieval.colbert_rerank 开启，
+        # 且摄取侧 colbert_store 同开才有数据；无数据候选稳定降级保持原序）
+        post_rr = None
+        try:
+            if settings.rag.retrieval.colbert_rerank:
+                from careercrew_ai.vector_store.colbert import ColBERTLocalReranker
+
+                post_rr = ColBERTLocalReranker(embedding)
+        except Exception:
+            pass
         hs = MultimodalSearch(
-            embedding, store, reranker=rr, top_m=30, image_reader=self.read_image
+            embedding, store, reranker=rr, top_m=30, image_reader=self.read_image,
+            post_reranker=post_rr,
         )
 
         pipe = MultimodalIngestionPipeline(
@@ -170,6 +182,7 @@ class HeavyInitMixin:
             # Contextual Chunking 遵循配置（rag.chunking.contextual，默认 false——
             # 每块一次 LLM 调用，摄取成本高；README 口径与默认值保持一致）
             contextual=settings.rag.chunking.contextual,
+            colbert_store=bool(getattr(settings.rag.retrieval, "colbert_store", False)),
             output_dir=settings.rag.loaders.output_dir,
             loader_provider=settings.rag.loaders.provider,
             loader_api_key=settings.rag.loaders.api_key,

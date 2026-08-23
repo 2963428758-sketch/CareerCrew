@@ -25,12 +25,15 @@ class MultimodalSearch:
         reranker: BaseReranker | None = None,
         top_m: int = 30,
         image_reader: Callable[[str], str] | None = None,
+        post_reranker=None,
     ) -> None:
+        """post_reranker：RRF 融合后、外部精排前的本地重排级（M7 ColBERT），None 关闭。"""
         self._embedding = embedding
         self._store = store
         self._reranker = reranker
         self._top_m = top_m
         self._image_reader = image_reader
+        self._post_reranker = post_reranker
 
     def search(
         self,
@@ -50,6 +53,11 @@ class MultimodalSearch:
         if not ranked:
             return []
         fused = rrf_fuse(ranked, top_k=self._top_m, weights=weights)
+        if self._post_reranker is not None:
+            try:
+                fused = self._post_reranker.rerank(query, fused, top_k=self._top_m)
+            except Exception:
+                pass  # ColBERT 精排失败回退 RRF 序
         if self._reranker is not None:
             try:
                 return self._reranker.rerank(query, fused, top_k=top_k)

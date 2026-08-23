@@ -25,11 +25,13 @@ class IngestionPipeline:
         contextual: bool = True,
         chunk_size: int = 800,
         chunk_overlap: int = 100,
+        colbert_store: bool = False,
     ) -> None:
         self._embedding = embedding
         self._store = store
         self._contextualizer = contextualizer
         self._contextual = contextual and contextualizer is not None
+        self._colbert_store = colbert_store
         self._chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     def ingest_text(self, text: str, source: str = "", metadata: dict | None = None) -> int:
@@ -47,6 +49,18 @@ class IngestionPipeline:
         # 批量 encode
         emb_out = self._embedding.encode(texts_to_embed)
 
+        # M7 可选：colbert token 矩阵随 payload 落库（库体积显著增大，开关默认关）
+        def _colbert_meta(i: int) -> dict:
+            if not (self._colbert_store and emb_out.colbert):
+                return {}
+            try:
+                import numpy as np
+
+                return {"colbert": [[float(x) for x in row]
+                                    for row in np.asarray(emb_out.colbert[i])]}
+            except Exception:
+                return {}
+
         # upsert（存原始块文本）
         records = [
             VectorRecord(
@@ -54,7 +68,7 @@ class IngestionPipeline:
                 dense=emb_out.dense[i],
                 sparse=emb_out.sparse[i] if emb_out.sparse else None,
                 text=c.text,
-                metadata={**c.metadata, "doc": doc_id},
+                metadata={**c.metadata, "doc": doc_id, **_colbert_meta(i)},
             )
             for i, c in enumerate(chunks)
         ]

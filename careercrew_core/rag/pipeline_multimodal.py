@@ -51,10 +51,12 @@ class MultimodalIngestionPipeline:
         loader_timeout: int = 1800,
         chunk_size: int = 800,
         chunk_overlap: int = 100,
+        colbert_store: bool = False,
     ) -> None:
         self._embedding = embedding
         self._store = store
         self._contextualizer = contextualizer
+        self._colbert_store = colbert_store
         self._contextual = contextual and contextualizer is not None
         self._object_extraction = object_extraction
         self._output_dir = Path(output_dir)
@@ -130,13 +132,27 @@ class MultimodalIngestionPipeline:
         if progress_cb:
             progress_cb("vectorize", 0.6)
         emb = self._embedding.encode(texts_to_embed)
+
+        # M7 可选：colbert token 矩阵随 payload 落库（开关默认关，库体积增大）
+        colbert_meta: list[dict] = [{} for _ in chunks]
+        if self._colbert_store and emb.colbert:
+            for i, mat in enumerate(emb.colbert):
+                try:
+                    import numpy as np
+
+                    colbert_meta[i] = {"colbert": [[float(x) for x in row]
+                                                   for row in np.asarray(mat)]}
+                except Exception:
+                    continue
+
         records = [
             VectorRecord(
                 id=f"{doc_id}_{i:04d}",
                 dense=emb.dense[i],
                 sparse=emb.sparse[i] if emb.sparse else None,
                 text=c.text,
-                metadata={**c.metadata, "doc": doc_id, "category": category},
+                metadata={**c.metadata, "doc": doc_id, "category": category,
+                          **colbert_meta[i]},
             )
             for i, c in enumerate(chunks)
         ]
