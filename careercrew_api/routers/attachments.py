@@ -18,11 +18,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from careercrew_api import storage
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime
+from careercrew_api.upload_io import read_bounded
 from careercrew_core.conversation.attachments import OwnershipError
 from careercrew_core.conversation.validation import (
     MAX_ATTACHMENT_SIZE,
@@ -55,50 +57,17 @@ def _resolve_attachment_path(user_id: str, thread_id: str, attachment_id: str) -
     )
 
 
-async def _read_bounded(file: UploadFile, limit: int) -> bytes | None:
-    """分块读取上传内容，最多读 limit 字节。
-
-    通过限制读取量避免把超大上传整体缓冲进内存：读到 limit 字节后若仍有剩余
-    （下一 chunk 非空）即返回 None 表示超限；否则返回完整字节内容。
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > limit:
-            return None
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-@router.post("", status_code=201)
-async def upload_attachment(
-    current_user: CurrentUser,
-    thread_id: str = Form(...),
-    file: UploadFile = File(...),
-    rt: CareerCrewRuntime = Depends(get_runtime_dep),
-) -> dict:
-    """上传附件：校验 → 存盘 → 写 DB（status=uploaded，expires_at=now+7d）。"""
-    user_id = current_user["id"]
-
-    # ── 每 turn 5 个限制（按 thread_id + 未删除计数）──
+def _count_nondeleted(rt: CareerCrewRuntime, user_id: str, thread_id: str) -> int:
+    """重组件惰性初始化 + 配额计数（阻塞，须在线程池中调用）。"""
     rt._ensure_heavy()
-    existing = rt.attachment_store.count_nondeleted(user_id, thread_id)
-    if existing >= _MAX_FILES_PER_TURN:
-        raise HTTPException(status_code=422, detail="每个会话最多上传 5 个附件")
+    return rt.attachment_store.count_nondeleted(user_id, thread_id)
 
-    # ── 读内容（分块读，最多 MAX+1 字节；超过即拒绝，避免超大文件全读进内存）──
-    content = await _read_bounded(file, MAX_ATTACHMENT_SIZE)
-    if content is None:
-        raise HTTPException(status_code=413, detail="附件超过 25MB 限制")
 
-    # 文件名防路径穿越：只取 basename；原名仅进元数据。
-    filename = Path(file.filename or "upload").name or "upload"
-    mime = file.content_type or ""
-
+def _persist_attachment(
+    rt: CareerCrewRuntime, user_id: str, thread_id: str,
+    content: bytes, filename: str, mime: str,
+) -> dict:
+    """校验 → 存盘 → 写 DB（磁盘与数据库均为阻塞 IO，须在线程池中调用）。"""
     # ── 校验（扩展名/MIME/magic/大小，纯函数）──
     try:
         # 文本类需要全文做 UTF-8 校验，故传完整 content；二进制类签名只取头。
@@ -139,6 +108,39 @@ async def upload_attachment(
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
+
+
+@router.post("", status_code=201)
+async def upload_attachment(
+    current_user: CurrentUser,
+    thread_id: str = Form(...),
+    file: UploadFile = File(...),
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> dict:
+    """上传附件：校验 → 存盘 → 写 DB（status=uploaded，expires_at=now+7d）。
+
+    重组件初始化、配额计数、写盘、写库都是阻塞操作，统一下放线程池，
+    避免首次冷启动（可达数十秒）期间整个事件循环停摆。
+    """
+    user_id = current_user["id"]
+
+    # ── 每 turn 5 个限制（按 thread_id + 未删除计数）──
+    existing = await run_in_threadpool(_count_nondeleted, rt, user_id, thread_id)
+    if existing >= _MAX_FILES_PER_TURN:
+        raise HTTPException(status_code=422, detail="每个会话最多上传 5 个附件")
+
+    # ── 读内容（分块读，最多 MAX+1 字节；超过即拒绝，避免超大文件全读进内存）──
+    content = await read_bounded(file, MAX_ATTACHMENT_SIZE)
+    if content is None:
+        raise HTTPException(status_code=413, detail="附件超过 25MB 限制")
+
+    # 文件名防路径穿越：只取 basename；原名仅进元数据。
+    filename = Path(file.filename or "upload").name or "upload"
+    mime = file.content_type or ""
+
+    return await run_in_threadpool(
+        _persist_attachment, rt, user_id, thread_id, content, filename, mime
+    )
 
 
 @router.get("")

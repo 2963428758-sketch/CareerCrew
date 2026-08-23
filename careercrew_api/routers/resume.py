@@ -25,6 +25,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from careercrew_api import storage
 from careercrew_api.attachment_context import AttachmentRejected
@@ -42,6 +43,7 @@ from careercrew_api.sse import (
     stage_event,
     stream_agent,
 )
+from careercrew_api.upload_io import read_bounded
 
 router = APIRouter()
 
@@ -231,9 +233,11 @@ async def upload(
     """上传简历文件（异步）：立即返回 job_id，进度通过 GET /upload/{job_id} 轮询。
 
     与知识库上传一致：解析在后台线程执行，完成写入简历库供复用。
+    大小校验在分块读取阶段生效（超限拒绝，不把超大 body 缓冲进内存）；
+    写盘为阻塞 IO，下放线程池避免卡事件循环。
     """
-    content_bytes = await file.read()
-    if len(content_bytes) > _MAX_UPLOAD_SIZE:
+    content_bytes = await read_bounded(file, _MAX_UPLOAD_SIZE)
+    if content_bytes is None:
         raise HTTPException(status_code=413, detail="文件超过 20MB 限制")
 
     # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）；
@@ -243,8 +247,12 @@ async def upload(
     user_id = current_user["id"]
     job_id = _new_job(filename, user_id)
     save_path = storage.resolve_under(storage.L.resumes_raw, user_id, f"{job_id}{ext}")
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_bytes(content_bytes)
+
+    def _write_raw() -> None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_bytes(content_bytes)
+
+    await run_in_threadpool(_write_raw)
 
     threading.Thread(
         target=_run_upload_job,

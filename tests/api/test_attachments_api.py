@@ -78,7 +78,7 @@ def test_upload_bounded_read_no_full_buffer():
     """>25MB 上传走分块读取，拒绝前不会把整份内容缓冲进内存。"""
     import asyncio
 
-    from careercrew_api.routers.attachments import _read_bounded
+    from careercrew_api.upload_io import read_bounded
     from careercrew_core.conversation.validation import MAX_ATTACHMENT_SIZE
 
     # 模拟超大流：每次按请求给足，总长 100MB；记录单次最大读取量。
@@ -98,7 +98,7 @@ def test_upload_bounded_read_no_full_buffer():
             return chunk
 
     file = FakeSpool(total=100 * 1024 * 1024)
-    result = asyncio.run(_read_bounded(file, MAX_ATTACHMENT_SIZE))
+    result = asyncio.run(read_bounded(file, MAX_ATTACHMENT_SIZE))
     # 拒绝：返回 None；单次读取从未超过 1MB 分块（即未一次性缓冲整份 100MB）。
     assert result is None
     assert file.max_single_read <= 1024 * 1024

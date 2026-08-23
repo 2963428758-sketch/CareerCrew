@@ -10,6 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from careercrew_api import storage
 from careercrew_api.attachment_context import AttachmentRejected
@@ -28,6 +29,7 @@ from careercrew_api.sse import (
     stream_agent,
     turn_done_fields,
 )
+from careercrew_api.upload_io import read_bounded
 
 router = APIRouter()
 
@@ -117,8 +119,10 @@ async def upload_knowledge(
         raise HTTPException(status_code=422, detail="visibility 必须为 private 或 public")
     if visibility == "public" and current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="只有管理员可以发布公共知识库")
-    content = await file.read()
-    if len(content) > _MAX_UPLOAD_SIZE:
+
+    # 大小校验在分块读取阶段生效（超限拒绝，不把超大 body 缓冲进内存）
+    content = await read_bounded(file, _MAX_UPLOAD_SIZE)
+    if content is None:
         raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
 
     # 文件名防路径穿越：只取 basename（恶意文件名可含 ../ 或盘符）；
@@ -128,8 +132,13 @@ async def upload_knowledge(
     user_id = current_user["id"]
     job_id = _new_job(filename, user_id)
     save_path = storage.resolve_under(storage.L.knowledge_raw, user_id, f"{job_id}{ext}")
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_bytes(content)
+
+    def _write_raw() -> None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_bytes(content)
+
+    # 写盘为阻塞 IO（可达 50MB），下放线程池避免卡事件循环
+    await run_in_threadpool(_write_raw)
 
     output_dir = storage.resolve_under(storage.L.parsed_knowledge, user_id, job_id)
     threading.Thread(

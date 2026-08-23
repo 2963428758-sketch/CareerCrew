@@ -18,6 +18,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from careercrew_api.auth.dependencies import get_auth_service, get_current_user, require_admin
 from careercrew_api.auth.service import (
@@ -44,6 +45,7 @@ from careercrew_api.schemas import (
     UserPatchRequest,
 )
 from careercrew_api.storage import DATA_ROOT, L, resolve_under
+from careercrew_api.upload_io import read_bounded
 
 router = APIRouter()
 _REFRESH_COOKIE = "careercrew_refresh"
@@ -66,24 +68,37 @@ AVATAR_ROOT = DATA_ROOT / "uploads" / "avatars"
 _AVATAR_MIME = {v: k for k, v in _AVATAR_EXTENSIONS.items()}
 
 
+def _store_avatar_local(user_id: str, ext: str, data: bytes, auth: AuthService) -> None:
+    """本地回退存储：写盘 + 落头像引用（阻塞 IO，须在线程池中调用）。"""
+    user_dir = resolve_under(AVATAR_ROOT, user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{uuid4().hex}{ext}"
+    (user_dir / name).write_bytes(data)
+    auth.store.update_avatar(user_id, f"local:{user_id}/{name}")
+
+
 @router.post("/avatar")
 async def upload_avatar(
     file: Annotated[UploadFile, File(...)],
     user: Annotated[dict[str, str], Depends(get_current_user)],
     auth: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, bool]:
-    """上传/替换当前用户头像。配置 OSS 时直传阿里云 OSS，否则落本地存储回退。"""
+    """上传/替换当前用户头像。配置 OSS 时直传阿里云 OSS，否则落本地存储回退。
+
+    OSS 网络上传与本地写盘均为阻塞 IO，下放线程池避免卡事件循环；
+    体积校验在分块读取阶段生效（不把超大 body 缓冲进内存）。
+    """
     content_type = (file.content_type or "").lower()
     if content_type not in _AVATAR_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="仅支持 PNG / JPG / WebP / GIF 格式的头像",
         )
-    data = await file.read()
+    data = await read_bounded(file, _AVATAR_MAX_BYTES)
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像不能超过 5MB")
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像文件为空")
-    if len(data) > _AVATAR_MAX_BYTES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像不能超过 5MB")
 
     ext = _AVATAR_EXTENSIONS[content_type]
     user_id = user["id"]
@@ -93,19 +108,17 @@ async def upload_avatar(
         prefix = config.get("dir_prefix") or ""
         key = f"{prefix}/avatars/{user_id}/{uuid4().hex}{ext}" if prefix else f"avatars/{user_id}/{uuid4().hex}{ext}"
         try:
-            upload_bytes(config, key, data, content_type)
-        except Exception as err:  # 网络/签名失败等：明确报错，不静默降级
+            await run_in_threadpool(upload_bytes, config, key, data, content_type)
+        except Exception:  # 网络/签名失败等：明确报错，不静默降级
+            # 异常细节（bucket/endpoint/XML 响应）只进服务端日志，不回给客户端
+            logging.getLogger("careercrew_api").warning("avatar OSS upload failed", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"OSS 上传失败：{err}",
-            ) from err
-        auth.store.update_avatar(user_id, f"oss:{key}")
+                detail="头像上传到对象存储失败，请稍后重试",
+            ) from None
+        await run_in_threadpool(auth.store.update_avatar, user_id, f"oss:{key}")
     else:
-        user_dir = resolve_under(AVATAR_ROOT, user_id)
-        user_dir.mkdir(parents=True, exist_ok=True)
-        name = f"{uuid4().hex}{ext}"
-        (user_dir / name).write_bytes(data)
-        auth.store.update_avatar(user_id, f"local:{user_id}/{name}")
+        await run_in_threadpool(_store_avatar_local, user_id, ext, data, auth)
     return {"ok": True}
 
 
@@ -126,8 +139,11 @@ def get_avatar(
         media_type = _AVATAR_MIME.get("." + key.rsplit(".", 1)[-1].lower(), "application/octet-stream")
         try:
             data = download_bytes(config, key)
-        except Exception as err:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OSS 读取失败：{err}") from err
+        except Exception:
+            logging.getLogger("careercrew_api").warning("avatar OSS download failed", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail="头像存储服务暂时不可用"
+            ) from None
         return Response(content=data, media_type=media_type)
     if avatar_ref.startswith("local:"):
         # 格式固定为 local:{user_id}/{uuid}.{ext}，由上传侧生成，不含额外路径段
@@ -204,6 +220,20 @@ def bootstrap_status(
     return {"available": auth.settings.is_development and not auth.store.has_accounts()}
 
 
+def _client_ip(request: Request, auth: AuthService) -> str:
+    """登录限流键用的客户端 IP。
+
+    auth.trust_proxy_headers=true（LB/Nginx 后部署）时取 X-Forwarded-For 首个
+    地址；否则用 TCP 对端地址——XFF 头可被伪造，直连部署下信任它等于绕过限流。
+    """
+    if auth.settings.trust_proxy_headers:
+        xff = request.headers.get("x-forwarded-for", "")
+        first_hop = xff.split(",")[0].strip()
+        if first_hop:
+            return first_hop
+    return request.client.host if request.client else ""
+
+
 @router.post("/token", response_model=TokenResponse)
 @router.post("/login", response_model=TokenResponse, include_in_schema=False)
 def login(
@@ -213,7 +243,7 @@ def login(
     auth: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict:
     """用户名密码登录；响应只返回短期 access token，刷新令牌写入 HttpOnly Cookie。"""
-    client_ip = http_request.client.host if http_request.client else ""
+    client_ip = _client_ip(http_request, auth)
     try:
         payload, refresh_token = auth.login(request.username, request.password, client_ip=client_ip)
     except AccountDisabledError as err:
