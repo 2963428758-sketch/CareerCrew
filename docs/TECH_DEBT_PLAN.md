@@ -312,3 +312,8 @@
 - mcp-jobs 空结果先查 logs/mcp-jobs.log：playwright 二进制缺失用 
 px playwright install chromium
 - Boss 已改版 /web/geek/jobs：选择器集中在 tools/browser/patterns.py 新旧兼容
+
+### 遗留项更新（2026-08-23）
+- ~~hr_monitor 多账号会话归属映射~~ ✅ 已完成：回复按 application 投递事件路由到对应账号（公司归一+职位消歧），并加 (company,message) 轮询去重
+- M7 Qdrant multivector：仍延后（需重建索引）
+- contextual 知识库级开关：仍延后（现全局开关）
