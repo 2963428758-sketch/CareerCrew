@@ -11,11 +11,67 @@ UX 修复：
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from careercrew_core.agents.job_matcher import JobMatcher
 from careercrew_core.agents.resume_advisor import ResumeAdvisor
+
+
+def _job_match_rows(result: Any) -> list[dict]:
+    """从已成功执行的 memory_write 参数恢复候选岗位，供空正文兜底。"""
+    rows: list[dict] = []
+    for iteration in getattr(result, "iterations", None) or []:
+        for call in getattr(iteration, "tool_calls", None) or []:
+            if not isinstance(call, dict) or call.get("name") != "memory_write":
+                continue
+            args = call.get("args") or {}
+            content = args.get("content") if args.get("type") == "job_match" else None
+            if isinstance(content, dict) and content.get("title"):
+                rows.append(content)
+    return rows
+
+
+def _render_recovered_match_report(result: Any) -> str:
+    """模型正文为空时，从已经落库的候选岗位生成最小但真实的匹配报告。"""
+    rows = _job_match_rows(result)
+    if not rows:
+        reason = getattr(result, "stopped_reason", "")
+        if reason == "error":
+            return "（职位检索过程出现异常，本轮报告生成失败，请稍后重试。）"
+        searched = any(
+            isinstance(call, dict) and call.get("name") == "search_jobs"
+            for iteration in getattr(result, "iterations", None) or []
+            for call in getattr(iteration, "tool_calls", None) or []
+        )
+        if searched:
+            return "（平台检索已经完成，但匹配报告生成失败，请直接重试本轮。）"
+        return "（尚未生成匹配报告，请补充目标岗位和城市后重试。）"
+
+    lines = [
+        "## 匹配报告",
+        "",
+        "| 检索方式 | 来源 | 公司 | 职位 | 城市 | 薪资 | 匹配度 | 匹配点 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        score = row.get("score")
+        score_text = f"{float(score):.0%}" if isinstance(score, (int, float)) else "待评估"
+        values = [
+            row.get("retrieval_mode_label") or "检索方式未标注",
+            row.get("source_label") or "来源未标注",
+            row.get("company") or "公司名称未提供",
+            row.get("title") or "职位名称未提供",
+            row.get("city") or "未标注",
+            row.get("salary") or "未标注",
+            score_text,
+            row.get("reason") or "已通过职位检索并加入候选池",
+        ]
+        escaped = [str(value).replace("|", "\\|").replace("\n", " ") for value in values]
+        lines.append("| " + " | ".join(escaped) + " |")
+    lines.extend(("", "*报告由本轮已成功写入的候选岗位恢复。*"))
+    return "\n".join(lines)
 
 
 class JobCycle:
@@ -91,8 +147,8 @@ class JobCycle:
         state = self._state("match", text)
         self.job_matcher.run(state)
         out = (self.job_matcher.last_result.content or "").strip()
-        if not out:  # LLM 偶发空返回，兜底
-            out = "（本轮未产出匹配结果，可补充技能/方向/城市后重试）"
+        if not out:  # LLM 偶发空返回：优先用已完成的工具结果恢复，不误报没岗位
+            out = _render_recovered_match_report(self.job_matcher.last_result)
         self._messages.append(HumanMessage(content=text))
         self._messages.append(AIMessage(content=out, name="job_matcher"))
         return out

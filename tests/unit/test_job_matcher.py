@@ -120,6 +120,67 @@ def test_job_matcher_only_streams_final_answer() -> None:
     assert agent.last_result.content == "## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"
 
 
+def test_job_matcher_recovers_report_attached_to_finalization_tool_call() -> None:
+    """报告与 memory_write 同轮、随后模型空结束时，报告不能被过滤掉。"""
+    chunks: list[str] = []
+    report = "## 匹配报告\n| 公司 | 职位 |\n| 麦当劳 | 兼职餐厅服务员 |"
+    llm = FakeChatModel([
+        AIMessage(
+            content="",
+            tool_calls=[_tc("search_jobs", {"direction": "餐厅服务员 兼职 深圳"}, "c1")],
+        ),
+        AIMessage(
+            content=report,
+            tool_calls=[_tc("memory_write", {
+                "type": "job_match",
+                "content": {"company": "麦当劳", "title": "兼职餐厅服务员", "score": 0.9},
+            }, "c2")],
+        ),
+        AIMessage(content=""),
+    ])
+    episodic = EpisodicMemory(FakeMemoryDb(), user_id="u1", thread_id="t1")
+    agent = JobMatcher(
+        llm=llm,
+        tools=[search_jobs, make_memory_write_tool(episodic)],
+        max_iterations=4,
+        stream_callback=chunks.append,
+    )
+    state = {
+        "thread_id": "t1", "user_id": "u1", "stage": "match",
+        "user_intent": "找深圳兼职餐厅服务员",
+        "messages": [HumanMessage(content="找深圳兼职餐厅服务员")],
+        "pending_action": None, "agent_outputs": {}, "target_companies": [],
+    }
+    agent.run(state)
+    assert agent.last_result.content == report
+    assert "".join(chunks) == report
+
+
+def test_job_matcher_does_not_recover_search_process_chatter() -> None:
+    """搜索工具轮的过程话术仍应隐藏，不能被误认为最终报告。"""
+    chunks: list[str] = []
+    llm = FakeChatModel([
+        AIMessage(
+            content="我先搜索一下",
+            tool_calls=[_tc("search_jobs", {"direction": "服务员 深圳"}, "c1")],
+        ),
+        AIMessage(content=""),
+    ])
+    agent = JobMatcher(
+        llm=llm, tools=[search_jobs], max_iterations=3,
+        stream_callback=chunks.append,
+    )
+    state = {
+        "thread_id": "t1", "user_id": "u1", "stage": "match",
+        "user_intent": "服务员 深圳",
+        "messages": [HumanMessage(content="服务员 深圳")],
+        "pending_action": None, "agent_outputs": {}, "target_companies": [],
+    }
+    agent.run(state)
+    assert agent.last_result.content == ""
+    assert chunks == []
+
+
 def test_job_matcher_prompt_requires_company_and_source_fidelity() -> None:
     prompt = prompt_source()
     assert "source_label" in prompt
@@ -128,3 +189,7 @@ def test_job_matcher_prompt_requires_company_and_source_fidelity() -> None:
     assert "retrieval_mode_label" in prompt
     assert "不要只传“广州”或“教师”" in prompt
     assert "不得把 `retrieval_mode=cache` 描述成" in prompt
+    assert "通用服务岗位不强制技能" in prompt
+    assert "用户没有相关经验时不得虚构 `profile.skills`" in prompt
+    assert "必须传字符串数组" in prompt
+    assert "必须再用一条**不含任何工具调用**" in prompt

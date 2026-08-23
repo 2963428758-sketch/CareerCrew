@@ -57,6 +57,8 @@ def test_search_recall_by_title_and_keyword() -> None:
         ("广州 Java 实习", ("java", "实习"), ("广州",)),
         ("深圳 前端开发", ("前端", "开发"), ("深圳",)),
         ("有教师资格证 广州或深圳", ("教师",), ("广州", "深圳")),
+        ("兼职 餐厅服务员 深圳", ("兼职", "餐厅", "服务员"), ("深圳",)),
+        ("我想找深圳的酒店服务员工作", ("酒店", "服务员"), ("深圳",)),
     ],
 )
 def test_parse_job_search_query_separates_core_and_location(
@@ -139,6 +141,28 @@ def test_java_query_excludes_other_internships_in_same_city() -> None:
     hits = store.search("广州 Java 实习")
     assert [row["title"] for row in hits] == ["Java 开发实习生"]
     assert hits[0]["city"] == "广州"
+
+
+def test_waiter_query_requires_job_type_not_only_part_time() -> None:
+    store = FakeJobsStore()
+    store.upsert([
+        _job("兼职餐厅服务员", company="麦当劳", city="深圳·福田区"),
+        _job("兼职小学助教", company="培训机构", city="深圳·南山区"),
+        _job("餐厅服务员", company="广州餐厅", city="广州"),
+    ], "混合兼职")
+
+    hits = store.search("兼职 餐厅服务员 深圳")
+    assert [row["title"] for row in hits] == ["兼职餐厅服务员"]
+    assert hits[0]["matched_core_terms"] == ["兼职", "餐厅", "服务员"]
+
+
+def test_waiter_query_can_recall_broader_waiter_title() -> None:
+    store = FakeJobsStore()
+    store.upsert([
+        _job("餐饮门店服务员兼职", company="餐饮公司", city="深圳"),
+    ], "服务员 深圳")
+
+    assert store.search("餐厅服务员 兼职 深圳")[0]["title"] == "餐饮门店服务员兼职"
 
 
 def test_fake_store_honors_freshness_window() -> None:

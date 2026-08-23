@@ -415,12 +415,35 @@ def build_agent(
 
 
 _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:begin_of_box|end_of_box)\|>")
+_FINALIZATION_TOOL_NAMES = {"memory_write", "profile_update"}
 
 
 def _msg_text(msg: BaseMessage) -> str:
     """提取消息文本;剥离视觉定位类模型的特殊标记(如 GLM-4.5V 的 box token)。"""
     text = msg.content if isinstance(msg.content, str) else ""
     return _SPECIAL_TOKEN_RE.sub("", text)
+
+
+def _recover_hidden_final_text(iterations: list[ReactIteration]) -> str:
+    """恢复与收尾工具同轮生成、但被展示过滤隐藏的最终正文。
+
+    ``include_tool_call_text=False`` 用于屏蔽“我来搜索”等过程话术，但部分模型会
+    把完整报告和 ``memory_write``/``profile_update`` 放在同一条 AIMessage 中，
+    随后再返回一个空消息结束。这种情况下若一概丢弃带工具调用的文本，用户只能
+    看到空结果兜底。这里只恢复纯收尾工具轮，仍不展示 search/rag 等过程轮文本。
+    """
+    for iteration in reversed(iterations):
+        text = (iteration.content or "").strip()
+        if not text or not iteration.tool_calls:
+            continue
+        names = {
+            str(call.get("name") or "")
+            for call in iteration.tool_calls
+            if isinstance(call, dict)
+        }
+        if names and names <= _FINALIZATION_TOOL_NAMES:
+            return text
+    return ""
 
 
 def run_agent(
@@ -518,6 +541,12 @@ def run_agent(
             and (include_tool_call_text or not it.tool_calls)
         ]
         content = "\n\n".join(texts)
+        if not content and not include_tool_call_text:
+            content = _recover_hidden_final_text(iterations)
+            # 工具轮文本此前没有进入 callback；恢复后补发一次，让流式前端与最终
+            # 持久化内容保持一致。
+            if content and stream_callback:
+                stream_callback(content)
     if failed:
         stopped_reason = "error"
     elif max_reached:

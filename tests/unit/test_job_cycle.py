@@ -1,6 +1,7 @@
 """G2 JobCycle 工作流测试（注入 fake agent）。"""
 from __future__ import annotations
 
+from careercrew_ai.agents.langchain_agent import AgentResult, ReactIteration
 from careercrew_core.workflow.job_cycle import JobCycle
 
 
@@ -43,6 +44,72 @@ def test_run_match_only() -> None:
     cycle = JobCycle(jm, FakeAgent("x"), user_id="u1")
     assert cycle.run_match("我的方向是大模型") == "匹配结果"
     assert jm.run_calls == 1
+
+
+def test_run_match_recovers_saved_jobs_when_model_content_is_empty() -> None:
+    """岗位已搜到并写入候选池时，不得返回“未产出匹配结果”。"""
+    class EmptyAgent:
+        def __init__(self):
+            self.last_result = AgentResult(
+                content="",
+                stopped_reason="final_answer",
+                tool_calls_total=2,
+                iterations=[
+                    ReactIteration(
+                        iteration=0,
+                        content="",
+                        tool_calls=[{"name": "search_jobs", "args": {
+                            "direction": "餐厅服务员 兼职 深圳"
+                        }}],
+                    ),
+                    ReactIteration(
+                        iteration=1,
+                        content="",
+                        tool_calls=[{"name": "memory_write", "args": {
+                            "type": "job_match",
+                            "content": {
+                                "company": "麦当劳", "title": "兼职餐厅服务员",
+                                "city": "深圳·福田区", "salary": "20-25元/时",
+                                "score": 0.85, "reason": "接受无经验，工作性质匹配",
+                                "source_label": "Boss直聘",
+                                "retrieval_mode_label": "实时检索",
+                            },
+                        }}],
+                    ),
+                ],
+            )
+
+        def run(self, state) -> None:
+            return None
+
+    cycle = JobCycle(EmptyAgent(), FakeAgent("x"), user_id="u1")
+    out = cycle.run_match("找兼职餐厅服务员，在深圳，没有相关经验")
+    assert "## 匹配报告" in out
+    assert "麦当劳" in out
+    assert "兼职餐厅服务员" in out
+    assert "85%" in out
+    assert "Boss直聘" in out
+    assert "实时检索" in out
+    assert "未产出匹配结果" not in out
+
+
+def test_run_match_distinguishes_search_report_failure_from_missing_info() -> None:
+    class EmptyAgent:
+        def __init__(self):
+            self.last_result = AgentResult(
+                content="", stopped_reason="final_answer", tool_calls_total=1,
+                iterations=[ReactIteration(
+                    iteration=0, content="",
+                    tool_calls=[{"name": "search_jobs", "args": {"direction": "服务员 深圳"}}],
+                )],
+            )
+
+        def run(self, state) -> None:
+            return None
+
+    out = JobCycle(EmptyAgent(), FakeAgent("x"), user_id="u1").run_match("服务员 深圳")
+    assert "平台检索已经完成" in out
+    assert "补充技能" not in out
 
 
 def test_run_resume_only() -> None:

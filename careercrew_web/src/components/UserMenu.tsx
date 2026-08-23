@@ -141,17 +141,31 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
             open ? "bg-[var(--active)]" : "hover:bg-[var(--hover)]"
           )}
         >
-          <AvatarImage
-            url={avatarUrl}
-            fallbackColor={avatarColor(user.username)}
-            initial={initial}
-            size="h-6 w-6 text-[11px]"
-          />
-          {/* 折叠模式：头像右下角角色小圆点（管理员绿 / 普通用户灰） */}
-          {collapsed && (
+          {collapsed ? (
+            /* 头像与角色圆点共同占 32px：圆点在头像右侧，不覆盖头像内容。 */
             <span
-              className="absolute bottom-[7px] right-[9px] h-2.5 w-2.5 rounded-full border-2 border-[var(--shell)]"
-              style={{ backgroundColor: user.role === "admin" ? "#0D9488" : "#8F8F8A" }}
+              data-testid="collapsed-user-avatar-group"
+              className="relative flex h-6 w-8 shrink-0 items-center"
+            >
+              <AvatarImage
+                url={avatarUrl}
+                fallbackColor={avatarColor(user.username)}
+                initial={initial}
+                size="h-6 w-6 text-[11px]"
+              />
+              <span
+                data-testid="collapsed-user-role-indicator"
+                aria-hidden="true"
+                className="absolute bottom-px right-0 h-2 w-2 rounded-full border border-[var(--shell)]"
+                style={{ backgroundColor: user.role === "admin" ? "#0D9488" : "#8F8F8A" }}
+              />
+            </span>
+          ) : (
+            <AvatarImage
+              url={avatarUrl}
+              fallbackColor={avatarColor(user.username)}
+              initial={initial}
+              size="h-6 w-6 text-[11px]"
             />
           )}
           {!collapsed && (
