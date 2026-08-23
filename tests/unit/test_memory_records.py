@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from careercrew_core.memory.db import FakeMemoryDb
 from careercrew_core.memory.records import LongTermMemoryRepository, build_legacy_backfill
-from careercrew_core.memory.vector_outbox import drain_vector_outbox, reconcile_vector_ids
+from careercrew_core.memory.vector_outbox import (
+    MemoryRecordVectorIndexer, drain_vector_outbox, reconcile_vector_ids,
+)
 
 
 def test_backfill_dry_run_excludes_transcripts_and_is_idempotent() -> None:
@@ -73,3 +75,21 @@ def test_outbox_retries_and_soft_delete_are_vector_safe() -> None:
     assert drain_vector_outbox(repo, indexer) == {"processed": 1, "failed": 0}
     assert indexer.deleted == [record["id"]]
     assert reconcile_vector_ids({"a", "b"}, {"b", "c"}) == {"missing": ["a"], "orphaned": ["c"]}
+
+
+def test_real_indexer_converts_record_to_tenant_scoped_vector_record() -> None:
+    class Embedding:
+        def encode(self, _texts):
+            return type("Output", (), {"dense": [[0.1, 0.2]], "sparse": None})()
+    class Store:
+        def __init__(self): self.records = []
+        def upsert(self, records): self.records.extend(records)
+        def delete_by_metadata(self, filters): self.deleted = filters
+
+    store = Store()
+    indexer = MemoryRecordVectorIndexer(Embedding(), store)
+    indexer.upsert_memory({"id": "m1", "user_id": "u1", "memory_type": "semantic", "category": "profile", "display_text": "AI"})
+    indexer.delete_memory("m1")
+
+    assert store.records[0].metadata["user_id"] == "u1"
+    assert store.deleted == {"memory_id": "m1"}
