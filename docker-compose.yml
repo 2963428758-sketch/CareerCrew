@@ -24,9 +24,10 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/healthz || exit 1"]
+      # 官方镜像无 curl/wget，用 bash 内建 /dev/tcp 做 6333 端口探活
+      test: ["CMD-SHELL", "timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 12
 
   app:

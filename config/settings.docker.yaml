@@ -145,3 +145,5 @@ auth:
   # 生产校验强制 true；现代浏览器把 http://localhost 视为可信上下文，
   # Secure Cookie 在本机 compose 验证同样可用。经纯 HTTP 局域网访问时需自建配置。
   cookie_secure: true
+  # LB/Nginx 后部署置 true：登录限流按 X-Forwarded-For 取真实客户端 IP
+  trust_proxy_headers: false
