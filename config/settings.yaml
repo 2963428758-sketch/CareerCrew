@@ -103,7 +103,7 @@ memory:
 # ── 工具层 ──
 tools:
   search:
-    boss_cdp_url: ""             # Boss直聘 CDP 后端（N1）：Chrome --remote-debugging-port=9222
+    boss_cdp_url: "http://127.0.0.1:9222"   # Boss直聘 CDP 后端（N1）：Chrome --remote-debugging-port=9222
                                  # 后填 http://127.0.0.1:9222 启用；空=仅猎聘 MCP 渠道
     boss_city: ""                # 可选城市代码（如北京 101010100）；空=全国
   registry:

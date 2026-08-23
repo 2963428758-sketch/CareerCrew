@@ -7,18 +7,19 @@ from __future__ import annotations
 
 BOSS_PATTERNS: dict = {
     # 搜索页（city 为空时用全国检索；城市代码见 zhipin 城市表，如北京 101010100）
+    # 注意：Boss 会把 /web/geek/job 重定向到新版 /web/geek/jobs（左列表右详情布局）
     "search_url": "https://www.zhipin.com/web/geek/job?query={query}&city={city}",
-    # 岗位卡片容器（2024-2026 改版后为 li.job-card-wrapper；旧版 div.job-card-wrapper 兼容）
-    "job_card": "li.job-card-wrapper, div.job-card-wrapper",
-    "wait_selector": "li.job-card-wrapper .job-name, div.job-card-wrapper .job-name",
+    # 岗位卡片容器：2026 改版为 li.job-card-box；旧版 li/div.job-card-wrapper 兼容
+    "job_card": "li.job-card-box, li.job-card-wrapper, div.job-card-wrapper",
+    "wait_selector": "li.job-card-box .job-name, li.job-card-wrapper .job-name",
     "fields": {
-        "title": ".job-name",
-        "area": ".job-area",
-        "salary": ".salary",
-        "company": ".company-name a",
-        "link": "a.job-card-left",          # 取 href 属性
+        "title": "a.job-name, .job-name",
+        "area": ".company-location, .job-area",       # 新版「广州·黄埔区·大沙」
+        "salary": ".job-salary, .salary",
+        "company": ".boss-name, .company-name a",     # 新版公司名在 boss-info 内
+        "link": "a.job-name, a.job-card-left",        # 详情页 href（相对路径）
         # 经验/学历等标签（拼为 experience 字段）
-        "experience": ".filter-labels li",
+        "experience": ".tag-list li, .filter-labels li",
     },
     # 未登录/风控验证页特征：命中即判定渠道不可用而非空结果
     "block_markers": [".nc_iconfont.btn_slide", "#wrap .btn-next", "text=安全验证"],

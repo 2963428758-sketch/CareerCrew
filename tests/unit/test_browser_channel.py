@@ -34,13 +34,25 @@ class FakeEl:
         return self._attrs.get(name)
 
     def query_selector(self, sel: str):
-        for child in self._children:
-            if child.matches(sel):
-                return child
+        # 组合选择器（新版 patterns 用 "a.job-name, .job-name" 形式）任一命中；递归整棵树
+        for s in sel.split(","):
+            s = s.strip()
+            for child in self._iter_descendants():
+                if child.matches(s):
+                    return child
         return None
 
     def query_selector_all(self, sel: str):
-        return [c for c in self._children if c.matches(sel)]
+        out = []
+        for s in sel.split(","):
+            s = s.strip()
+            out.extend(c for c in self._iter_descendants() if c.matches(s))
+        return out
+
+    def _iter_descendants(self):
+        for c in self._children:
+            yield c
+            yield from c._iter_descendants()
 
     def matches(self, sel: str) -> bool:
         return sel in self._tags
@@ -48,13 +60,23 @@ class FakeEl:
 
 def _card(title="大模型应用工程师", area="北京·朝阳", salary="25-35K",
           company="字节跳动", href="/job_card/abc.html", tags=("3-5年", "本科")):
-    return FakeEl(tags=(".job-name", ".job-area", ".salary", ".company-name a", "a.job-card-left", ".filter-labels li"), children=[
-        FakeEl(tags=(".job-name",), text=title),
-        FakeEl(tags=(".job-area",), text=area),
-        FakeEl(tags=(".salary",), text=salary),
-        FakeEl(tags=(".company-name a",), text=company),
-        FakeEl(tags=("a.job-card-left",), attrs={"href": href}),
-        *[FakeEl(tags=(".filter-labels li",), text=t) for t in tags],
+    return FakeEl(tags=("li.job-card-box", ".job-name", ".company-location", ".job-salary",
+                        ".boss-name", "a.job-name", ".tag-list li"), children=[
+        FakeEl(tags=(".job-info",), children=[
+            FakeEl(tags=(".job-title",), children=[
+                FakeEl(tags=(".job-name", "a.job-name"), text=title, attrs={"href": href}),
+                FakeEl(tags=(".job-salary",), text=salary),
+            ]),
+            FakeEl(tags=(".tag-list",), children=[
+                FakeEl(tags=(".tag-list li",), text=t) for t in tags
+            ]),
+        ]),
+        FakeEl(tags=(".job-card-footer",), children=[
+            FakeEl(tags=(".boss-info",), children=[
+                FakeEl(tags=(".boss-name",), text=company),
+            ]),
+            FakeEl(tags=(".company-location",), text=area),
+        ]),
     ])
 
 
@@ -73,7 +95,7 @@ def test_parse_job_cards_full_fields() -> None:
 
 def test_parse_job_cards_relative_href_and_dirty_drop() -> None:
     good = _card()
-    dirty = FakeEl(tags=(".job-name",))  # 只有空标题 -> 丢弃
+    dirty = FakeEl(tags=("li.job-card-box",))  # 无标题卡片 -> 丢弃
     jobs = parse_job_cards([good, dirty])
     assert len(jobs) == 1
 
