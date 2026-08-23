@@ -25,6 +25,7 @@ class FakeRuntime:
             "career_planner": "建议先积累 Agent 项目经验",
         }
         self.consult_synthesis = "综合建议：先积累经验，谈薪 30-35K"
+        self.consult_observability: dict[str, dict] = {}
         self._orchestrator_calls = 0
         self.orchestrator_override = None
         self.knowledge_output = "RAG 检索流程：先解析文档，再切分向量化，最后混合检索重排。（来源：note.md）"
@@ -164,7 +165,7 @@ class FakeRuntime:
         allow = set(module_allow)
         return [n for n in registry if n in allow]
 
-    def compute_effective_tools(self, module: str, client_requested):
+    def compute_effective_tools(self, module: str, client_requested, user_id: str | None = None):
         from careercrew_core.tools.effective import compute_effective_tools
 
         return compute_effective_tools(client_requested, self._server_allowlist(module))
@@ -572,6 +573,7 @@ class FakeRuntime:
                           episodic=None, allowed: list[str] | None = None,
                           hitl_requires: set[str] | None = None):
         output = self.consult_opinions.get(name, "无意见")
+        obs = self.consult_observability.get(name, {})
 
         class FakeAgent:
             def __init__(self_inner):
@@ -583,6 +585,9 @@ class FakeRuntime:
                 self_inner.last_result = type("R", (), {
                     "content": output,
                     "blocked_tool_calls": blocked,
+                    "input_tokens": obs.get("input_tokens"),
+                    "output_tokens": obs.get("output_tokens"),
+                    "tool_call_details": obs.get("tool_call_details") or [],
                 })()
 
             def run(self_inner, state):

@@ -2,8 +2,8 @@
 turn / user message / assistant message / run 四件套，并在流结束后回写状态。
 
 六个流式入口（match / resume / plan / knowledge.ask / consult / interview）共用此
-begin/finish/fail/cancel 单一路径，保持 DRY；episodic 双写（record_user_message /
-record_thread_messages）在 runtime 层继续保留不动。
+begin/finish/fail/cancel 单一路径，保持 DRY。Conversation 表是 transcript 的唯一
+事实来源；runtime 中遗留的 transcript helper 在迁移期保留为空操作。
 
 命名约定：
 - module 对齐 episodic module：matcher / resume / chat / knowledge / consult / interview

@@ -28,6 +28,19 @@ def test_effective_requires_all_layers() -> None:
     assert eff2.use is False
 
 
+def test_user_master_switch_disables_generate_and_use() -> None:
+    """用户总开关关闭时，子策略即使保留为开也不能实际生效。"""
+    p = MemoryPolicyStore(FakeMemoryDb())
+    p.set_global(enabled=True, generate=True, use=True)
+    p.set_user("u1", enabled=False, generate=True, use=True)
+
+    eff = p.effective("u1", feature_enabled=True)
+
+    assert eff.enabled is False
+    assert eff.generate is False
+    assert eff.use is False
+
+
 def test_partial_update_preserves_other_fields() -> None:
     p = MemoryPolicyStore(FakeMemoryDb())
     p.set_user("u1", enabled=True)

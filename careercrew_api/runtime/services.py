@@ -23,6 +23,10 @@ class ServicesMixin:
                     type: str = "") -> list[dict]:
         """列出语义事实 + 情景事件（可过滤）。"""
         self._ensure_stores()
+        if self.memory_service is not None:
+            return self.memory_service.list_records(
+                user_id, category=type, limit=100,
+            )["items"]
         from careercrew_core.memory.semantic import SemanticFactStore
 
         facts = [f.model_dump() for f in SemanticFactStore(self.memory_db, user_id).list_facts()]
@@ -59,11 +63,38 @@ class ServicesMixin:
         merged.sort(key=lambda x: x.get("ts", ""))
         return merged
 
+    def memory_records(self, user_id: str, *, kind: str = "", category: str = "",
+                       query: str = "", limit: int = 20,
+                       cursor: str | None = None) -> dict:
+        """长期记忆管理页：按类型/分类/关键词过滤的 latest-first 游标列表。"""
+        self._ensure_stores()
+        if self.memory_service is not None:
+            return self.memory_service.list_records(
+                user_id, kind=kind, category=category, query=query,
+                limit=limit, cursor=cursor,
+            )
+        rows = self.memory_list(user_id, type=category)
+        if kind:
+            rows = [row for row in rows if row.get("kind") == kind]
+        if query.strip():
+            needle = query.casefold().strip()
+            rows = [row for row in rows if needle in str(row).casefold()]
+        rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
+        return {"items": rows[:limit], "next_cursor": None, "total": len(rows)}
+
     def memory_delete(self, user_id: str, kind: str = "",
                       name: str | None = None, entry_id: str | None = None,
                       thread_id: str | None = None, type: str = "") -> int:
         """删除语义事实（kind=fact / name）或情景事件（kind=event / entry_id）。"""
         self._ensure_stores()
+        if self.memory_service is not None:
+            # 删除必须同时清理 Qdrant；因此在此处按需完成重组件初始化。
+            self._ensure_heavy()
+            self.memory_service._vector_store = self._get_episodic_vector_store()
+            return self.memory_service.delete(
+                user_id, kind=kind, name=name, entry_id=entry_id,
+                thread_id=thread_id, category=type,
+            )
         from careercrew_core.memory.semantic import SemanticFactStore
 
         fact_store = SemanticFactStore(self.memory_db, user_id)
@@ -82,7 +113,11 @@ class ServicesMixin:
         self._ensure_heavy()
         g = self.policy_store.global_policy()
         u = self.policy_store.user_policy(user_id)
-        eff = self.policy_store.effective(user_id, self.settings.memory.enabled)
+        eff = (
+            self.memory_service.effective_policy(user_id)
+            if self.memory_service is not None
+            else self.policy_store.effective(user_id, self.settings.memory.enabled)
+        )
         return {
             "global": g.model_dump(exclude={"user_id"}),
             "user": u.model_dump(),
@@ -121,6 +156,8 @@ class ServicesMixin:
     def memory_consolidate(self, user_id: str, force: bool = False) -> dict:
         """触发后台 consolidation（同步执行，供测试/手动触发）。"""
         self._ensure_heavy()
+        if self.memory_service is not None and not self.memory_service.effective_policy(user_id).can_consolidate:
+            return {"consolidated": False, "reason": "memory_policy_disabled"}
         from careercrew_core.memory.consolidation import Consolidator
 
         c = Consolidator(

@@ -16,6 +16,8 @@ from careercrew_core.memory.vector_index import VectorIndex
 def make_memory_write_tool(
     episodic: EpisodicMemory,
     vector_index: VectorIndex | None = None,
+    memory_service=None,
+    user_id: str | None = None,
 ) -> BaseTool:
     """构造 memory_write 工具（注入 episodic store + 可选向量索引）。"""
 
@@ -28,14 +30,23 @@ def make_memory_write_tool(
             content: 事件内容（dict）。
             parentId: 父节点 id（不传则接最新条目，构成 append-only 链）。
         """
-        entry = episodic.write(
-            MemoryEntry(type=type, content=redact_content(content), parentId=parentId)
-        )
-        if vector_index is not None:
-            try:
-                vector_index.index_entry(entry)
-            except Exception:
-                pass  # 向量索引失败不阻塞记忆写入
+        try:
+            if memory_service is not None:
+                entry = memory_service.write_event(
+                    user_id or episodic.user_id, type, redact_content(content),
+                    thread_id=episodic.thread_id, parent_id=parentId,
+                )
+            else:
+                entry = episodic.write(
+                    MemoryEntry(type=type, content=redact_content(content), parentId=parentId)
+                )
+                if vector_index is not None:
+                    try:
+                        vector_index.index_entry(entry)
+                    except Exception:
+                        pass  # 向量索引失败不阻塞记忆写入
+        except (PermissionError, ValueError) as exc:
+            return f"[error] {exc}"
         return f"已写入情景记忆: id={entry.id}, parentId={entry.parentId}, type={entry.type}"
 
     return memory_write

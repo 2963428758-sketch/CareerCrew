@@ -39,6 +39,7 @@ class VectorIndex:
                 id=entry.id, dense=emb.dense[0],
                 sparse=emb.sparse[0] if emb.sparse else None,
                 text=text, metadata={
+                    "memory_id": entry.id,
                     "type": entry.type,
                     "user_id": self._user_id,
                     "thread_id": self._episodic.thread_id,
@@ -61,5 +62,6 @@ class VectorIndex:
             sparse=emb.sparse[0] if emb.sparse else None,
             filters={"user_id": self._user_id},
         )
-        hit_ids = {r.id for r in results}
-        return [e for e in self._episodic._read_all() if e.id in hit_ids]
+        by_id = {entry.id: entry for entry in self._episodic._read_all()}
+        # 按向量相关度返回，不能因回表扫描丢失结果排名。
+        return [by_id[result.id] for result in results if result.id in by_id]

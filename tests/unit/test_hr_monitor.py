@@ -142,6 +142,27 @@ def test_run_monitor_cycle_skips_users_without_applications() -> None:
     assert stats["written"] == 0 and stats["matched"] == 0
 
 
+def test_run_monitor_cycle_does_not_write_when_memory_policy_disallows_generation() -> None:
+    db = FakeMemoryDb()
+    _seed_application(db, "u1", "字节跳动")
+
+    class DisabledMemoryService:
+        @staticmethod
+        def effective_policy(_user_id):
+            return type("Policy", (), {"can_generate": False})()
+
+    rt = _Rt()
+    rt.memory_service = DisabledMemoryService()
+    stats = run_monitor_cycle(
+        rt, type("A", (), {"store": _Acc})(),
+        fetch=lambda _url: [{"company": "字节跳动", "title": "后端", "last_message": "请回复"}],
+        memory_db=db,
+    )
+
+    assert stats["written"] == 0
+    assert _em(db, "u1").list(type="hr_reply") == []
+
+
 def test_run_monitor_cycle_fetch_failure_swallowed(monkeypatch) -> None:
     def boom(url):
         raise RuntimeError("风控页")

@@ -16,6 +16,8 @@ def make_memory_search_tool(
     vector_index: VectorIndex | None = None,
     fact_store: SemanticFactStore | None = None,
     router: MemoryRouter | None = None,
+    memory_service=None,
+    user_id: str | None = None,
 ) -> BaseTool:
     """构造 memory_search 工具（注入向量索引 / 事实库 / 路由；缺失时降级）。"""
 
@@ -27,6 +29,14 @@ def make_memory_search_tool(
             query: 检索查询（如"上次的 RAG 面试题"）。
             top_k: 返回条数。
         """
+        if memory_service is not None:
+            rows = memory_service.search(user_id or "", query, limit=top_k)
+            if not rows:
+                return "（无相关记忆）"
+            return "\n".join(
+                f"[{row['kind']}:{row['type']}] {row.get('description') or row.get('content')}"
+                for row in rows
+            )
         if vector_index is None and fact_store is None:
             return f"[memory_search stub] query={query!r}, top_k={top_k}（未配置记忆检索）"
         lines: list[str] = []

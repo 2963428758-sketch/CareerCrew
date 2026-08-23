@@ -55,7 +55,8 @@ def _owned_replies(replies: list[dict], app_map: dict[str, set[str]]) -> list[di
     return owned
 
 
-def record_hr_replies(episodic_factory: Callable[[], object], replies: list[dict]) -> int:
+def record_hr_replies(episodic_factory: Callable[[], object], replies: list[dict], *,
+                      memory_service=None, user_id: str | None = None) -> int:
     """把回复写入该用户情景记忆；(company,message) 已存在则去重跳过。返回新写条数。"""
     from careercrew_core.memory.types import MemoryEntry
 
@@ -76,11 +77,17 @@ def record_hr_replies(episodic_factory: Callable[[], object], replies: list[dict
         if key in seen:
             continue
         try:
-            em.write(MemoryEntry(type="hr_reply", content={
+            content = {
                 "company": company,
                 "title": r.get("title", ""),
                 "message": message,
-            }))
+            }
+            if memory_service is not None:
+                memory_service.write_event(
+                    user_id or em.user_id, "hr_reply", content, thread_id=em.thread_id,
+                )
+            else:
+                em.write(MemoryEntry(type="hr_reply", content=content))
             seen.add(key)
             written += 1
         except Exception:
@@ -117,6 +124,7 @@ def run_monitor_cycle(rt, auth_service, fetch, memory_db=None) -> dict:
     from careercrew_core.memory.episodic import EpisodicMemory
 
     db = memory_db if memory_db is not None else create_memory_db(rt.settings)
+    memory_service = getattr(rt, "memory_service", None)
 
     written = matched = 0
     for acc in accounts:
@@ -124,6 +132,9 @@ def run_monitor_cycle(rt, auth_service, fetch, memory_db=None) -> dict:
         if not uid:
             continue
         try:
+            # 后台轮询属于自动记忆生成：策略关闭时不读写任何长期记忆。
+            if memory_service is not None and not memory_service.effective_policy(uid).can_generate:
+                continue
             # thread_id=None：跨线程读该用户全部 application/hr_reply 事件
             em = EpisodicMemory(db, user_id=uid, thread_id=None)
             app_map = _user_application_map(em)
@@ -133,7 +144,9 @@ def run_monitor_cycle(rt, auth_service, fetch, memory_db=None) -> dict:
             if not owned:
                 continue
             matched += len(owned)
-            written += record_hr_replies(lambda em=em: em, owned)
+            written += record_hr_replies(
+                lambda em=em: em, owned, memory_service=memory_service, user_id=uid,
+            )
         except Exception:
             logger.exception("hr_monitor: 处理失败 user=%s", uid)
 

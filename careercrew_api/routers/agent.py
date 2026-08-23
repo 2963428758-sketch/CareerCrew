@@ -30,4 +30,6 @@ def capabilities(
     rt._ensure_heavy()
     module = (module or "chat").strip()
     tools = build_capabilities(module, rt.settings)
+    effective = set(rt.compute_effective_tools(module, None, user_id=current_user["id"]))
+    tools = [tool for tool in tools if tool["id"] in effective]
     return {"module": module, "tools": tools}

@@ -323,6 +323,15 @@ class QdrantStore(BaseVectorStore):
             self._client.delete(self._collection, points_selector=PointIdsList(points=qids))
         return len(qids)
 
+    def delete_by_ids(self, ids: list[str]) -> int:
+        """按业务 record id 精确删除；Memory 删除不依赖可变 payload。"""
+        if not ids:
+            return 0
+        from qdrant_client.models import PointIdsList
+
+        self._client.delete(self._collection, points_selector=PointIdsList(points=ids))
+        return len(ids)
+
     def set_payload_by_filter(self, payload: dict, filters: dict) -> int:
         """按过滤条件更新 payload（值为 None 表示删除该键）；返回命中点数。"""
         from qdrant_client.models import PointIdsList

@@ -10,7 +10,8 @@ from langchain_core.tools import BaseTool, tool
 from careercrew_core.memory.semantic import SemanticFactStore
 
 
-def make_profile_update_tool(store: SemanticFactStore, user_id: str, source: str = "agent") -> BaseTool:
+def make_profile_update_tool(store: SemanticFactStore, user_id: str, source: str = "agent",
+                             memory_service=None) -> BaseTool:
     """构造 profile_update 工具（注入 SemanticFactStore + 默认 user_id + 来源）。"""
 
     @tool
@@ -25,9 +26,13 @@ def make_profile_update_tool(store: SemanticFactStore, user_id: str, source: str
                 例：{"profile.skills": ["Python","RAG"], "target_companies": ["字节"]}
         """
         try:
-            model = store.update(user_id, fields, source=source)
+            model = (
+                memory_service.update_profile(user_id, fields, source=source)
+                if memory_service is not None
+                else store.update(user_id, fields, source=source)
+            )
             return f"User Model 更新成功: {model.model_dump_json()}"
-        except ValueError as e:
+        except (PermissionError, ValueError) as e:
             return f"[error] {e}"
 
     return profile_update

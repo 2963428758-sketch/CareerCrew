@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ErrorCard } from "@/components/data/shared"
 import { cn } from "@/lib/utils"
-import { apiFetch, getAuthSnapshot } from "@/lib/auth"
+import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface MemorySettingsData {
@@ -14,12 +14,14 @@ interface MemorySettingsData {
 interface MemoryPolicyData {
   global: { enabled: boolean; generate: boolean; use: boolean }
   user: { user_id: string; enabled: boolean; generate: boolean; use: boolean }
-  effective: { enabled: boolean; generate: boolean; use: boolean }
+  effective: {
+    enabled?: boolean; generate?: boolean; use?: boolean
+    memory_enabled?: boolean; can_generate?: boolean; can_use?: boolean
+    can_manual_save?: boolean; can_consolidate?: boolean
+  }
 }
 
-/**
- * 记忆设置面板：标题在框外，内容在圆润框内，每一行横线隔开（开关点击即保存）。
- */
+/** 设置页只显示实际生效的状态，父级关闭时不再留下看似开启的子开关。 */
 export function MemorySettingsPanel() {
   const [settings, setSettings] = useState<MemorySettingsData | null>(null)
   const [policy, setPolicy] = useState<MemoryPolicyData | null>(null)
@@ -35,43 +37,31 @@ export function MemorySettingsPanel() {
         if (!r.ok) throw new Error(await apiErrorText(r, "加载记忆设置失败"))
         return r.json()
       }),
-      apiFetch(`/api/memory/policy?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`).then(async (r) => {
+      apiFetch("/api/memory/policy").then(async (r) => {
         if (!r.ok) throw new Error(await apiErrorText(r, "加载记忆策略失败"))
         return r.json()
       }),
-    ])
-      .then(([s, p]) => {
-        setSettings(s as MemorySettingsData)
-        setPolicy(p as MemoryPolicyData)
-      })
-      .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
+    ]).then(([s, p]) => {
+      setSettings(s as MemorySettingsData)
+      setPolicy(p as MemoryPolicyData)
+    }).catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
   }
 
   useEffect(load, [])
 
   const put = async (url: string, body: Record<string, unknown>) => {
-    const resp = await apiFetch(url, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
+    const resp = await apiFetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     if (!resp.ok) throw new Error(await apiErrorText(resp, "保存失败"))
     return resp.json()
   }
 
-  // 点击开关即保存：乐观更新本地状态，成功后用服务端返回（含生效值）回填
-  const updateGlobalEnabled = async (v: boolean) => {
+  const updateGlobalEnabled = async (enabled: boolean) => {
     if (!settings) return
     setSaveError("")
-    setSettings({ ...settings, enabled: v })
-    try {
-      const s = await put("/api/settings/memory", { enabled: v })
-      setSettings(s as MemorySettingsData)
-    } catch (e) {
-      setSaveError(networkErrorText(e, "保存失败，请稍后重试"))
-      load()
-    }
+    setSettings({ ...settings, enabled })
+    try { setSettings(await put("/api/settings/memory", { enabled }) as MemorySettingsData) }
+    catch (e) { setSaveError(networkErrorText(e, "保存失败，请稍后重试")); load() }
   }
 
   const updateUserPolicy = async (patch: Partial<MemoryPolicyData["user"]>) => {
@@ -80,89 +70,44 @@ export function MemorySettingsPanel() {
     const next = { ...policy, user: { ...policy.user, ...patch } }
     setPolicy(next)
     try {
-      const p = await put(`/api/memory/policy?user_id=${getAuthSnapshot().user?.id ?? "u_001"}`, {
-        enabled: next.user.enabled,
-        generate: next.user.generate,
-        use: next.user.use,
-      })
-      setPolicy(p as MemoryPolicyData)
-    } catch (e) {
-      setSaveError(networkErrorText(e, "保存失败，请稍后重试"))
-      load()
-    }
+      setPolicy(await put("/api/memory/policy", {
+        enabled: next.user.enabled, generate: next.user.generate, use: next.user.use,
+      }) as MemoryPolicyData)
+    } catch (e) { setSaveError(networkErrorText(e, "保存失败，请稍后重试")); load() }
   }
 
   if (loading) return <Skeleton className="h-48 w-full" />
   if (error) return <ErrorCard msg={error} />
   if (!settings || !policy) return null
 
-  return (
-    <div className="space-y-5">
-      {saveError && <p className="text-[12px] font-medium text-destructive">保存失败：{saveError}</p>}
+  const effective = policy.effective
+  const enabled = effective.memory_enabled ?? effective.enabled ?? false
+  const canGenerate = effective.can_generate ?? effective.generate ?? false
+  const canUse = effective.can_use ?? effective.use ?? false
+  const globalBlocked = !settings.enabled
+  const userBlocked = globalBlocked || !enabled
 
-      <div>
-        <h3 className="mb-2 text-[13px] font-medium text-ink">全局记忆开关</h3>
-        <div className="overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace">
-          <ToggleRow
-            label="启用记忆（全局）"
-            desc="关闭时记忆完全不写入/不注入；开启后仍需用户级策略允许。"
-            checked={settings.enabled}
-            onChange={(v) => updateGlobalEnabled(v)}
-          />
-        </div>
-      </div>
-
-      <div>
-        <h3 className="mb-2 text-[13px] font-medium text-ink">我的记忆策略</h3>
-        <div className="overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace">
-          <ToggleRow
-            label="允许记忆"
-            desc="开启后允许写入与注入本用户记忆。"
-            checked={policy.user.enabled}
-            onChange={(v) => updateUserPolicy({ enabled: v })}
-          />
-          <ToggleRow
-            label="生成记忆"
-            desc="是否把本用户对话沉淀为记忆。"
-            checked={policy.user.generate}
-            onChange={(v) => updateUserPolicy({ generate: v })}
-          />
-          <ToggleRow
-            label="使用记忆"
-            desc="是否在会话中自动注入本用户历史记忆。"
-            checked={policy.user.use}
-            onChange={(v) => updateUserPolicy({ use: v })}
-          />
-        </div>
+  return <div className="space-y-5">
+    {saveError && <p role="alert" className="text-[12px] font-medium text-destructive">保存失败：{saveError}</p>}
+    <div>
+      <h3 className="mb-2 text-[13px] font-medium text-ink">全局记忆开关</h3>
+      <div className="overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace">
+        <ToggleRow label="启用记忆（全局）" desc="关闭后不会生成、检索或注入长期记忆；聊天记录仍会正常保存。" checked={settings.enabled} onChange={updateGlobalEnabled} />
       </div>
     </div>
-  )
+
+    <div>
+      <div className="mb-2 flex items-baseline justify-between gap-3"><h3 className="text-[13px] font-medium text-ink">我的记忆策略</h3><span className={`text-[11px] font-medium ${enabled ? "text-primary" : "text-ink-faint"}`}>{enabled ? "当前生效" : "当前未生效"}</span></div>
+      {globalBlocked && <p className="mb-2 rounded-[8px] bg-surface-2 px-3 py-2 text-[12px] text-ink-soft">全局记忆当前关闭，以下策略暂不生效。</p>}
+      <div className="overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-workspace">
+        <ToggleRow label="允许记忆" desc={globalBlocked ? "需由管理员先开启全局记忆。" : "控制本账号的长期记忆总开关。"} checked={enabled} disabled={globalBlocked} onChange={(value) => updateUserPolicy({ enabled: value })} />
+        <ToggleRow label="生成记忆" desc={userBlocked ? "先开启上方的记忆总开关后才能调整。" : "允许 Agent 保存确认过的长期事实和关键事件。"} checked={canGenerate} disabled={userBlocked} onChange={(value) => updateUserPolicy({ generate: value })} />
+        <ToggleRow label="使用记忆" desc={userBlocked ? "先开启上方的记忆总开关后才能调整。" : "允许 Agent 在需要时读取并注入相关长期记忆。"} checked={canUse} disabled={userBlocked} onChange={(value) => updateUserPolicy({ use: value })} />
+      </div>
+    </div>
+  </div>
 }
 
-function ToggleRow({ label, desc, checked, onChange }: {
-  label: string
-  desc: string
-  checked: boolean
-  onChange: (v: boolean) => void
-}) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between gap-3 border-b border-[var(--border-soft)] px-3.5 py-2.5 text-left transition-colors duration-100 last:border-0 hover:bg-[var(--hover)]"
-    >
-      <div>
-        <p className="text-[13px] font-medium">{label}</p>
-        <p className="text-[12px] text-ink-faint">{desc}</p>
-      </div>
-      <span className={cn(
-        "relative h-5 w-9 shrink-0 rounded-full transition-colors duration-100",
-        checked ? "bg-button-ink" : "bg-surface-3"
-      )}>
-        <span className={cn(
-          "absolute top-0.5 h-4 w-4 rounded-full bg-workspace shadow-[var(--shadow-prompt)] transition-transform duration-100",
-          checked ? "translate-x-4" : "translate-x-0.5"
-        )} />
-      </span>
-    </button>
-  )
+function ToggleRow({ label, desc, checked, disabled = false, onChange }: { label: string; desc: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
+  return <button onClick={() => onChange(!checked)} disabled={disabled} aria-label={label} aria-checked={checked} className={cn("flex min-h-14 w-full items-center justify-between gap-3 border-b border-[var(--border-soft)] px-3.5 py-2.5 text-left transition-colors last:border-0", disabled ? "cursor-not-allowed opacity-55" : "hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40")}><div><p className="text-[13px] font-medium">{label}</p><p className="text-[12px] text-ink-faint">{desc}</p></div><span className={cn("relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150", checked ? "bg-button-ink" : "bg-surface-3")}><span className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-workspace shadow-[var(--shadow-prompt)] transition-transform duration-150", checked ? "translate-x-4" : "translate-x-0.5")} /></span></button>
 }

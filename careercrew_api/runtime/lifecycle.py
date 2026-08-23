@@ -206,63 +206,32 @@ class TurnLifecycleMixin:
         sources: list[dict] | None = None,
         metadata: dict | None = None,
     ) -> int:
-        """写会话 transcript（user_message + agent_response）到情景记忆，供 /api/memory 恢复。
+        """兼容旧路由的空操作；conversation lifecycle 已持久化完整消息。
 
-        前端按 thread_id 从 /api/memory 恢复对话；本方法把一轮 user/agent 消息
-        追加到该 thread 的 episodic（append-only 链）。
-        sources（知识库依据来源）与 metadata（如会诊调度过程）随 agent_response
-        一起存储，刷新后可恢复。
+        普通 transcript 不是长期记忆。保留方法签名直到各调用点完成迁移，避免
+        旧路由因为缺少方法而失败。
         """
-        self._ensure_heavy()
-        from careercrew_core.memory.redaction import redact_secrets
-        from careercrew_core.memory.types import MemoryEntry
-
-        memory_thread_id = self._memory_thread_id(thread_id, user_id)
-        self._ensure_thread(memory_thread_id, user_id, module=module, title=user_text[:50])
-        ep = self._get_episodic(memory_thread_id, user_id)
-        n = 0
-        if user_text:
-            ep.write(MemoryEntry(
-                type="user_message", content=redact_secrets(user_text),
-            ))
-            n += 1
-        if agent_text:
-            content: dict | str = redact_secrets(agent_text)
-            if sources or metadata:
-                stored = {"text": content}
-                if sources:
-                    stored["sources"] = sources
-                if metadata:
-                    stored.update(metadata)
-                content = stored
-            ep.write(MemoryEntry(
-                type="agent_response", content=content,
-            ))
-            n += 1
-        return n
+        return 0
 
     def record_user_message(self, user_id: str, thread_id: str, user_text: str,
                             module: str = "chat") -> str | None:
-        """在 agent 运行开始前立即落库用户消息，返回 entry id（供历史加载时跳过）。
+        """返回 canonical 当前用户消息 ID，不再写入 episodic memory。
 
-        长 agent 运行（知识库检索 / VLM 读图 / 多轮工具调用）可能耗时数分钟，
-        若只在运行完成后才写 transcript，运行挂起/失败/进程重启时用户的问题
-        就永久丢失（刷新也找不回）。这里先落 user_message，运行结束后再补
-        agent_response，保证问题随时可恢复。
+        ``_begin_chat_turn`` 已在 Agent 执行前持久化用户消息，因此即使长期记忆
+        关闭，失败和刷新恢复仍然成立。
         """
-        self._ensure_heavy()
-        from careercrew_core.memory.redaction import redact_secrets
-        from careercrew_core.memory.types import MemoryEntry
-
         if not user_text:
             return None
-        memory_thread_id = self._memory_thread_id(thread_id, user_id)
-        self._ensure_thread(memory_thread_id, user_id, module=module, title=user_text[:50])
-        ep = self._get_episodic(memory_thread_id, user_id)
-        entry = ep.write(MemoryEntry(
-            type="user_message", content=redact_secrets(user_text),
-        ))
-        return entry.id
+        if self.conversation_store is None:
+            return None
+        try:
+            rows = self.conversation_store.list_messages(thread_id, user_id)
+        except Exception:
+            return None
+        for row in reversed(rows):
+            if row.get("role") == "user" and row.get("content") == user_text:
+                return str(row["id"])
+        return None
 
     def get_threads(self, user_id: str, module: str | None = None) -> list[dict]:
         """列出用户的所有对话线程，并按 conversation 映射去重 legacy/UUID 别名。"""

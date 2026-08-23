@@ -106,9 +106,13 @@ class MemoryInjector:
         elif self._db is not None:
             # Never fall back to the constructor's legacy u_001 EpisodicMemory:
             # injection is user-scoped even when no vector index is configured.
-            rows = self._db.list_episodic(user_id, limit=top_episodes)
-            for row in rows:
+            rows = self._db.list_episodic(user_id)
+            for row in reversed(rows):
+                if row.get("type") in {"user_message", "agent_response"}:
+                    continue
                 ep_lines.append(f"- [{row['type']}] {row.get('content', '')}")
+                if len(ep_lines) >= top_episodes:
+                    break
         if ep_lines:
             ep_text = "[相关历史]\n" + "\n".join(ep_lines)
             if _estimate_tokens(ep_text) <= budget:

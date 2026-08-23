@@ -56,6 +56,7 @@ class HeavyInitMixin:
         self.memory_db = None
         self.jobs_store = None       # 岗位库（search_jobs 缓存层，采集器写入）
         self.policy_store = None      # 治理策略（全局 + 用户级）
+        self.memory_service = None    # 长期记忆唯一公共边界
         self.thread_store = None      # 线程元数据
         self.conversation_store = None  # 对话核心存储（Phase 1 Source of Truth）
         self.attachment_store = None   # 会话附件存储（Phase 3）
@@ -100,6 +101,7 @@ class HeavyInitMixin:
                 from careercrew_core.jobs import create_jobs_store
                 from careercrew_core.memory.db import create_memory_db
                 from careercrew_core.memory.policy import MemoryPolicyStore
+                from careercrew_core.memory.service import MemoryService
                 from careercrew_core.memory.threads import ThreadStore
                 from careercrew_core.state.settings import load_settings
 
@@ -110,6 +112,10 @@ class HeavyInitMixin:
                 self.memory_db = memory_db
                 self.jobs_store = create_jobs_store(settings)
                 self.policy_store = MemoryPolicyStore(memory_db)
+                self.memory_service = MemoryService(
+                    memory_db, policy_store=self.policy_store,
+                    feature_enabled=bool(settings.memory.enabled),
+                )
                 self.thread_store = ThreadStore(memory_db)
                 # 对话核心存储（conversation 表 Source of Truth，Postgres/Fake）
                 self.conversation_store = ConversationStore(create_conversation_db(settings))

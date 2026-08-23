@@ -1,8 +1,8 @@
 """记忆治理：Codex 式生成/使用分离开关（全局 + 用户级）。
 
 全局开关控制特性是否可用；用户级策略控制该用户记忆是否写入/注入。
-记忆默认关闭：settings.memory.enabled=false 或用户 enabled=false 时，
-不生成新记忆、不自动注入；显式开启才生效。
+记忆默认由数据库全局策略关闭；feature_enabled 仅作为部署级紧急熔断。
+全局或用户策略未开启时，不生成新记忆、不自动注入。
 """
 from __future__ import annotations
 
@@ -55,10 +55,11 @@ class MemoryPolicyStore:
         """生效策略：全局特性关 -> 全关；否则用用户策略。"""
         g = self.global_policy()
         u = self.user_policy(user_id)
+        enabled = bool(feature_enabled and g.enabled and u.enabled)
         return MemoryPolicy(
             user_id=user_id,
-            enabled=bool(feature_enabled and g.enabled and u.enabled),
-            generate=bool(feature_enabled and g.enabled and g.generate and u.generate),
-            use=bool(feature_enabled and g.enabled and g.use and u.use),
+            enabled=enabled,
+            generate=bool(enabled and g.generate and u.generate),
+            use=bool(enabled and g.use and u.use),
             updated_at=u.updated_at,
         )

@@ -10,7 +10,6 @@ from careercrew_api.auth.dependencies import AdminUser, CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime, ResourceNotFoundError
 from careercrew_api.schemas import HealthResponse
-from careercrew_core.memory.semantic import SemanticFactStore
 
 router = APIRouter()
 
@@ -100,11 +99,11 @@ def profile(current_user: CurrentUser,
             rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
     """从语义事实聚合 UserModel 投影（走 runtime 记忆库，生产为 Postgres）。"""
     rt._ensure_heavy()
+    service = getattr(rt, "memory_service", None)
+    if service is not None:
+        return service.load_profile(current_user["id"]).model_dump()
     from careercrew_core.memory.semantic import SemanticFactStore
-
-    user_id = current_user["id"]
-    store = SemanticFactStore(rt.memory_db, user_id)
-    return store.load().model_dump()
+    return SemanticFactStore(rt.memory_db, current_user["id"]).load().model_dump()
 
 
 @router.put("/profile")
@@ -113,10 +112,18 @@ def update_profile(req: ProfileUpdateRequest, current_user: CurrentUser,
     """更新用户画像字段（白名单约束，写入语义事实）。"""
     rt._ensure_heavy()
     try:
-        store = SemanticFactStore(rt.memory_db, current_user["id"])
-        model = store.update(current_user["id"], req.fields, source="api")
+        service = getattr(rt, "memory_service", None)
+        if service is not None:
+            model = service.update_profile(
+                current_user["id"], req.fields, source="api", manual=True,
+            )
+        else:
+            from careercrew_core.memory.semantic import SemanticFactStore
+            model = SemanticFactStore(rt.memory_db, current_user["id"]).update(
+                current_user["id"], req.fields, source="api",
+            )
         return model.model_dump()
-    except ValueError as e:
+    except (PermissionError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
@@ -157,6 +164,23 @@ def memory(current_user: CurrentUser, thread_id: str | None = Query(None),
            type: str = Query(""), rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> list[dict]:
     """读取语义事实 + 情景事件（可过滤）。"""
     return rt.memory_list(current_user["id"], thread_id=thread_id, type=type)
+
+
+@router.get("/memory/records")
+def memory_records(
+    current_user: CurrentUser,
+    kind: str = Query(""),
+    category: str = Query(""),
+    q: str = Query(""),
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(None),
+    rt: CareerCrewRuntime = Depends(get_runtime_dep),
+) -> dict:
+    """长期记忆管理记录：不包含聊天 transcript，支持搜索和游标分页。"""
+    return rt.memory_records(
+        current_user["id"], kind=kind, category=category,
+        query=q, limit=limit, cursor=cursor,
+    )
 
 
 @router.delete("/memory")

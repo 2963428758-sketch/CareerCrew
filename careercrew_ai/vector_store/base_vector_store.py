@@ -78,6 +78,9 @@ class BaseVectorStore(ABC):
     def delete_by_metadata(self, filters: dict) -> int: ...
 
     @abstractmethod
+    def delete_by_ids(self, ids: list[str]) -> int: ...
+
+    @abstractmethod
     def get_by_ids(
         self, ids: list[str], filters: dict | None = None,
     ) -> list[VectorRecord]: ...
@@ -113,6 +116,13 @@ class FakeVectorStore(BaseVectorStore):
         to_del = [rid for rid, r in self._records.items() if _matches(r.metadata, filters)]
         for rid in to_del:
             del self._records[rid]
+        return len(to_del)
+
+    def delete_by_ids(self, ids: list[str]) -> int:
+        wanted = set(ids)
+        to_del = [key for key, record in self._records.items() if record.id in wanted]
+        for key in to_del:
+            del self._records[key]
         return len(to_del)
 
     def get_by_ids(self, ids: list[str], filters: dict | None = None) -> list[VectorRecord]:

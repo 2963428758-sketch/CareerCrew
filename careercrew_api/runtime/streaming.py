@@ -39,14 +39,13 @@ class StreamingMixin:
             if key in self._cycles:
                 self._cycles.move_to_end(key)
                 return self._cycles[key]
-            from careercrew_core.memory.semantic import SemanticFactStore
             from careercrew_core.workflow.job_cycle import JobCycle
 
             ep = self._get_episodic(thread_id, user_id)
             jm = self.new_job_matcher(episodic=ep)
             ra = self.new_resume_advisor(episodic=ep)
             cycle = JobCycle(
-                jm, ra, user_model_store=SemanticFactStore(self.memory_db, user_id),
+                jm, ra, user_model_store=self.memory_service,
                 user_id=user_id, streaming=True, history_loader=self._history_loader,
                 thread_id=thread_id,
             )
@@ -101,7 +100,7 @@ class StreamingMixin:
                 user_meta["mentions"] = mentions
             if attachments:
                 user_meta["attachments"] = attachments
-        effective = self.compute_effective_tools("matcher", tools)
+        effective = self.compute_effective_tools("matcher", tools, user_id=user_id)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="matcher", agent_id="job_matcher",
@@ -208,7 +207,7 @@ class StreamingMixin:
             user_meta["mentions"] = mentions
         if attachments:
             user_meta["attachments"] = attachments
-        effective = self.compute_effective_tools("resume", tools)
+        effective = self.compute_effective_tools("resume", tools, user_id=user_id)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="resume", agent_id="resume_advisor",
@@ -316,7 +315,7 @@ class StreamingMixin:
                 user_meta["mentions"] = mentions
             if attachments:
                 user_meta["attachments"] = attachments
-        effective = self.compute_effective_tools("chat", tools)
+        effective = self.compute_effective_tools("chat", tools, user_id=user_id)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="chat", agent_id="career_planner",
@@ -442,7 +441,7 @@ class StreamingMixin:
             user_meta["mentions"] = mentions
         if attachments:
             user_meta["attachments"] = attachments
-        effective = self.compute_effective_tools("knowledge", tools)
+        effective = self.compute_effective_tools("knowledge", tools, user_id=user_id)
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="knowledge", agent_id="knowledge_advisor",

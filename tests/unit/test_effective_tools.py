@@ -1,6 +1,8 @@
 """T3.5 effective_tools 交集纯函数 + capabilities 汇总测试（TDD）。"""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from careercrew_core.tools.capabilities import build_capabilities
 from careercrew_core.tools.effective import compute_effective_tools
 
@@ -69,6 +71,100 @@ def test_allowlist_none_means_no_constraint() -> None:
         ["a", "b"], ["a", "b", "c"], role_allowlist=None, module_allowlist=None,
     )
     assert out == ["a", "b"]
+
+
+def test_runtime_policy_removes_memory_tools_before_agent_assembly() -> None:
+    """Case 8：用户禁用生成/使用时，最终工具快照不应包含 Memory 工具。"""
+    from careercrew_api.runtime import CareerCrewRuntime
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.policy import MemoryPolicyStore
+
+    db = FakeMemoryDb()
+    policy = MemoryPolicyStore(db)
+    policy.set_global(enabled=True, generate=True, use=True)
+    policy.set_user("u1", enabled=True, generate=False, use=False)
+    rt = CareerCrewRuntime()
+    rt._initialized = True
+    rt.policy_store = policy
+    rt.settings = SimpleNamespace(
+        memory=SimpleNamespace(enabled=True),
+        tools=SimpleNamespace(
+            registry=SimpleNamespace(
+                internal=["rag_query", "memory_search", "memory_write", "profile_update"],
+                mcp=[],
+            )
+        ),
+    )
+
+    effective = rt.compute_effective_tools("matcher", None, user_id="u1")
+
+    assert effective == ["rag_query"]
+
+
+def test_runtime_policy_can_read_without_generate_tools() -> None:
+    from careercrew_api.runtime import CareerCrewRuntime
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.policy import MemoryPolicyStore
+
+    db = FakeMemoryDb()
+    policy = MemoryPolicyStore(db)
+    policy.set_global(enabled=True, generate=True, use=True)
+    policy.set_user("u1", enabled=True, generate=False, use=True)
+    rt = CareerCrewRuntime()
+    rt._initialized = True
+    rt.policy_store = policy
+    rt.settings = SimpleNamespace(
+        memory=SimpleNamespace(enabled=True),
+        tools=SimpleNamespace(
+            registry=SimpleNamespace(
+                internal=["rag_query", "memory_search", "memory_write", "profile_update"],
+                mcp=[],
+            )
+        ),
+    )
+
+    effective = rt.compute_effective_tools("matcher", None, user_id="u1")
+
+    assert effective == ["rag_query", "memory_search"]
+
+
+def test_agent_factory_does_not_bind_memory_tools_when_master_is_off() -> None:
+    """Case 8 的真实装配接缝：即使调用方未传 allowed，也不能绑定 Memory 工具。"""
+    from careercrew_api.runtime import CareerCrewRuntime
+    from careercrew_core.memory.db import FakeMemoryDb
+    from careercrew_core.memory.episodic import EpisodicMemory
+    from careercrew_core.memory.policy import MemoryPolicyStore
+    from careercrew_core.memory.router import MemoryRouter
+    from careercrew_core.memory.service import MemoryService
+
+    db = FakeMemoryDb()
+    policy = MemoryPolicyStore(db)
+    policy.set_global(enabled=True)
+    policy.set_user("u1", enabled=False)
+    rt = CareerCrewRuntime()
+    rt._initialized = True
+    rt.memory_db = db
+    rt.policy_store = policy
+    rt.memory_service = MemoryService(db, policy_store=policy, feature_enabled=True)
+    rt.embedding = None
+    rt.multimodal_search = object()
+    rt.memory_router = MemoryRouter()
+    rt.settings = SimpleNamespace(
+        memory=SimpleNamespace(enabled=True, episodic=SimpleNamespace(vectorize=False)),
+        tools=SimpleNamespace(
+            registry=SimpleNamespace(
+                internal=["rag_query", "memory_search", "memory_write", "profile_update", "search_jobs", "submit_application"],
+                mcp=[],
+            ),
+            hitl=SimpleNamespace(requires_confirmation=[]),
+        ),
+    )
+
+    tools = rt._make_tools("matcher", episodic=EpisodicMemory(db, "u1", "t1"))
+
+    assert "memory_search" not in tools.list_names()
+    assert "memory_write" not in tools.list_names()
+    assert "profile_update" not in tools.list_names()
 
 
 # ── capabilities 汇总（§16.1）──

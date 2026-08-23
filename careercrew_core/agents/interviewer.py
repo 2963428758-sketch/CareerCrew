@@ -83,11 +83,18 @@ def _parse_score(content: str, max_score: int) -> dict:
     return {"score": round(score, 1), "feedback": feedback}
 
 
-def record_interview_qa(episodic, entries: list[dict], vector_index=None) -> int:
+def record_interview_qa(episodic, entries: list[dict], vector_index=None,
+                        memory_service=None, user_id: str | None = None) -> int:
     """写 interview_qa 到情景记忆（H4）。entries: [{q, a, score}, ...]"""
     from careercrew_core.tools.internal.memory_write import make_memory_write_tool
 
-    tool = make_memory_write_tool(episodic, vector_index=vector_index)
+    tool = make_memory_write_tool(
+        episodic, vector_index=vector_index,
+        memory_service=memory_service, user_id=user_id,
+    )
+    written = 0
     for e in entries:
-        tool.invoke({"type": "interview_qa", "content": e})
-    return len(entries)
+        result = str(tool.invoke({"type": "interview_qa", "content": e}))
+        if not result.startswith("[error]"):
+            written += 1
+    return written

@@ -88,7 +88,7 @@ supervisor:
 
 # ── 记忆系统 ──
 memory:
-  enabled: false                 # 默认关闭（Codex 式治理：显式开启才写入/注入）
+  enabled: true                  # 功能可用；实际默认关闭由 memory_global_policy + 用户策略控制
   postgres:
     dsn: "${DATABASE_URL}"
   episodic:

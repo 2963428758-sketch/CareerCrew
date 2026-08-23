@@ -23,13 +23,20 @@ _DETAIL_CHAT_BTN = ".btn-startchat, .op-btn-chat, :text('立即沟通')"
 
 
 def record_apply_attempt(episodic: Any, company: str, title: str,
-                         status: str, detail: dict | None = None) -> None:
+                         status: str, detail: dict | None = None, *,
+                         memory_service=None, user_id: str | None = None) -> None:
     """把一次投递尝试写入情景记忆树（type=application），失败可检索后重试。"""
     from careercrew_core.memory.types import MemoryEntry
 
     content = {"company": company, "title": title, "status": status, **(detail or {})}
     try:
-        episodic.write(MemoryEntry(type="application", content=content))
+        if memory_service is not None:
+            memory_service.write_event(
+                user_id or episodic.user_id, "application", content,
+                thread_id=episodic.thread_id,
+            )
+        else:
+            episodic.write(MemoryEntry(type="application", content=content))
         logger.info("apply attempt recorded: %s %s -> %s", company, title, status)
     except Exception:
         # 留痕失败不阻断投递主流程
@@ -69,7 +76,8 @@ def send_greeting_real(job_url: str, message: str, cdp_url: str) -> str:
         return f"招呼语已发送至 {job_url}"
 
 
-def make_send_greeting_tool(cdp_url: str = "", episodic_factory=None):
+def make_send_greeting_tool(cdp_url: str = "", episodic_factory=None, *,
+                            memory_service=None, user_id: str | None = None):
     """构造真实 send_greeting 工具（N2）。episodic_factory() 返回情景记忆实例用于留痕。"""
 
     from langchain_core.tools import tool
@@ -87,15 +95,21 @@ def make_send_greeting_tool(cdp_url: str = "", episodic_factory=None):
         try:
             result = send_greeting_real(job_url, message, cdp_url=cdp_url)
             if episodic_factory is not None:
-                record_apply_attempt(episodic_factory(), company or "?", title or "?",
-                                     "sent", {"message": message[:200], "job_url": job_url})
+                record_apply_attempt(
+                    episodic_factory(), company or "?", title or "?", "sent",
+                    {"message": message[:200], "job_url": job_url},
+                    memory_service=memory_service, user_id=user_id,
+                )
             return result
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
             if episodic_factory is not None:
                 try:
-                    record_apply_attempt(episodic_factory(), company or "?", title or "?",
-                                         "failed", {"error": err, "job_url": job_url})
+                    record_apply_attempt(
+                        episodic_factory(), company or "?", title or "?", "failed",
+                        {"error": err, "job_url": job_url},
+                        memory_service=memory_service, user_id=user_id,
+                    )
                 except Exception:
                     pass
             return f"发送失败（{err}）。该尝试已记录，修正后可直接重试。"

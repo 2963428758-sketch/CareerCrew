@@ -26,32 +26,54 @@ class ToolsAgentsMixin:
     def _thread_history_messages(self, user_id: str, thread_id: str,
                                  max_rounds: int = 10,
                                  exclude_entry_id: str | None = None) -> list:
-        """从 episodic 恢复该线程的历史对话（user_message/agent_response），供多轮上下文。
+        """从 ConversationStore 恢复历史；旧 episodic transcript 仅作只读回退。
 
-        只取本线程、按时间序，最多保留最近 max_rounds 轮；内容为 dict 时取 text。
-        exclude_entry_id：跳过刚写入的当前用户消息（本轮问题由调用方单独放入 messages），
-        避免上下文重复。
+        ``exclude_entry_id`` 是当前轮 conversation user message id；本轮问题由
+        调用方单独传给 Agent，因此这里跳过它以避免上下文重复。
         """
         from langchain_core.messages import AIMessage, HumanMessage
 
-        rows = self.memory_db.list_episodic(
-            user_id, thread_id=self._memory_thread_id(thread_id, user_id), type=None
-        )
+        rows: list[dict] = []
+        conversation_found = False
+        if self.conversation_store is not None:
+            try:
+                conversation_found = self.conversation_store.get_conversation(
+                    thread_id, user_id
+                ) is not None
+                if conversation_found:
+                    rows = self.conversation_store.list_messages(thread_id, user_id)
+            except Exception:
+                conversation_found = False
+
         msgs: list = []
-        for r in rows:
-            if exclude_entry_id and r.get("id") == exclude_entry_id:
-                continue
-            if r.get("type") not in ("user_message", "agent_response"):
-                continue
-            content = r.get("content")
-            if isinstance(content, dict) and "text" in content:
-                content = content["text"]
-            if not content:
-                continue
-            if r["type"] == "user_message":
-                msgs.append(HumanMessage(content=content))
-            else:
-                msgs.append(AIMessage(content=content))
+        if conversation_found:
+            for row in rows:
+                if exclude_entry_id and row.get("id") == exclude_entry_id:
+                    continue
+                content = row.get("content")
+                if not content:
+                    continue
+                if row.get("role") == "user":
+                    msgs.append(HumanMessage(content=content))
+                elif row.get("role") == "assistant":
+                    msgs.append(AIMessage(content=content))
+        elif self.memory_db is not None:
+            # 迁移期兼容：只读取历史版本已经写入的 transcript，不再产生新记录。
+            legacy_rows = self.memory_db.list_episodic(
+                user_id, thread_id=self._memory_thread_id(thread_id, user_id), type=None
+            )
+            for row in legacy_rows:
+                if exclude_entry_id and row.get("id") == exclude_entry_id:
+                    continue
+                if row.get("type") not in ("user_message", "agent_response"):
+                    continue
+                content = row.get("content")
+                if isinstance(content, dict) and "text" in content:
+                    content = content["text"]
+                if not content:
+                    continue
+                message_cls = HumanMessage if row["type"] == "user_message" else AIMessage
+                msgs.append(message_cls(content=content))
         # 保留最近 max_rounds 轮（user+agent 两条一轮）
         return msgs[-(max_rounds * 2):]
 
@@ -101,7 +123,7 @@ class ToolsAgentsMixin:
 
     def _history_loader(self, user_id: str, thread_id: str,
                         exclude_entry_id: str | None = None):
-        """从 episodic 恢复该线程历史对话（供 BaseAgent.history_loader）。"""
+        """从 canonical conversation 恢复历史（供 BaseAgent.history_loader）。"""
         try:
             return self._thread_history_messages(
                 user_id, thread_id, exclude_entry_id=exclude_entry_id
@@ -136,13 +158,33 @@ class ToolsAgentsMixin:
         allow = set(module_allow)
         return [n for n in registry if n in allow]
 
-    def compute_effective_tools(self, module: str, client_requested: list[str] | None) -> list[str]:
-        """本轮最终工具集合（cached 计算，纯函数委托）。"""
+    def _apply_memory_policy_to_tools(self, names: list[str], user_id: str | None) -> list[str]:
+        """按统一生效策略裁剪 Memory 工具；缺少用户上下文时保持兼容行为。"""
+        if not user_id or self.policy_store is None or self.settings is None:
+            return names
+        memory_cfg = getattr(self.settings, "memory", None)
+        if memory_cfg is None or not hasattr(memory_cfg, "enabled"):
+            return names
+        policy = self.policy_store.effective(user_id, bool(memory_cfg.enabled))
+        blocked: set[str] = set()
+        if not policy.enabled:
+            blocked.update({"memory_search", "memory_write", "profile_update"})
+        else:
+            if not policy.use:
+                blocked.add("memory_search")
+            if not policy.generate:
+                blocked.update({"memory_write", "profile_update"})
+        return [name for name in names if name not in blocked]
+
+    def compute_effective_tools(self, module: str, client_requested: list[str] | None,
+                                user_id: str | None = None) -> list[str]:
+        """本轮最终工具集合，并在 Agent 构造前执行用户级 Memory Policy。"""
         from careercrew_core.tools.effective import compute_effective_tools
 
-        return compute_effective_tools(
+        names = compute_effective_tools(
             client_requested, self._server_allowlist(module),
         )
+        return self._apply_memory_policy_to_tools(names, user_id)
 
     def _make_tools(self, kind: str, episodic=None, rag_sink=None, rag_category=None,
                     knowledge_access_filters: dict | None = None,
@@ -173,6 +215,8 @@ class ToolsAgentsMixin:
             vector_index=vi,
             fact_store=user_facts,
             router=self.memory_router,
+            memory_service=self.memory_service,
+            user_id=user_id,
         )
         from careercrew_core.rag.categories import categories_for_agent
 
@@ -212,11 +256,13 @@ class ToolsAgentsMixin:
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
                 )))
-            tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
+            tools.register(ToolSpec(tool=make_memory_write_tool(
+                ep, vi, memory_service=self.memory_service, user_id=user_id,
+            )))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
-                source="job_matcher")))
+                source="job_matcher", memory_service=self.memory_service)))
             # T3.5 HITL MVP 的实际生产绑定：投递动作必须先经过
             # HitlMiddleware；当前无 approve/reject 恢复协议时绝不执行工具函数。
             tools.register(ToolSpec(tool=submit_application, requires_confirmation=True))
@@ -224,7 +270,10 @@ class ToolsAgentsMixin:
             # apply_attempt 留痕），未配置时注册 mock 版保持原行为。
             boss_cdp = getattr(boss_cfg, "boss_cdp_url", "") or ""
             greeting_tool = (
-                make_send_greeting_tool(cdp_url=boss_cdp, episodic_factory=lambda: ep)
+                make_send_greeting_tool(
+                    cdp_url=boss_cdp, episodic_factory=lambda: ep,
+                    memory_service=self.memory_service, user_id=user_id,
+                )
                 if boss_cdp else send_greeting
             )
             tools.register(ToolSpec(tool=greeting_tool, requires_confirmation=True))
@@ -234,12 +283,14 @@ class ToolsAgentsMixin:
                 )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
-                source="resume_advisor")))
+                source="resume_advisor", memory_service=self.memory_service)))
         elif kind == "interviewer":
             tools.register(ToolSpec(tool=make_rag_query_tool(
                 hs, categories=cats, filters=_rag_filters({"user_id": user_id}), assessor=crag_factory,
                 )))
-            tools.register(ToolSpec(tool=make_memory_write_tool(ep, vi)))
+            tools.register(ToolSpec(tool=make_memory_write_tool(
+                ep, vi, memory_service=self.memory_service, user_id=user_id,
+            )))
             tools.register(ToolSpec(tool=mem_search))
         elif kind == "salary":
             tools.register(ToolSpec(tool=make_rag_query_tool(
@@ -247,7 +298,7 @@ class ToolsAgentsMixin:
                 )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
-                source=kind)))
+                source=kind, memory_service=self.memory_service)))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_salary_query_tool()))
         elif kind == "planner":
@@ -257,7 +308,7 @@ class ToolsAgentsMixin:
                 )))
             tools.register(ToolSpec(tool=make_profile_update_tool(
                 SemanticFactStore(self.memory_db, user_id), user_id=user_id,
-                source="career_planner")))
+                source="career_planner", memory_service=self.memory_service)))
             tools.register(ToolSpec(tool=mem_search))
             tools.register(ToolSpec(tool=make_salary_query_tool()))
         elif kind == "knowledge":
@@ -279,8 +330,12 @@ class ToolsAgentsMixin:
             tools.register(ToolSpec(tool=mem_search))
         # T3.5 §16.3：allowed 非 None 时裁剪到最终集合（client ∩ server allowlist 已在上游算好）。
         # None = 默认全放行（保持既有行为）。
-        if allowed is not None:
-            allowed_set = set(allowed)
+        policy_allowed = set(self._apply_memory_policy_to_tools(
+            [spec.name for spec in tools.list_specs()], user_id,
+        ))
+        if allowed is not None or len(policy_allowed) != len(tools.list_specs()):
+            allowed_set = set(allowed) if allowed is not None else policy_allowed
+            allowed_set &= policy_allowed
             filtered = ToolRegistry()
             for spec in tools.list_specs():
                 if spec.name in allowed_set:
@@ -436,6 +491,9 @@ class ToolsAgentsMixin:
 
         episodic = self._get_episodic(thread_id, user_id)
         vi = self._make_vector_index(episodic, user_id=user_id)
-        return record_interview_qa(episodic, entries, vector_index=vi)
+        return record_interview_qa(
+            episodic, entries, vector_index=vi,
+            memory_service=self.memory_service, user_id=user_id,
+        )
 
     # ── 记忆管理 API（数据看板 / 治理） ──
