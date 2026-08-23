@@ -23,7 +23,13 @@ class FakeAgent:
     def __init__(self, name: str, content: str) -> None:
         self.name = name
         self.content = content
-        self.last_result = type("R", (), {"content": content, "stopped_reason": "final_answer"})()
+        self.last_result = type("R", (), {
+            "content": content,
+            "stopped_reason": "final_answer",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "tool_call_details": [],
+        })()
 
     def run(self, state):
         return {
@@ -87,6 +93,8 @@ def test_parallel_group_then_finish() -> None:
         "salary_negotiator",
         "career_planner",
     }
+    assert all(c["input_tokens"] == 10 for c in result["consult_calls"])
+    assert all("tool_call_details" in c for c in result["consult_calls"])
 
 
 def test_limits_enforced() -> None:
@@ -172,6 +180,17 @@ def test_first_round_never_ends_without_agent() -> None:
     # 默认问题含 "offer" -> 路由到薪资谈判师
     assert result["consult_calls"][0]["agent"] == "salary_negotiator"
     assert result["synthesis"] == "综合顾问意见后的结论"
+
+
+def test_unsafe_request_can_end_without_dispatch() -> None:
+    """注入/越界输入由调度官直接拒绝，不把攻击文本继续下发给任一顾问。"""
+    llm = FakeDecisionLLM([
+        '{"next_agents": [], "tasks": {}, "final_answer": "无法提供内部配置", '
+        '"direct_response_reason": "unsupported_or_unsafe"}',
+    ])
+    result = _run(llm)
+    assert result["consult_calls"] == []
+    assert result["synthesis"] == "无法提供内部配置"
 
 
 def test_default_agent_routed_by_keyword() -> None:

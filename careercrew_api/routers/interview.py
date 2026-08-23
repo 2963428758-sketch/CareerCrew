@@ -41,6 +41,8 @@ from careercrew_api.sse import (
     stage_event,
     stream_agent,
     turn_done_fields,
+    register_stream_cancellation,
+    unregister_stream_cancellation,
 )
 
 router = APIRouter()
@@ -80,12 +82,12 @@ def questions(
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
-    effective = rt.compute_effective_tools("interview", req.tools)
+    effective = rt.compute_effective_tools("interview", req.tools, user_id=current_user["id"])
     hitl = rt._hitl_requires()
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             nonlocal result
@@ -166,6 +168,8 @@ def questions(
             yield done_event(content, **turn_done_fields(result["turn"]))
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())
 
@@ -190,12 +194,12 @@ def chat(
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
-    effective = rt.compute_effective_tools("interview", req.tools)
+    effective = rt.compute_effective_tools("interview", req.tools, user_id=current_user["id"])
     hitl = rt._hitl_requires()
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             nonlocal result
@@ -293,6 +297,8 @@ def chat(
             yield done_event(content, **extra, **turn_done_fields(result["turn"]))
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from careercrew_core.supervisor.consult import build_consult_graph, consult, opinion_fallback
+from careercrew_core.supervisor.consult import _synthesize, build_consult_graph, consult, opinion_fallback
 
 
 class FakeAgent:
@@ -77,6 +77,22 @@ def test_opinion_fallback_empty_on_max_iterations() -> None:
 def test_opinion_fallback_keeps_content() -> None:
     assert opinion_fallback("  有效意见  ", "final_answer") == "有效意见"
     assert opinion_fallback("部分内容", "error") == "部分内容"
+
+
+def test_synthesis_prompt_prohibits_inventing_user_qualifications() -> None:
+    class CapturingLLM:
+        prompt = ""
+
+        def invoke(self, prompt):
+            self.prompt = prompt
+            return AIMessage(content="综合建议")
+
+    llm = CapturingLLM()
+    _synthesize({"salary_negotiator": "缺少候选人技能信息"}, "期望 35k", llm)
+
+    assert "不得补充或暗示用户拥有未提供的技能" in llm.prompt
+    assert "第一人称谈判话术只能引用已给出的事实" in llm.prompt
+    assert "我/您能为团队带来的技术贡献/价值" in llm.prompt
 
 
 def test_consult_function_fallback_for_failed_agent() -> None:

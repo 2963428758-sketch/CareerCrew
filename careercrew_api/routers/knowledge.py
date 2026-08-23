@@ -30,6 +30,8 @@ from careercrew_api.sse import (
     stage_event,
     stream_agent,
     turn_done_fields,
+    register_stream_cancellation,
+    unregister_stream_cancellation,
 )
 from careercrew_api.upload_io import read_bounded
 
@@ -259,7 +261,7 @@ def ask_knowledge(
 
     def gen():
         result: dict = {"content": "", "sources": [], "turn": None}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def _run(cb):
             nonlocal result
@@ -306,6 +308,8 @@ def ask_knowledge(
             yield error_event(friendly_error(e))
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return StreamingResponse(
         gen(),

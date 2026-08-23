@@ -69,6 +69,18 @@ const freshSession = (threadId: string): StreamSession => ({
 const controllers = new Map<string, AbortController>()
 const thinkTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+/**
+ * AbortController 只会断开浏览器读取；额外通知服务端，阻止同步 Agent 在当前调用
+ * 返回后继续发起下一轮模型/工具请求。取消接口幂等，网络失败不影响本地停止反馈。
+ */
+const notifyServerCancel = (threadId: string) => {
+  void apiFetch("/api/chat/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: threadId }),
+  }).catch(() => undefined)
+}
+
 interface StreamStoreState {
   sessions: Record<string, StreamSession>
   start: (threadId: string, endpoint: string, body: Record<string, unknown>, opts?: { regenerate?: boolean }) => Promise<void>
@@ -86,6 +98,7 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
     const isRegenerate = Boolean(opts?.regenerate)
     // 同一会话重新发送：只终止该会话自己的旧请求，不影响其他会话
     controllers.get(threadId)?.abort()
+    notifyServerCancel(threadId)
     useThreadStore.getState().clearCompletedUnread(threadId)
     set((s) => ({ sessions: { ...s.sessions, [threadId]: freshSession(threadId) } }))
 
@@ -332,6 +345,7 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
 
   stop: (threadId) => {
     controllers.get(threadId)?.abort()
+    notifyServerCancel(threadId)
   },
 
   regenerate: (threadId, messageId) =>
@@ -343,7 +357,10 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
 
   resetAll: () => {
     // 登出/切换用户：中止所有在途流并清空会话状态，防止跨用户数据残留
-    controllers.forEach((c) => c.abort())
+    controllers.forEach((c, threadId) => {
+      c.abort()
+      notifyServerCancel(threadId)
+    })
     controllers.clear()
     set({ sessions: {} })
   },

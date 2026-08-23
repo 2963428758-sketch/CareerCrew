@@ -220,6 +220,33 @@ def test_consult_tools_outside_allowlist_clipped(client, fake_runtime):
 
 
 @pytest.mark.web
+def test_consult_persists_child_tool_observability_without_exposing_details(client, fake_runtime):
+    """子顾问真实工具调用落主 run，但内部工具参数不进入前端 calls。"""
+    fake_runtime.consult_observability["salary_negotiator"] = {
+        "input_tokens": 7,
+        "output_tokens": 3,
+        "tool_call_details": [{
+            "name": "salary_query",
+            "args": {"company": "合成测试公司"},
+            "duration_ms": 12,
+            "error": None,
+        }],
+    }
+    resp = client.post("/api/consult", json={"question": "合成谈薪测试"})
+    assert resp.status_code == 200
+    done = _events(resp)[-1]
+    assert all("tool_call_details" not in call for call in done["calls"])
+    assert all("input_tokens" not in call for call in done["calls"])
+
+    store = fake_runtime.conversation_store
+    run = store._db.get_run("u_001", done["run_id"])
+    assert run["input_tokens"] == 7
+    assert run["output_tokens"] == 3
+    calls = [c for c in store._db._tool_calls.values() if c["run_id"] == done["run_id"]]
+    assert any(c["tool_name"] == "salary_query" and c["status"] == "completed" for c in calls)
+
+
+@pytest.mark.web
 def test_consult_default_effective_tools_are_exact_advisor_union(client, fake_runtime):
     """未指定 tools 时，persisted consult set 也只能是 advisor 实际绑定工具的并集。"""
     resp = client.post("/api/consult", json={"question": "帮我评估下一步求职计划"})

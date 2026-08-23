@@ -69,6 +69,40 @@ class CancellationEvent:
             raise StreamCancelled()
 
 
+# 前端 AbortController 只能中止浏览器的读取；在代理/同步 LLM 调用尚未返回时，
+# ASGI 未必能立刻感知客户端断开。按用户和会话登记取消事件，让停止按钮额外通知
+# 服务端，在当前模型调用结束后的第一个检查点阻止下一次工具或模型调用。
+_active_streams: dict[tuple[str, str], CancellationEvent] = {}
+_active_streams_lock = threading.Lock()
+
+
+def register_stream_cancellation(user_id: str, thread_id: str) -> CancellationEvent:
+    event = CancellationEvent()
+    with _active_streams_lock:
+        previous = _active_streams.get((user_id, thread_id))
+        if previous is not None:
+            previous.set()
+        _active_streams[(user_id, thread_id)] = event
+    return event
+
+
+def cancel_registered_stream(user_id: str, thread_id: str) -> bool:
+    with _active_streams_lock:
+        event = _active_streams.get((user_id, thread_id))
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+def unregister_stream_cancellation(user_id: str, thread_id: str, event: CancellationEvent) -> None:
+    """只移除仍属于本次生成的登记，避免旧请求删掉新请求的取消句柄。"""
+    with _active_streams_lock:
+        key = (user_id, thread_id)
+        if _active_streams.get(key) is event:
+            _active_streams.pop(key, None)
+
+
 def put_guaranteed(q: queue.Queue, item: Any, cancel: CancellationEvent | None = None) -> None:
     """终态事件受控投递：队列满时轮询重试；取消已设置则放弃（消费者已消失）。"""
     while True:
@@ -191,31 +225,30 @@ def _trace_id() -> str:
 def friendly_error(exc: BaseException) -> str:
     """把底层异常转成用户可读的中文提示。
 
-    覆盖常见故障类：网络连接、超时、API Key、额度/限流、模型不可用、上下文过长，
-    附截断后的原始细节辅助排查；未知类别不透传原始异常（可能含内部路径/
-    供应商端点），改给通用提示 + 追踪号。已是中文的业务异常原样返回。
+    覆盖常见故障类：网络连接、超时、API Key、额度/限流、模型不可用、上下文过长。
+    任何基础设施或供应商异常都不能把原始细节带到用户界面（其中可能包含内部路径、
+    端点或实现信息）；改给可行动的通用提示 + 追踪号。已是中文的业务异常原样返回。
     """
     msg = str(exc).strip() or type(exc).__name__
     if any("\u4e00" <= ch <= "\u9fff" for ch in msg):
         return _clip_detail(msg)
     lowered = msg.lower()
-    detail = _clip_detail(msg)
     if any(k in lowered for k in ("connection", "connect", "refused", "network",
                                    "name or service not known", "unreachable")):
-        return f"无法连接到 AI 服务，请检查网络或服务配置：{detail}"
+        return f"暂时无法连接 AI 服务，请稍后重试{_trace_id()}"
     if "timeout" in lowered or "timed out" in lowered:
-        return f"AI 服务响应超时，请稍后重试：{detail}"
+        return f"AI 服务响应超时，请稍后重试{_trace_id()}"
     if any(k in lowered for k in ("api key", "apikey", "unauthorized", "authentication",
                                   "invalid token", "credentials")) or "401" in msg:
-        return f"AI 服务密钥无效或已过期，请检查配置：{detail}"
+        return f"AI 服务暂时不可用，请稍后重试{_trace_id()}"
     if any(k in lowered for k in ("quota", "rate limit", "too many requests")) or "429" in msg:
-        return f"AI 服务额度不足或请求过于频繁，请稍后重试：{detail}"
+        return f"AI 服务当前繁忙，请稍后重试{_trace_id()}"
     if "model" in lowered and any(k in lowered for k in ("not found", "not exist",
                                                          "not available", "does not exist")):
-        return f"AI 模型不可用，请检查模型配置：{detail}"
+        return f"AI 服务暂时不可用，请稍后重试{_trace_id()}"
     if any(k in lowered for k in ("maximum context", "context length", "out of memory",
                                   "token limit")):
-        return f"对话内容过长，请新开一个会话再试：{detail}"
+        return f"对话内容过长，请新开一个会话再试{_trace_id()}"
     return f"生成失败，请稍后重试{_trace_id()}"
 
 

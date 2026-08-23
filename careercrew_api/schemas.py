@@ -18,6 +18,12 @@ class HealthResponse(BaseModel):
     error: str | None = None
 
 
+class CancelStreamRequest(BaseModel):
+    """客户端停止生成时提交的会话标识。"""
+
+    thread_id: str = Field(min_length=1, max_length=256)
+
+
 # ── Auth ──
 
 

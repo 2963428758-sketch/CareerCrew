@@ -1,7 +1,7 @@
 """sse.friendly_error 错误信息收敛测试。
 
 未知类别的异常不得透传原始文本（可能含内部路径/供应商端点），
-改给通用提示 + 追踪号；已知类别保留截断后的细节辅助排查。
+改给通用提示 + 追踪号；已知类别同样不得暴露底层细节。
 """
 from __future__ import annotations
 
@@ -25,11 +25,11 @@ def test_unknown_exception_does_not_leak_raw_text():
     assert "生成失败" in out
 
 
-def test_known_category_keeps_clipped_detail():
+def test_known_category_does_not_leak_provider_detail():
     exc = ConnectionError("connection refused to api.siliconflow.cn")
     out = friendly_error(exc)
-    assert "无法连接到 AI 服务" in out
-    assert "api.siliconflow.cn" in out  # 类别提示附带细节，便于排查
+    assert "无法连接 AI 服务" in out
+    assert "api.siliconflow.cn" not in out
 
 
 def test_long_detail_is_clipped_to_single_line():
@@ -42,8 +42,8 @@ def test_long_detail_is_clipped_to_single_line():
 
 def test_timeout_and_quota_categories():
     assert "超时" in friendly_error(TimeoutError("request timed out after 60s"))
-    assert "额度" in friendly_error(RuntimeError("429 Too Many Requests"))
-    assert "密钥" in friendly_error(RuntimeError("401 Unauthorized"))
+    assert "繁忙" in friendly_error(RuntimeError("429 Too Many Requests"))
+    assert "暂时不可用" in friendly_error(RuntimeError("401 Unauthorized"))
 
 
 def test_trace_id_included_when_available(monkeypatch):

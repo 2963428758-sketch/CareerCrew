@@ -222,6 +222,8 @@ def test_chat_stream_first_round(client, fake_runtime):
     assert events[0] == {"type": "stage", "stage": "resume"}
     assert events[-1]["type"] == "done"
     assert events[-1]["content"] == "按 JD 定制后的简历"
+    for field in ("thread_id", "turn_id", "message_id", "run_id", "prompt_version"):
+        assert events[-1].get(field), f"resume/chat done 缺少稳定字段 {field}"
 
 
 @pytest.mark.web

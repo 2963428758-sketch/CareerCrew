@@ -72,6 +72,7 @@ def test_done_prompt_version_is_sha256_for_prompt_agents(client):
         ("/api/chat/match", {"intent": "求职", "thread_id": "vp-1"}),
         ("/api/chat/plan", {"intent": "规划", "thread_id": "vp-2"}),
         ("/api/chat/resume", {"jd_text": "字节", "thread_id": "vp-3"}),
+        ("/api/resume/chat", {"question": "优化简历", "thread_id": "vp-chat-3"}),
         ("/api/knowledge/ask", {"question": "RAG", "thread_id": "vp-4"}),
         ("/api/interview/questions", {"topic": "RAG", "thread_id": "vp-5"}),
     ]:
@@ -125,6 +126,15 @@ def test_plan_done_carries_sect9_fields(client):
 @pytest.mark.web
 def test_resume_done_carries_sect9_fields(client):
     resp = client.post("/api/chat/resume", json={"jd_text": "字节", "thread_id": "r-1"})
+    assert resp.status_code == 200
+    _assert_done_sect9(_last_done(resp))
+
+
+@pytest.mark.web
+def test_resume_chat_done_carries_sect9_fields(client):
+    resp = client.post("/api/resume/chat", json={
+        "question": "帮我优化简历", "thread_id": "r-chat-1",
+    })
     assert resp.status_code == 200
     _assert_done_sect9(_last_done(resp))
 

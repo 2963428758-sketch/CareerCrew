@@ -24,18 +24,30 @@ from careercrew_api.request_helpers import (
     resolve_mentions_or_422 as _resolve_mentions,
 )
 from careercrew_api.runtime import CareerCrewRuntime
-from careercrew_api.schemas import MatchRequest, ResumeRequest
+from careercrew_api.schemas import CancelStreamRequest, MatchRequest, ResumeRequest
 from careercrew_api.sse import (
     CancellationEvent,
+    cancel_registered_stream,
     done_event,
     error_event,
     friendly_error,
     stage_event,
     stream_agent,
     turn_done_fields,
+    register_stream_cancellation,
+    unregister_stream_cancellation,
 )
 
 router = APIRouter()
+
+
+@router.post("/cancel")
+def cancel_stream(
+    req: CancelStreamRequest,
+    current_user: CurrentUser,
+) -> dict[str, bool]:
+    """显式通知服务端停止指定会话的后续 Agent/工具阶段。"""
+    return {"cancelled": cancel_registered_stream(current_user["id"], req.thread_id)}
 
 
 @router.post("/match")
@@ -52,7 +64,7 @@ def match(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             nonlocal result
@@ -86,6 +98,8 @@ def match(
                 )
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())
 
@@ -104,7 +118,7 @@ def resume(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             nonlocal result
@@ -137,6 +151,8 @@ def resume(
                 )
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())
 
@@ -155,7 +171,7 @@ def plan(
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             nonlocal result
@@ -188,5 +204,7 @@ def plan(
                 )
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())

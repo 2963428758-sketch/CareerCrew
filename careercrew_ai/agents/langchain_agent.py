@@ -465,7 +465,6 @@ def run_agent(
     tool_calls_total = 0
     last_iter_idx = -1
     max_reached = False
-    failed = False
     stop_content = ""
     pending_model_chunks: list[str] = []
 
@@ -523,9 +522,9 @@ def run_agent(
                             tool_calls_total += 1
                             if last_iter_idx >= 0:
                                 iterations[last_iter_idx].tool_results.append(m.content)
-    except Exception as e:  # noqa: BLE001 - 任何执行异常标记 error，不吞给上层
-        failed = True
-        logger.exception("agent.stream 执行异常（run_agent 标记 stopped_reason=error）：%s", e)
+    except Exception as e:  # noqa: BLE001 - 记录后上抛，由 API 生命周期标记 failed
+        logger.exception("agent.stream 执行异常，交由上层标记失败：%s", e)
+        raise
 
     if max_reached:
         content = stop_content or _MAX_ITERATIONS_PROMPT
@@ -547,9 +546,7 @@ def run_agent(
             # 持久化内容保持一致。
             if content and stream_callback:
                 stream_callback(content)
-    if failed:
-        stopped_reason = "error"
-    elif max_reached:
+    if max_reached:
         stopped_reason = "max_iterations"
     else:
         stopped_reason = "final_answer"

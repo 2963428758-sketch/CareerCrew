@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
@@ -104,6 +105,23 @@ def test_no_tools_direct_answer() -> None:
     assert out["stopped_reason"] == "final_answer"
     assert out["tool_calls_total"] == 0
     assert out["iterations"] == 1
+
+
+def test_model_error_propagates_to_lifecycle() -> None:
+    """模型/网络异常不能伪装成 completed 空回复，必须交给 API 标记 failed。"""
+
+    class FailingChatModel(FakeChatModel):
+        def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+            raise RuntimeError("model connection failed")
+            yield  # pragma: no cover - 保持生成器形态
+
+    agent = BaseAgent(
+        name="x", system_prompt="sys",
+        llm=FailingChatModel([AIMessage(content="unused")]),
+    )
+    with pytest.raises(RuntimeError, match="model connection failed"):
+        agent.run(_state())
+    assert agent.last_result is None
 
 
 def test_streaming_token_callback() -> None:

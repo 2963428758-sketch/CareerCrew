@@ -48,7 +48,7 @@ export function AuthScreen() {
         </div>
         <form className="space-y-4" onSubmit={submit}>
           <label className="block text-[13px] font-medium text-ink">用户名
-            <input required minLength={3} maxLength={64} pattern="[A-Za-z0-9_.-]+" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1.5 w-full rounded-[7px] border border-input bg-workspace px-3 py-2 text-[14px] outline-none transition-colors duration-100 placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-ring/40" />
+            <input required minLength={3} maxLength={64} pattern="[A-Za-z0-9_.\-]+" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1.5 w-full rounded-[7px] border border-input bg-workspace px-3 py-2 text-[14px] outline-none transition-colors duration-100 placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-ring/40" />
           </label>
           <label className="block text-[13px] font-medium text-ink">密码
             <input required minLength={isBootstrap ? 12 : 1} maxLength={256} type="password" autoComplete={isBootstrap ? "new-password" : "current-password"} value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1.5 w-full rounded-[7px] border border-input bg-workspace px-3 py-2 text-[14px] outline-none transition-colors duration-100 placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-ring/40" />

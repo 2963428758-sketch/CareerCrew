@@ -42,15 +42,23 @@ from careercrew_api.request_helpers import (
 from careercrew_api.request_helpers import (
     resolve_mentions_or_422 as _resolve_mentions,
 )
-from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.runtime import (
+    CareerCrewRuntime,
+    RuntimeInitError,
+    _observability_from_result,
+    _rag_query_retrievals,
+)
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
 from careercrew_api.sse import (
     CancellationEvent,
+    register_stream_cancellation,
     done_event,
     error_event,
     friendly_error,
     stage_event,
     stream_agent,
+    turn_done_fields,
+    unregister_stream_cancellation,
 )
 from careercrew_api.upload_io import read_bounded
 
@@ -351,7 +359,7 @@ def generate(
     """简历顾问以"上传简历 + 目标 JD"为输入流式优化。"""
 
     def gen() -> Generator[str, None, None]:
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             from langchain_core.messages import HumanMessage
@@ -385,6 +393,8 @@ def generate(
                 yield done_event("".join(content_parts))
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())
 
@@ -405,10 +415,12 @@ def chat(
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
+    effective = rt.compute_effective_tools("resume", req.tools, user_id=current_user["id"])
+    hitl = rt._hitl_requires()
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": ""}
-        cancel = CancellationEvent()
+        result: dict = {"content": "", "turn": None, "lr": None}
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
             nonlocal result
@@ -420,8 +432,8 @@ def chat(
             episodic = rt._get_episodic(req.thread_id, user_id)
             agent = rt.new_resume_advisor(
                 cb, episodic=episodic,
-                allowed=rt.compute_effective_tools("resume", req.tools),
-                hitl_requires=rt._hitl_requires(),
+                allowed=effective,
+                hitl_requires=hitl,
                 forced_doc_ids=rt._mention_knowledge_ids(mentions),
             )
             if req.resume_text.strip():
@@ -441,6 +453,18 @@ def chat(
                 )
             else:
                 current = req.question
+            user_meta: dict | None = None
+            if mentions or attachment_blocks:
+                user_meta = {}
+                if mentions:
+                    user_meta["mentions"] = mentions
+                if attachment_blocks:
+                    user_meta["attachments"] = attachment_blocks
+            ctx = rt._begin_chat_turn(
+                req.thread_id, user_id, module="resume", agent_id="resume_advisor",
+                user_text=req.question, user_metadata=user_meta,
+                effective_tools=effective,
+            )
             state = {
                 "thread_id": req.thread_id, "user_id": user_id, "stage": "resume",
                 "user_intent": current,
@@ -451,10 +475,16 @@ def chat(
                 "pending_user_entry_id": pending_id,
             }
             cancel.check()
-            agent.run(state)
+            try:
+                agent.run(state)
+            except Exception as e:
+                rt._fail_chat_turn(ctx, e)
+                raise
             cancel.check()
             lr = agent.last_result
             result["content"] = (getattr(lr, "content", "") or "").strip() if lr is not None else ""
+            result["turn"] = ctx
+            result["lr"] = lr
 
         failed = False
         try:
@@ -478,8 +508,22 @@ def chat(
                 )
             except Exception:
                 pass  # transcript 写入失败不阻塞主流程
-            yield done_event(content)
+            lr = result.get("lr")
+            obs = _observability_from_result(lr)
+            details = getattr(lr, "tool_call_details", None) or [] if lr is not None else []
+            obs["retrievals"] = _rag_query_retrievals(details)
+            rt._finish_chat_turn(
+                result.get("turn"), content,
+                input_tokens=obs["input_tokens"],
+                output_tokens=obs["output_tokens"],
+                total_tokens=obs["total_tokens"],
+                retrievals=obs["retrievals"],
+                tool_calls=obs["tool_calls"],
+            )
+            yield done_event(content, **turn_done_fields(result.get("turn")))
         except Exception as e:
             yield error_event(friendly_error(e))
+        finally:
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
 
     return _ndjson_response(gen())

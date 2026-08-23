@@ -30,7 +30,9 @@ from careercrew_api.sse import (
     StreamCancelled,
     friendly_error,
     put_guaranteed,
+    register_stream_cancellation,
     turn_done_fields,
+    unregister_stream_cancellation,
 )
 from careercrew_core.tracing.langsmith import attach_run_metadata, traced_call
 
@@ -114,10 +116,12 @@ def _persist_form_profile(rt, user_id: str, profile: dict[str, str]) -> None:
         mapped["profile.current_position"] = ""
     if mapped:
         try:
-            from careercrew_core.memory.semantic import SemanticFactStore
-
-            store = SemanticFactStore(rt.memory_db, user_id)
-            store.update(user_id, mapped, source="consult_form")
+            service = getattr(rt, "memory_service", None)
+            if service is not None:
+                service.update_profile(user_id, mapped, source="consult_form", manual=True)
+            else:
+                from careercrew_core.memory.semantic import SemanticFactStore
+                SemanticFactStore(rt.memory_db, user_id).update(user_id, mapped, source="consult_form")
         except Exception:
             import logging
             logging.getLogger(__name__).exception("persist consult profile failed")
@@ -141,7 +145,7 @@ def consult(
     def gen() -> Generator[str, None, None]:
         q: queue.Queue = queue.Queue(maxsize=512)
         err: dict[str, BaseException] = {}
-        cancel = CancellationEvent()
+        cancel = register_stream_cancellation(current_user["id"], req.thread_id)
         dropped = [0]
 
         def _safe_emit(item: dict) -> None:
@@ -164,7 +168,7 @@ def consult(
             # T3.5：会诊各顾问按各自 kind 构造工具；effective 由 consult 模块 allowlist
             # 计算后下发给 new_consult_agent，逐顾问再由 `_make_tools(kind, allowed=…)`
             # 裁剪到其实际注册集合。
-            effective = rt.compute_effective_tools("consult", req.tools)
+            effective = rt.compute_effective_tools("consult", req.tools, user_id=user_id)
             hitl = rt._hitl_requires()
             ctx = rt._begin_chat_turn(
                 req.thread_id, user_id, module="consult",
@@ -193,10 +197,12 @@ def consult(
                 # 读取失败（后端未初始化等）则退化为仅用请求携带的 profile。
                 merged_profile: dict[str, str] = {}
                 try:
-                    from careercrew_core.memory.semantic import SemanticFactStore
-
-                    store = SemanticFactStore(rt.memory_db, user_id)
-                    model = store.load(user_id)
+                    service = getattr(rt, "memory_service", None)
+                    if service is not None:
+                        model = service.load(user_id)
+                    else:
+                        from careercrew_core.memory.semantic import SemanticFactStore
+                        model = SemanticFactStore(rt.memory_db, user_id).load(user_id)
                     merged_profile = _profile_from_model(model)
                 except Exception:
                     merged_profile = {}
@@ -275,6 +281,15 @@ def consult(
                 for name, out in outputs.items():
                     if name not in opinions and isinstance(out, dict) and out.get("content"):
                         opinions[name] = str(out["content"])
+                # 子 Agent 的 token/tool 明细只用于服务端观测落库，不进入前端事件或
+                # 会话元数据，避免把内部工具实现与参数暴露给用户。
+                public_calls = [
+                    {
+                        key: value for key, value in call.items()
+                        if key not in {"input_tokens", "output_tokens", "tool_call_details"}
+                    }
+                    for call in calls
+                ]
 
                 final = (result.get("synthesis") or "").strip()
                 if not final:
@@ -306,31 +321,55 @@ def consult(
                         user_id, req.thread_id,
                         user_text="", agent_text=final,
                         module="consult",
-                        metadata={"consult_calls": calls},
+                        metadata={"consult_calls": public_calls},
                     )
                 except Exception:
                     pass  # transcript 写入失败不阻塞会诊
                 # T3.5：会诊顾问被 HITL 拦截的调用（blocked_tool_calls）汇总后落
                 # awaiting_confirmation 行，与会诊调度过程一并可视化（block-and-record）。
-                from careercrew_api.runtime import _observability_from_result
+                from careercrew_api.runtime import (
+                    _observability_from_result,
+                    _rag_query_retrievals,
+                )
 
                 obs_tool_calls: list[dict] = []
+                obs_retrievals: list[dict] = []
+                input_tokens = 0
+                output_tokens = 0
+                saw_input_tokens = False
+                saw_output_tokens = False
                 for call in calls:
                     blocked = call.get("blocked_tool_calls") or []
-                    if blocked:
-                        synth = type("R", (), {
-                            "input_tokens": None, "output_tokens": None,
-                            "tool_call_details": [],
-                            "blocked_tool_calls": blocked,
-                        })()
-                        obs_tool_calls.extend(_observability_from_result(synth)["tool_calls"])
+                    details = call.get("tool_call_details") or []
+                    synth = type("R", (), {
+                        "input_tokens": call.get("input_tokens"),
+                        "output_tokens": call.get("output_tokens"),
+                        "tool_call_details": details,
+                        "blocked_tool_calls": blocked,
+                    })()
+                    call_obs = _observability_from_result(synth)
+                    obs_tool_calls.extend(call_obs["tool_calls"])
+                    obs_retrievals.extend(
+                        _rag_query_retrievals(details, start_index=len(obs_retrievals))
+                    )
+                    if call_obs["input_tokens"] is not None:
+                        input_tokens += call_obs["input_tokens"]
+                        saw_input_tokens = True
+                    if call_obs["output_tokens"] is not None:
+                        output_tokens += call_obs["output_tokens"]
+                        saw_output_tokens = True
                 rt._finish_chat_turn(
-                    ctx, final, metadata={"opinions": opinions, "calls": calls},
+                    ctx, final, metadata={"opinions": opinions, "calls": public_calls},
                     langsmith_run_id=ls_run_id,
+                    input_tokens=input_tokens if saw_input_tokens else None,
+                    output_tokens=output_tokens if saw_output_tokens else None,
+                    total_tokens=(input_tokens + output_tokens)
+                    if saw_input_tokens and saw_output_tokens else None,
+                    retrievals=obs_retrievals or None,
                     tool_calls=obs_tool_calls or None,
                 )
                 _safe_emit({
-                    "type": "done", "content": final, "opinions": opinions, "calls": calls,
+                    "type": "done", "content": final, "opinions": opinions, "calls": public_calls,
                     **turn_done_fields(ctx),
                 })
             except StreamCancelled:
@@ -376,6 +415,7 @@ def consult(
             yield _ndjson_line({"type": "error", "message": friendly_error(e)})
         finally:
             cancel.set()  # 生成器关闭（客户端断开/停止）→ 通知 worker 协作式取消
+            unregister_stream_cancellation(current_user["id"], req.thread_id, cancel)
         t.join(timeout=1)
 
     return StreamingResponse(
