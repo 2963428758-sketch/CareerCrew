@@ -60,14 +60,19 @@ CareerCrew/
 ├── careercrew_web/       # React + Vite 前端（生产构建产物 dist/ 由后端托管）
 ├── mcp-servers/          # mcp-jobs Node 启动器（Playwright 抓取猎聘岗位，供 search_jobs 工具使用）
 ├── config/
-│   └── settings.yaml     # 主配置（${VAR} 占位符从环境变量替换）
+│   ├── settings.yaml        # 主配置（${VAR} 占位符从环境变量替换）
+│   └── settings.docker.yaml # 容器部署变体（production 环境口径，与主配置字段保持对齐）
 ├── scripts/              # 知识入库 / 数据迁移 / 评估 / 清理脚本
 ├── tests/                # pytest：unit / integration / e2e / api
 ├── docs/                 # 设计文档（DEV_SPEC / RAG / LangSmith / 前端方案 / 运维备份）
 ├── data/                 # 运行时数据（uploads / parsed / db / eval；大部分已 gitignore）
-├── .github/workflows/    # CI 流水线
-├── pyproject.toml        # Python 依赖与打包配置
-└── .env                  # 本地密钥（已 gitignore，勿提交）
+├── migrations/           # Alembic 迁移（0001_baseline 为 pg_dump 全量 schema 快照）
+├── alembic.ini           # schema migration 唯一入口
+├── Dockerfile            # 多阶段构建（builder 装依赖到独立 venv，runtime 携带产物）
+├── docker-compose.yml    # 一键编排：postgres + qdrant + app
+├── .github/workflows/    # CI 流水线（含 docker build 冒烟 / pip-audit / dependabot）
+├── pyproject.toml        # Python 依赖、ruff 与 pytest 配置
+└── .env                  # 本地密钥（已 gitignore，勿提交；模板见 .env.example）
 ```
 
 依赖方向：`careercrew_ai` → `careercrew_core` → `careercrew_api`（单向）。
@@ -91,23 +96,13 @@ cd CareerCrew
 
 ### 2. 配置环境变量
 
-> 项目根目录已有 `.env`（gitignore 排除）但没有 `.env.example`。请新建 `.env` 并按下方模板填写自己的密钥：
-
 ```bash
-# .env （切勿提交真实值到 git）
-SILICONFLOW_API_KEY=
-DATABASE_URL=postgresql://careercrew:careercrew@localhost:5432/careercrew
-MINERU_API_KEY=
-LANGSMITH_API_KEY=
-AUTH_DATABASE_URL=
-AUTH_JWT_SECRET=
-OSS_ENDPOINT=
-OSS_ACCESS_KEY_ID=
-OSS_ACCESS_KEY_SECRET=
-OSS_BUCKET_NAME=
+cp .env.example .env   # 然后按需填写
 ```
 
-各变量含义见 [配置说明](#配置说明)。
+本地开发必填 `SILICONFLOW_API_KEY` 与 `DATABASE_URL`；容器部署由 compose 注入 `DATABASE_URL`，另需 `AUTH_JWT_SECRET`（≥32 字符）。各变量含义见 [配置说明](#配置说明)，完整模板见 [.env.example](.env.example)。
+
+> `.env` 已被 `.gitignore` 排除（含 `!.env.example` 否定规则），**绝不提交真实密钥**。
 
 ### 3. 安装依赖
 
@@ -130,7 +125,13 @@ npm install
 
 ### 4. 启动基础服务
 
-仓库不提供 docker-compose（见 [Docker](#docker)），Postgres / Qdrant 用通用容器启动：
+本地开发可直接用 compose 起依赖（跳过 app 服务）：
+
+```bash
+docker compose up -d postgres qdrant
+```
+
+或用通用容器手动启动：
 
 ```bash
 docker run -d --name postgres --restart unless-stopped -p 5432:5432 \
@@ -139,6 +140,8 @@ docker run -d --name postgres --restart unless-stopped -p 5432:5432 \
 
 docker run -d --name qdrant --restart unless-stopped -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
+
+> 完整三服务一键编排见 [容器部署](#容器部署)。
 
 ### 5. 启动项目
 
@@ -189,7 +192,10 @@ uvicorn careercrew_api.main:app --port 8000   # 检测到 dist/ 即自动托管 
 | Backend / API（同时托管前端生产构建） | <http://localhost:8000> |
 | Swagger UI | <http://localhost:8000/docs> |
 | ReDoc | <http://localhost:8000/redoc> |
-| 健康检查 | <http://localhost:8000/api/health> |
+| OpenAPI Schema | <http://localhost:8000/openapi.json> |
+| Liveness 探针（无鉴权） | <http://localhost:8000/healthz> |
+| Readiness 探针（Postgres/Qdrant 连通性，无鉴权） | <http://localhost:8000/readyz> |
+| 组件级健康明细（需登录） | <http://localhost:8000/api/health> |
 | Qdrant | <http://localhost:6333>（HTTP）/ 6334（gRPC） |
 | PostgreSQL | localhost:5432 |
 
@@ -197,21 +203,34 @@ uvicorn careercrew_api.main:app --port 8000   # 检测到 dist/ 即自动托管 
 
 FastAPI 默认文档页开启：Swagger UI `/docs`、ReDoc `/redoc`、OpenAPI Schema `/openapi.json`。所有业务路由挂在 `/api` 前缀下；流式接口统一返回 NDJSON（事件类型 `stage` / `chunk` / `agent_start` / `agent_end` / `done` / `error` / `input_request`）。
 
-## Docker
+## 容器部署
 
-仓库**不含** Dockerfile 与 docker-compose.yml——容器仅用于运行两个通用依赖服务，应用本身以 uvicorn / vite 进程运行（见快速开始第 4 步的启动命令）。常用容器操作：
+仓库提供多阶段 `Dockerfile` 与一键编排 `docker-compose.yml`（postgres + qdrant + app 三服务，克隆即跑）：
 
 ```bash
-docker logs -f postgres        # 查看 Postgres 日志
-docker logs -f qdrant          # 查看 Qdrant 日志
-docker stop postgres qdrant    # 停止
-docker start postgres qdrant   # 再次启动
+cp .env.example .env          # 填 SILICONFLOW_API_KEY / AUTH_JWT_SECRET（≥32 字符）
+mkdir -p models/bge-m3        # 放置 BGE-M3 权重（只读挂载进容器 /models/bge-m3）
+docker compose up -d --build
+curl http://localhost:8000/readyz   # {"status":"ready","checks":{"postgres":"ok","qdrant":"ok"}} 即就绪
+```
+
+- 镜像分层：依赖安装层仅随 `pyproject.toml` 变化重建，业务代码改动命中缓存秒级完成；CPU torch 单独预装避免拉 CUDA 版
+- app 容器启动先跑 `alembic upgrade head` 再起 uvicorn（迁移失败即退出，不做半启动）；compose 注入的 `postgresql+psycopg://` 方言 DSN 应用侧自动归一兼容
+- 非 root 运行；数据落 `app_uploads` 卷（上传/解析产物）；镜像与 compose 均带 healthcheck
+- 生产加固：`auth.cookie_secure` 在容器配置中已为 true（现代浏览器对 http://localhost 视为可信上下文）；有域名/LB 时在 `config/settings.docker.yaml` 的 `auth.trusted_origins` 追加
+
+裸 `docker build -t careercrew .` 也可单独构建镜像。常用容器操作：
+
+```bash
+docker compose logs -f app     # 跟踪应用日志
+docker compose ps              # 三服务健康状态
+docker compose down            # 停止（加 -v 连数据卷一起删）
 ```
 
 ## 数据库
 
 - **PostgreSQL 16** 是唯一关系库：账号（`auth_accounts` 等 4 张认证表）、会话（`conversations` / `conversation_turns` / `messages` / `agent_runs` 等）、记忆（情景事件 / 语义事实 / 记忆策略）、聊天附件、LangGraph checkpoint。
-- **无需手工初始化 SQL**：各 store 在应用启动 / 首次使用时幂等自动建表；仓库也没有独立的 migration 工具（`data/migrations/` 只是迁移报告 JSON 输出目录）。
+- **Schema 迁移统一走 Alembic**：根目录 `alembic.ini` + `migrations/`（0001_baseline 为 pg_dump 全量快照，24 表）。容器部署在应用启动前自动 `alembic upgrade head`；本地手动执行 `alembic upgrade head` 即可初始化。各 store 保留惰性建表作为开发兜底，并有双库一致性守卫测试（`tests/integration/test_alembic_baseline.py`）拦住漂移——新增字段一律走新 migration。
 - **Qdrant** 集合 `careercrew_mm`（知识库）与 `careercrew_episodic_v2`（情景记忆）由应用自动创建。
 - 历史数据迁移脚本见 `scripts/migrate_*.py`（默认 dry-run，`--apply` 生效）；备份恢复流程见 [docs/OPS_BACKUP.md](docs/OPS_BACKUP.md)。
 
@@ -220,13 +239,13 @@ docker start postgres qdrant   # 再次启动
 后端（pytest，marker 定义见 `pyproject.toml`）：
 
 ```bash
-pytest -q tests/unit/                        # 单元测试（84 个文件，无需外部服务）
+pytest -q tests/unit/                        # 单元测试（90 个文件，无需外部服务）
 pytest -q tests/api                          # API 测试（FakeRuntime 注入，但需本机 Postgres 在跑）
 pytest -q -m integration                     # 集成测试（需环境变量 POSTGRES_TEST_DSN）
 pytest -q -m "integration or e2e"            # 含求职闭环 e2e
 ```
 
-marker：`integration`（多组件集成）/ `e2e`（端到端）/ `slow`（慢测试）/ `web`（FastAPI 测试标记，CI 默认不跑）。
+marker：`integration`（多组件集成）/ `e2e`（端到端）/ `slow`（慢测试）/ `web`（FastAPI 测试，CI 的 api job 每次运行）。
 
 前端（Vitest，测试文件与源码同目录 `*.test.ts(x)`）：
 
@@ -246,9 +265,9 @@ python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail
 ## 开发规范
 
 - **Commit**：历史提交遵循 Conventional Commits（`feat:` / `fix:` 前缀）；无正式 CONTRIBUTING 文档
-- **Python 静态检查**：暂无 ruff/black/mypy 配置，CI 用 `compileall` 做语法编译检查
+- **Python 静态检查**：ruff（配置在 `pyproject.toml [tool.ruff]`，CI typecheck job 执行 `ruff check` + `compileall`）；mypy 渐进接入见 docs/TECH_DEBT_PLAN.md
 - **前端**：oxlint 做 lint，`tsc -b` 随构建做类型检查
-- **CI**（GitHub Actions）：push main / PR 触发 unit、api（Postgres 服务容器 + 覆盖率）、postgres-memory、typecheck、frontend、eval-sanity 六类任务 + diff-cover 变更行覆盖率 ≥80% 门禁；nightly 定时跑 integration / e2e（非阻塞）
+- **CI**（GitHub Actions）：push main / PR 触发 unit、api（Postgres 服务容器 + 覆盖率）、postgres-memory、typecheck、frontend、eval-sanity、docker-build（镜像构建 + 容器内 Alembic 迁移冒烟）、security-audit（pip-audit）八类任务 + diff-cover 变更行覆盖率 ≥80% 门禁；dependabot 周检五类生态依赖；nightly 定时跑 integration / e2e（阻塞口径，真实模型评测除外）
 - **分支规范**：待补充
 
 ## 常见问题
