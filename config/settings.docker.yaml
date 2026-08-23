@@ -6,7 +6,7 @@
 
 llm:
   provider: openai
-  model: "zai-org/GLM-4.5V"
+  model: "deepseek-ai/DeepSeek-V3.2"
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
   temperature: 0.3
@@ -18,6 +18,7 @@ embedding:
   model_path: /models/bge-m3        # compose 挂载宿主机 ./models/bge-m3
   use_fp16: false
   batch_size: 12
+  device: cpu                       # cpu（默认，避免显存叠加 OOM）| cuda（有卡机型提速明显）
 
 rerank:
   backend: siliconflow
@@ -41,6 +42,9 @@ rag:
     top_k_dense: 20
     top_k_sparse: 20
     top_k_final: 10
+    crag: false                  # M5：检索质量自评估（incorrect -> LLM 重写重检一轮）
+    colbert_rerank: false        # M7：ColBERT late-interaction 本地精排（需同开 colbert_store）
+    colbert_store: false         # M7：摄取时把 colbert 矩阵写入 payload（库体积显著增大）
   chunking:
     strategy: recursive
     chunk_size: 800
@@ -61,7 +65,7 @@ rag:
     language: ch
 
 vlm:
-  model: zai-org/GLM-4.5V
+  model: "Qwen/Qwen3-VL-32B-Instruct"
   rerank_model: Qwen/Qwen3-VL-Reranker-8B
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
@@ -93,6 +97,10 @@ memory:
     # dream_schedule: "03:30"
 
 tools:
+  search:
+    boss_cdp_url: ""              # Boss直聘 CDP 后端（N1）：容器内填 http://host.docker.internal:9222
+                                  # （宿主机 Chrome --remote-debugging-port=9222）；空=仅猎聘 MCP 渠道
+    boss_city: ""                 # 可选城市代码（如北京 101010100）；空=全国
   registry:
     internal: [rag_query, memory_search, memory_write, profile_update, search_jobs, salary_query, read_image, submit_application]
     mcp: [mcp_jobs, google_mcp]
@@ -102,6 +110,12 @@ tools:
 
 hitl:
   default_policy: confirm
+
+# ── HR 回复监听（投递闭环：招呼发出 -> 回复捕获 -> 情景记忆 -> 顾问接聊） ──
+hr_monitor:
+  enabled: false                  # 需 Boss CDP 渠道（tools.search.boss_cdp_url）已配置
+  interval_minutes: 30            # 轮询间隔
+  cdp_url: ""                     # 空=复用 tools.search.boss_cdp_url
 
 langsmith:
   enabled: false                    # 需要追踪时置 true 并提供 LANGSMITH_API_KEY
@@ -128,4 +142,6 @@ auth:
   jwt_secret: "${AUTH_JWT_SECRET}"
   access_token_minutes: 15
   refresh_token_days: 7
-  cookie_secure: false              # 上 HTTPS/LB 后必须改 true
+  # 生产校验强制 true；现代浏览器把 http://localhost 视为可信上下文，
+  # Secure Cookie 在本机 compose 验证同样可用。经纯 HTTP 局域网访问时需自建配置。
+  cookie_secure: true

@@ -16,6 +16,7 @@ max_iterations 用 middleware 实现（``before_model`` 计数 + ``wrap_model_ca
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Annotated, Any, NotRequired, TypedDict
@@ -377,8 +378,13 @@ def build_agent(
     return agent
 
 
+_SPECIAL_TOKEN_RE = re.compile(r"<\|(?:begin_of_box|end_of_box)\|>")
+
+
 def _msg_text(msg: BaseMessage) -> str:
-    return msg.content if isinstance(msg.content, str) else ""
+    """提取消息文本;剥离视觉定位类模型的特殊标记(如 GLM-4.5V 的 box token)。"""
+    text = msg.content if isinstance(msg.content, str) else ""
+    return _SPECIAL_TOKEN_RE.sub("", text)
 
 
 def run_agent(

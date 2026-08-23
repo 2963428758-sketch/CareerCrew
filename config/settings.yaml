@@ -4,7 +4,8 @@
 # ── LLM（硅基流动，OpenAI 兼容；init_chat_model 薄适配） ──
 llm:
   provider: openai               # 走 init_chat_model 的 openai provider（OpenAI 兼容）
-  model: "zai-org/GLM-4.5V"
+  model: "deepseek-ai/DeepSeek-V3.2"   # 文本 agent 主力：工具调用稳、无思考型特殊标记
+                                       # （原 GLM-4.5V 是视觉定位模型，文本场景会输出 box token 且偶发空回复）
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"
   temperature: 0.3
@@ -69,7 +70,7 @@ rag:
 
 # ── VLM（硅基流动，多模态生成 + 精排） ──
 vlm:
-  model: zai-org/GLM-4.5V
+  model: "Qwen/Qwen3-VL-32B-Instruct"   # 看图作答（Instruct 版输出干净，无思考标记）
   rerank_model: Qwen/Qwen3-VL-Reranker-8B
   base_url: "https://api.siliconflow.cn/v1"
   api_key: "${SILICONFLOW_API_KEY}"

@@ -76,6 +76,10 @@ def get_runtime() -> CareerCrewRuntime:
         with _runtime_lock:
             if _runtime is None:
                 _runtime = CareerCrewRuntime()
+                # 进程启动即完成轻量初始化（settings+存储层）：请求路径
+                # （如 compute_effective_tools）在 stores 初始化前读 settings
+                # 会拿到 None → allowlist 空 → agent 工具被全部裁剪。
+                _runtime._ensure_stores()
     return _runtime
 
 
