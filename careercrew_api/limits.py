@@ -1,8 +1,8 @@
 """每用户 LLM 流式并发限制。
 
-流式端点（/match /resume /plan /consult /interview/chat /resume/generate
-/resume/chat /knowledge/ask /regenerate）每个请求都消耗真实 LLM token，
-认证用户若无限制可无限并发打。此处以「每用户信号量」做并发上限：
+流式端点（/match /plan /consult /interview/questions /interview/chat
+/resume/generate /resume/chat /knowledge/ask /regenerate）每个请求都消耗真实
+LLM token，认证用户若无限制可无限并发打。此处以「每用户信号量」做并发上限：
 - 上限默认 2，可用环境变量 MAX_STREAMS_PER_USER 调整；
 - 超限返回 429 + 中文提示，不排队不烧钱；
 - 通过 FastAPI yield dependency 实现：release 发生在响应体发送完毕之后，

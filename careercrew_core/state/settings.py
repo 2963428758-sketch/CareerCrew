@@ -253,6 +253,10 @@ class AuthSettings(BaseModel):
     access_token_minutes: int = 15
     refresh_token_days: int = 7
     cookie_secure: bool = False
+    # 反向代理（LB/Nginx）后部署时设 true：登录限流改按 X-Forwarded-For 首个
+    # 地址取真实客户端 IP。直连部署保持 false——该头可被客户端伪造，不可信
+    # 环境下启用等于给限流开了绕通道。
+    trust_proxy_headers: bool = False
 
     @property
     def is_development(self) -> bool:

@@ -97,8 +97,12 @@ def questions(
     req: QuestionRequest,
     current_user: CurrentUser,
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
+    _slot: None = Depends(user_stream_slot),
 ) -> StreamingResponse:
-    """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。"""
+    """Interviewer agent 出题（rag_query 检索面经/八股），流式输出。
+
+    与其余流式端点一致套 user_stream_slot：每用户并发上限，防止无界并发烧 token。
+    """
 
     mentions = _resolve_mentions(rt, current_user["id"], req.mentions)
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)

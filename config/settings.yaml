@@ -157,3 +157,6 @@ auth:
   access_token_minutes: 15
   refresh_token_days: 7
   cookie_secure: false       # 生产环境必须为 true
+  # 反向代理（LB/Nginx）后部署时设 true：登录限流按 X-Forwarded-For 取真实客户端 IP；
+  # 直连部署保持 false（该头可伪造，信任它等于给限流开绕通道）
+  trust_proxy_headers: false
