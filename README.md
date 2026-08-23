@@ -66,7 +66,7 @@ CareerCrew/
 ├── docs/                 # 设计文档（DEV_SPEC / RAG / LangSmith / 前端方案 / 运维备份）
 ├── data/                 # 运行时数据（uploads / parsed / db / eval；大部分已 gitignore）
 ├── .github/workflows/    # CI 流水线
-├── pyproject.toml        # Python 依赖与打包配置（附 uv.lock 锁定文件）
+├── pyproject.toml        # Python 依赖与打包配置
 └── .env                  # 本地密钥（已 gitignore，勿提交）
 ```
 
