@@ -1,0 +1,38 @@
+# 依赖自动更新：五类生态周检。PR 由 CI 全量门禁验证后再合入。
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: npm
+    directory: "/careercrew_web"
+    schedule:
+      interval: weekly
+    groups:
+      web-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: npm
+    directory: "/mcp-servers"
+    schedule:
+      interval: weekly
+    groups:
+      jobs-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly

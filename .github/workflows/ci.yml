@@ -1,6 +1,10 @@
 # CareerCrew CI：分层流水线（快速单测 / API / Postgres / 类型编译检查 / 前端构建）
-# + PR 变更行 80% 覆盖率门禁（diff-cover）+ nightly integration/e2e。
+# + PR 变更行 80% 覆盖率门禁（diff-cover）+ docker 镜像构建冒烟 + 依赖漏洞审计
+# + nightly integration/e2e。
 # 重 ML 栈（FlagEmbedding / torch / BGE-M3）由本地 conda env 验证（DEV_SPEC §4.4）。
+#
+# 版本口径说明：各 job 手写的轻量依赖清单是「CI 已验证的已知可用版本集」，
+# 均不低于 pyproject.toml 的声明下限；调整任一侧时需同步核对另一侧。
 name: CI
 
 on:
@@ -11,14 +15,21 @@ on:
     - cron: "0 18 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install lightweight deps
         run: |
           python -m pip install --upgrade pip
@@ -38,6 +49,7 @@ jobs:
 
   api:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -57,6 +69,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install API deps
         run: |
           python -m pip install --upgrade pip
@@ -82,6 +96,7 @@ jobs:
 
   postgres-memory:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -101,6 +116,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install Postgres memory test deps
         run: |
           python -m pip install --upgrade pip
@@ -114,6 +131,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -129,6 +147,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: careercrew_web
@@ -148,6 +167,7 @@ jobs:
 
   eval-sanity:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -157,9 +177,56 @@ jobs:
         run: |
           python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail-on-regression
 
+  docker-build:
+    # 守住「克隆即跑」承诺：镜像必须可构建，且容器内 alembic 能对
+    # postgresql+psycopg:// 方言 DSN 完成 baseline 迁移（compose 注入该写法）
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file
+        run: docker compose config -q
+      - name: Build app image (multi-stage)
+        run: docker build -t careercrew:ci .
+      - name: Smoke: alembic upgrade head with dialect DSN
+        run: |
+          docker network create ccnet
+          docker run -d --name pg --network ccnet \
+            -e POSTGRES_USER=careercrew -e POSTGRES_PASSWORD=careercrew -e POSTGRES_DB=careercrew \
+            postgres:16
+          docker exec pg sh -c 'until pg_isready -U careercrew; do sleep 1; done'
+          docker run --rm --network ccnet \
+            -e DATABASE_URL="postgresql+psycopg://careercrew:careercrew@pg:5432/careercrew" \
+            careercrew:ci alembic upgrade head
+
+  security-audit:
+    # 已知依赖集的 CVE 扫描（重 ML 栈 torch/FlagEmbedding 不装，覆盖面以轻量清单为准）。
+    # 先行观察期不阻塞合入；稳定后移除 continue-on-error 升级为门禁。
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install declared deps (light set)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "langgraph>=1.2.0" "langchain>=1.0.0" "langchain-core>=1.0.0" "langchain-openai>=1.0.0" \
+            "langchain-text-splitters>=0.3.0" "qdrant-client>=1.19.0" "langgraph-checkpoint-postgres>=2.0.0" \
+            "psycopg[binary]>=3.1.0" "psycopg-pool>=3.2" "alembic>=1.13" "mcp>=1.20,<2" "pymupdf>=1.24.0" \
+            "requests>=2.31.0" "pydantic>=2.7.0" "PyYAML>=6.0" "python-dotenv>=1.0.0" \
+            "fastapi>=0.115" "uvicorn>=0.30" "python-multipart>=0.0.9" "PyJWT>=2.10" "argon2-cffi>=23.1"
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable
+
   coverage-gate:
     needs: [api]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -186,8 +253,8 @@ jobs:
 
   nightly:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    continue-on-error: true
     services:
       postgres:
         image: postgres:16
@@ -207,17 +274,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install integration deps
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install integration deps (unit ∪ api 轻量全集)
+        # 曾因只装 pytest+psycopg 导致收集阶段 import fastapi 即崩、
+        # 叠加 continue-on-error 而静默失效——依赖清单必须覆盖全部被测模块的导入面。
         run: |
           python -m pip install --upgrade pip
-          pip install pytest "psycopg[binary]>=3.1.0" "psycopg-pool>=3.2"
+          pip install pytest pytest-mock pytest-check fastapi uvicorn python-multipart \
+            "PyJWT>=2.10" "argon2-cffi>=23.1" pydantic PyYAML python-dotenv numpy \
+            "langgraph>=1.2.0" "langchain>=1.0.0" "langchain-core>=1.0.0" "langchain-openai>=1.0.0" \
+            "langchain-text-splitters>=0.3.0" "qdrant-client>=1.19.0" "langgraph-checkpoint-sqlite>=3.0.0" \
+            "psycopg[binary]>=3.1.0" "psycopg-pool>=3.2" "mcp>=1.20,<2" "pymupdf>=1.24.0" "requests>=2.31.0"
           pip install -e . --no-deps
-      - name: Integration / e2e (nightly, non-blocking)
+      - name: Integration / e2e
         env:
+          SILICONFLOW_API_KEY: "sk-test-ci-dummy"
           POSTGRES_TEST_DSN: postgresql://careercrew:careercrew@localhost:5432/careercrew
         run: |
           pytest -q -m "integration or e2e"
       - name: Real-model eval (optional, non-blocking)
-        # TODO(eval): collect_real 落地（真实模型/服务 + secrets）后启用，当前恒为 skipped 留痕
+        # 仅此步骤有意非阻塞：真实模型调用依赖外部 secrets/服务（TODO(eval)）
         run: |
           python scripts/eval_runner.py --real || echo "real eval skipped (missing keys/service)"
