@@ -44,7 +44,7 @@ class TurnLifecycleMixin:
 
         self._ensure_heavy()
         try:
-            return begin_turn(
+            ctx = begin_turn(
                 self.conversation_store,
                 thread_id=thread_id, user_id=user_id, module=module,
                 agent_id=agent_id, user_text=user_text,
@@ -54,6 +54,18 @@ class TurnLifecycleMixin:
                 user_metadata=user_metadata,
                 effective_tools=effective_tools,
             )
+            # Conversation 仍是全文唯一事实源。这里只把通过确定性高精度规则的
+            # 稳定职业自述交给 MemoryService；普通聊天绝不会被复制为长期记忆。
+            service = getattr(self, "memory_service", None)
+            if service is not None:
+                try:
+                    service.capture_text_candidates(user_id, user_text, source="conversation")
+                except PermissionError:
+                    pass  # 记忆关闭/禁止生成是正常策略结果，不影响对话。
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).warning("memory candidate capture failed", exc_info=True)
+            return ctx
         except Exception:
             import logging
             logging.getLogger(__name__).exception("begin_chat_turn failed")

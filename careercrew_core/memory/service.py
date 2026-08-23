@@ -124,6 +124,23 @@ class MemoryService:
             confidence=1.0, description=description or f"用户明确要求记住：{name}",
         )
 
+    def capture_text_candidates(self, user_id: str, text: str, *, source: str = "conversation") -> list[SemanticFact]:
+        """把通过高精度规则的用户自述写为结构化事实。
+
+        普通聊天、泛化问答和临时诉求在候选阶段即被拒绝，且策略关闭时不会读取或写入。
+        """
+        self._require_generate(user_id, manual=False)
+        from careercrew_core.memory.candidates import extract_candidates
+
+        saved: list[SemanticFact] = []
+        for candidate in extract_candidates(text):
+            model = self.update_profile(user_id, {candidate.field: candidate.value}, source=source)
+            field_type, key = ALLOWED_FIELDS[candidate.field]
+            fact = SemanticFactStore(self._db, user_id).get_fact(candidate.field)
+            if fact is not None:
+                saved.append(fact)
+        return saved
+
     def write_event(self, user_id: str, event_type: str, content: dict | str, *,
                     thread_id: str = "memory", parent_id: str | None = None,
                     manual: bool = False) -> MemoryEntry:
