@@ -278,3 +278,10 @@
 ### M5/M7（可选开启）
 - crag=true：检索偏题问题时观察 LangSmith 中 trail=["incorrect","correct"] 重检链
 - colbert_store+colbert_rerank=true：重建知识库索引后检索，验证排序变化（库体积会显著增大）
+
+### 附：猎聘 MCP 渠道「空结果」排障（2026-08-23 实录）
+现象：search_jobs 走猎聘渠道返回 0 条且无报错。
+根因：mcp-servers 的 Playwright 包升级后浏览器二进制缺失（chromium_headless_shell-*），
+爬虫启动即失败但 MCP 层只回空列表。日志在 logs/mcp-jobs.log 有明确报错。
+修复：cd mcp-servers && npx playwright install chromium
+经验：猎聘返回空结果先查 logs/mcp-jobs.log 再怀疑反爬/登录墙。
