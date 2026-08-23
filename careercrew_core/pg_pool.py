@@ -6,16 +6,21 @@ memory 进程级单条长连接（断连无恢复、跨线程共用非线程安�
 - 借出即用、退出归还；断坏连接由池负责重建（自动重连）；
 - 每操作事务语义不变：`pool.connection()` 上下文退出时提交/回滚。
 
-容量：min_size=1（空闲不占资源）、max_size=10、checkout 超时 30s。
+容量：min_size=1（空闲不占资源）、max_size=10、checkout 超时 30s；
+可用环境变量 PG_POOL_MIN / PG_POOL_MAX / PG_POOL_TIMEOUT_S 覆盖。
 """
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any
 
-_POOL_MIN = 1
-_POOL_MAX = 10
-_POOL_TIMEOUT_S = 30.0
+# 容量可经环境变量调整：auth/conversation/memory/attachment 四类 store 共享
+# 同一进程级池，流式并发场景下默认 max=10 可能成为瓶颈（表现为 checkout 等
+# 满 30s 后报错）。部署侧可按并发规模上调（如 PG_POOL_MAX=20）。
+_POOL_MIN = max(int(os.environ.get("PG_POOL_MIN", "1")), 1)
+_POOL_MAX = max(int(os.environ.get("PG_POOL_MAX", "10")), _POOL_MIN)
+_POOL_TIMEOUT_S = max(float(os.environ.get("PG_POOL_TIMEOUT_S", "30")), 1.0)
 
 _lock = threading.Lock()
 _pools: dict[str, Any] = {}

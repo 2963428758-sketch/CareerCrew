@@ -63,3 +63,41 @@ def test_shared_pool_receives_normalized_dsn(monkeypatch):
     b = pg_pool.get_shared_pool("postgresql://u:p@h/db")
     assert a is b
     assert created == ["postgresql://u:p@h/db"]
+
+
+def test_pool_capacity_env_overrides(monkeypatch):
+    """PG_POOL_MIN/MAX/TIMEOUT_S 环境变量调整池容量（auth/conversation/memory/
+    attachment 四 store 共享单池，部署侧需按并发规模上调）。"""
+    import importlib
+
+    import careercrew_core.pg_pool as pg_pool
+
+    monkeypatch.setenv("PG_POOL_MIN", "2")
+    monkeypatch.setenv("PG_POOL_MAX", "25")
+    monkeypatch.setenv("PG_POOL_TIMEOUT_S", "10")
+    mod = importlib.reload(pg_pool)
+    try:
+        assert mod._POOL_MIN == 2
+        assert mod._POOL_MAX == 25
+        assert mod._POOL_TIMEOUT_S == 10.0
+    finally:
+        monkeypatch.delenv("PG_POOL_MIN", raising=False)
+        monkeypatch.delenv("PG_POOL_MAX", raising=False)
+        monkeypatch.delenv("PG_POOL_TIMEOUT_S", raising=False)
+        importlib.reload(pg_pool)
+
+
+def test_pool_max_never_below_min(monkeypatch):
+    import importlib
+
+    import careercrew_core.pg_pool as pg_pool
+
+    monkeypatch.setenv("PG_POOL_MIN", "5")
+    monkeypatch.setenv("PG_POOL_MAX", "3")  # 非法：max < min -> 抬到 min
+    mod = importlib.reload(pg_pool)
+    try:
+        assert mod._POOL_MAX == 5 == mod._POOL_MIN
+    finally:
+        monkeypatch.delenv("PG_POOL_MIN", raising=False)
+        monkeypatch.delenv("PG_POOL_MAX", raising=False)
+        importlib.reload(pg_pool)
