@@ -207,8 +207,15 @@ def test_reset_password_and_change_own_password(auth_client):
     )
     assert reset.status_code == 200 and reset.json() == {"ok": True}
     assert auth_client.post("/api/auth/token", json={"username": "member", "password": USER_PASSWORD}).status_code == 401
-    member_token = auth_client.post("/api/auth/token", json={"username": "member", "password": "another-password-456"}).json()["access_token"]
+    member_login = auth_client.post(
+        "/api/auth/token", json={"username": "member", "password": "another-password-456"}
+    )
+    assert member_login.status_code == 200
+    assert member_login.json()["user"]["must_change_password"] is False
+    member_token = member_login.json()["access_token"]
     member_headers = {"Authorization": f"Bearer {member_token}"}
+    # 自定义重置密码不触发强制改密门禁，业务 API 可直接访问。
+    assert auth_client.get("/api/knowledge/upload/no-such-job", headers=member_headers).status_code == 404
 
     change = auth_client.post(
         "/api/auth/password",
@@ -222,6 +229,35 @@ def test_reset_password_and_change_own_password(auth_client):
     fresh_headers = {"Authorization": f"Bearer {fresh_token}"}
     # 普通用户不能调用管理端点
     assert auth_client.get("/api/auth/users", headers=fresh_headers).status_code == 403
+
+
+@pytest.mark.web
+def test_reset_to_default_password_still_requires_change(auth_client):
+    _bootstrap(auth_client)
+    admin_headers = {"Authorization": f"Bearer {auth_client.post('/api/auth/token', json={'username': 'admin', 'password': PASSWORD}).json()['access_token']}"}
+    member_id = auth_client.post(
+        "/api/auth/users",
+        json={"username": "default-reset", "password": USER_PASSWORD},
+        headers=admin_headers,
+    ).json()["id"]
+
+    reset = auth_client.post(
+        f"/api/auth/users/{member_id}/reset-password",
+        json={"password": None},
+        headers=admin_headers,
+    )
+    assert reset.status_code == 200 and reset.json() == {"ok": True}
+    assert auth_client.post(
+        "/api/auth/token", json={"username": "default-reset", "password": USER_PASSWORD}
+    ).status_code == 401
+
+    login = auth_client.post(
+        "/api/auth/token", json={"username": "default-reset", "password": "123456"}
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert auth_client.get("/api/knowledge/upload/no-such-job", headers=headers).status_code == 403
 
 
 @pytest.mark.web

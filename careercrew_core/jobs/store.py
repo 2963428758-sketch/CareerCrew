@@ -9,12 +9,163 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 _DEFAULT_MAX_AGE_DAYS = 7.0
+_QUERY_PREFIXES = ("我想找", "想找", "帮我找", "我要找", "求职", "找")
+_QUERY_SUFFIXES = ("工作", "岗位", "职位", "机会", "一下", "的", "相关")
+_TEXT_ALIASES = (("老师", "教师"), ("教员", "教师"))
+_LOCATION_NAMES = {
+    "北京", "上海", "广州", "深圳", "天津", "重庆", "杭州", "南京", "苏州",
+    "成都", "武汉", "西安", "长沙", "郑州", "青岛", "厦门", "福州", "合肥",
+    "济南", "宁波", "东莞", "佛山", "珠海", "无锡", "常州", "昆明", "南宁",
+    "海口", "贵阳", "南昌", "太原", "石家庄", "沈阳", "大连", "长春",
+    "哈尔滨", "兰州", "西宁", "银川", "拉萨", "乌鲁木齐", "呼和浩特",
+    "香港", "澳门",
+}
+# 用于拆开常见中文复合方向，例如“小学数学教师” -> 小学 / 数学 / 教师。
+_CORE_HINTS = (
+    "数据分析", "产品经理", "大模型", "软件测试", "小学", "初中", "高中",
+    "幼儿", "学前", "数学", "语文", "英语", "物理", "化学", "生物", "地理",
+    "历史", "音乐", "美术", "体育", "教师", "教育", "前端", "后端", "全栈",
+    "算法", "运维", "测试", "开发", "工程师", "产品", "运营", "设计", "销售",
+    "会计", "财务", "人事", "行政", "客服", "采购", "外贸", "医生", "护士",
+    "律师", "翻译", "实习",
+)
+_GENERIC_CORE_TERMS = {"实习", "开发", "工程师"}
+
+
+@dataclass(frozen=True)
+class JobSearchQuery:
+    """岗位检索结构：职业词负责召回，地点词只负责过滤。"""
+
+    core_terms: tuple[str, ...]
+    location_terms: tuple[str, ...]
+
+
+def _normalize_text(text: str) -> str:
+    normalized = (text or "").strip().lower()
+    for old, new in _TEXT_ALIASES:
+        normalized = normalized.replace(old, new)
+    return normalized
+
+
+def _append_unique(items: list[str], value: str) -> None:
+    if value and value not in items:
+        items.append(value)
+
+
+def parse_job_search_query(keyword: str) -> JobSearchQuery:
+    """解析自然语言岗位查询，地点永远不会被当成职业相关性命中。"""
+    chunks = re.findall(r"[A-Za-z0-9+#.]+|[\u4e00-\u9fff]+", keyword or "")
+    core_terms: list[str] = []
+    location_terms: list[str] = []
+    locations_by_length = sorted(_LOCATION_NAMES, key=len, reverse=True)
+    for chunk in chunks:
+        term = _normalize_text(chunk)
+        for prefix in _QUERY_PREFIXES:
+            if term.startswith(prefix):
+                term = term[len(prefix):]
+                break
+        changed = True
+        while changed and term:
+            changed = False
+            for suffix in _QUERY_SUFFIXES:
+                if term.endswith(suffix) and len(term) > len(suffix):
+                    term = term[:-len(suffix)]
+                    changed = True
+                    break
+        if not term:
+            continue
+
+        location_candidate = term[1:] if term.startswith("在") else term
+        if (
+            location_candidate in _LOCATION_NAMES
+            or location_candidate.endswith(("市", "区", "县"))
+        ):
+            _append_unique(location_terms, location_candidate.removesuffix("市"))
+            continue
+
+        # 兼容“广州或深圳”“广州小学教师”“教师在广州”等未加空格写法。
+        found_locations = sorted(
+            (
+                location for location in locations_by_length
+                if location in location_candidate
+            ),
+            key=lambda location: (location_candidate.index(location), -len(location)),
+        )
+        if found_locations:
+            remainder = location_candidate
+            for location in found_locations:
+                _append_unique(location_terms, location)
+                remainder = remainder.replace(location, "")
+            term = re.sub(r"^(?:在|的|或|和|及|与)+|(?:在|的|或|和|及|与)+$", "", remainder)
+        if not term:
+            continue
+
+        hints = [hint for hint in _CORE_HINTS if hint in term]
+        if hints:
+            for hint in hints:
+                _append_unique(core_terms, hint)
+        else:
+            _append_unique(core_terms, term)
+    return JobSearchQuery(tuple(core_terms), tuple(location_terms))
+
+
+def _search_terms(keyword: str) -> list[str]:
+    """兼容旧调用：返回职业词在前、地点词在后的扁平列表。"""
+    query = parse_job_search_query(keyword)
+    return [*query.core_terms, *query.location_terms]
+
+
+def _job_match(row: dict, query: JobSearchQuery) -> tuple[int, list[str], list[str]]:
+    """返回匹配分与命中词；0 表示不满足职业/地点硬条件。"""
+    core_haystack = _normalize_text(" ".join((
+        str(row.get("title") or ""),
+        str(row.get("company") or ""),
+        str(row.get("jd") or row.get("raw") or ""),
+        str(row.get("experience") or ""),
+    )))
+    city_haystack = _normalize_text(str(row.get("city") or ""))
+    matched_core = [term for term in query.core_terms if term in core_haystack]
+    required_core = [
+        term for term in query.core_terms if term not in _GENERIC_CORE_TERMS
+    ] or list(query.core_terms)
+    matched_required = [term for term in required_core if term in core_haystack]
+    matched_locations = [
+        term for term in query.location_terms if term in city_haystack
+    ]
+    if required_core and not matched_required:
+        return 0, [], matched_locations
+    if query.location_terms and not matched_locations:
+        return 0, matched_core, []
+    # 职业相关性权重大于地点；精确岗位会自然排在宽泛相关岗位前。
+    score = len(matched_core) * 10 + len(matched_locations)
+    return max(score, 1), matched_core, matched_locations
+
+
+def rank_job_matches(
+    jobs: list[dict], query: JobSearchQuery, top_k: int
+) -> list[dict]:
+    """缓存与实时平台共用的确定性过滤/排序，阻断跨职业脏结果。"""
+    if not query.core_terms or top_k <= 0:
+        return []
+    scored: list[tuple[int, str, dict]] = []
+    for row in jobs:
+        score, matched_core, matched_locations = _job_match(row, query)
+        if not score:
+            continue
+        enriched = dict(row)
+        enriched["matched_core_terms"] = matched_core
+        enriched["matched_location_terms"] = matched_locations
+        scored.append((score, str(row.get("crawled_at") or ""), enriched))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [row for _, _, row in scored[:top_k]]
 
 
 def job_fingerprint(source: str, title: str, company: str, city: str) -> str:
@@ -71,17 +222,16 @@ class FakeJobsStore(JobsStore):
             return len(jobs)
 
     def search(self, keyword: str, top_k: int = 8, max_age_days: float = _DEFAULT_MAX_AGE_DAYS) -> list[dict]:
-        kw = keyword.lower()
+        query = parse_job_search_query(keyword)
+        if not query.core_terms or top_k <= 0:
+            return []
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
         with self._lock:
-            hits = [
-                r for r in self._rows.values()
-                if kw in r["title"].lower()
-                or kw in r["company"].lower()
-                or kw in r["jd"].lower()
-                or keyword in r["keywords"]
+            rows = [
+                row for row in self._rows.values()
+                if datetime.fromisoformat(row["crawled_at"]) > cutoff
             ]
-        hits.sort(key=lambda r: r["crawled_at"], reverse=True)
-        return hits[:top_k]
+        return rank_job_matches(rows, query, top_k)
 
 
 class PostgresJobsStore(JobsStore):
@@ -155,23 +305,53 @@ class PostgresJobsStore(JobsStore):
         return len(jobs)
 
     def search(self, keyword: str, top_k: int = 8, max_age_days: float = _DEFAULT_MAX_AGE_DAYS) -> list[dict]:
-        like = f"%{keyword}%"
+        query = parse_job_search_query(keyword)
+        if not query.core_terms or top_k <= 0:
+            return []
+        core_patterns = [f"%{term}%" for term in query.core_terms]
+        required_core = [
+            term for term in query.core_terms if term not in _GENERIC_CORE_TERMS
+        ] or list(query.core_terms)
+        required_patterns = [f"%{term}%" for term in required_core]
+        location_patterns = [f"%{term}%" for term in query.location_terms]
+        core_text = (
+            "replace(replace(lower(concat_ws(' ', title, company, jd, experience)), "
+            "'老师', '教师'), '教员', '教师')"
+        )
+        clauses = ["crawled_at > now() - (%s * interval '1 day')"]
+        params: list = [max_age_days]
+        if required_patterns:
+            clauses.append("(" + " OR ".join(f"{core_text} LIKE %s" for _ in required_patterns) + ")")
+            params.extend(required_patterns)
+        if location_patterns:
+            clauses.append("(" + " OR ".join("lower(city) LIKE %s" for _ in location_patterns) + ")")
+            params.extend(location_patterns)
+        score_parts = [
+            f"CASE WHEN {core_text} LIKE %s THEN 10 ELSE 0 END"
+            for _ in core_patterns
+        ]
+        score_params: list = list(core_patterns)
+        score_parts.extend(
+            "CASE WHEN lower(city) LIKE %s THEN 1 ELSE 0 END"
+            for _ in location_patterns
+        )
+        score_params.extend(location_patterns)
+        score_sql = " + ".join(score_parts) or "0"
         with self._borrow() as conn:
             self._prepare(conn)
             rows = conn.execute(
                 "SELECT fingerprint, url, title, company, city, salary, experience, jd, "
                 "keywords, source, crawled_at FROM jobs "
-                "WHERE crawled_at > now() - (%s * interval '1 day') "
-                "AND (title ILIKE %s OR company ILIKE %s OR jd ILIKE %s OR %s = ANY(keywords)) "
-                "ORDER BY crawled_at DESC LIMIT %s",
-                (max_age_days, like, like, like, keyword, top_k),
+                f"WHERE {' AND '.join(clauses)} "
+                f"ORDER BY ({score_sql}) DESC, crawled_at DESC LIMIT %s",
+                (*params, *score_params, max(top_k * 4, top_k)),
             ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
             d["crawled_at"] = d["crawled_at"].isoformat() if hasattr(d["crawled_at"], "isoformat") else d["crawled_at"]
             out.append(d)
-        return out
+        return rank_job_matches(out, query, top_k)
 
 
 def create_jobs_store(settings):

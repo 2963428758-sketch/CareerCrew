@@ -212,7 +212,9 @@ class AuthService:
         if new_password:
             validate_password_policy(new_password)
         self.store.update_password_hash(user_id, self.password_hasher.hash(reset_to))
-        self.store.set_must_change_password(user_id, True)
+        # 只有回退到系统默认密码时才要求用户首次登录后改密。管理员明确设置的
+        # 合规自定义密码可直接使用，避免用户登录后再重复修改一次。
+        self.store.set_must_change_password(user_id, not bool(new_password))
         self.store.bump_token_version(user_id)
         self.store.revoke_all_refresh_sessions(user_id)
         self._audit(actor["id"], "user.reset_password", user_id, {})

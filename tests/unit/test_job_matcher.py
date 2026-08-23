@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from careercrew_core.agents.job_matcher import (
     JobMatcher,
     extract_profile_from_intent,
+    prompt_source,
     score_jd_match,
 )
 from careercrew_core.memory.db import FakeMemoryDb
@@ -92,3 +93,38 @@ def test_job_matcher_writes_job_match() -> None:
     # job_match 已写入 episodic
     entries = episodic._read_all()
     assert any(e.type == "job_match" and e.content["company"] == "字节" for e in entries)
+
+
+def test_job_matcher_only_streams_final_answer() -> None:
+    chunks: list[str] = []
+    llm = FakeChatModel([
+        AIMessage(
+            content="让我先搜索一下：",
+            tool_calls=[_tc("search_jobs", {"direction": "Java", "top_k": 1}, "c1")],
+        ),
+        AIMessage(content="## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"),
+    ])
+    agent = JobMatcher(
+        llm=llm,
+        tools=[search_jobs],
+        max_iterations=3,
+        stream_callback=chunks.append,
+    )
+    state = {
+        "thread_id": "t1", "user_id": "u1", "stage": "match", "user_intent": "Java",
+        "messages": [HumanMessage(content="Java")], "pending_action": None,
+        "agent_outputs": {}, "target_companies": [],
+    }
+    agent.run(state)
+    assert "".join(chunks) == "## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"
+    assert agent.last_result.content == "## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"
+
+
+def test_job_matcher_prompt_requires_company_and_source_fidelity() -> None:
+    prompt = prompt_source()
+    assert "source_label" in prompt
+    assert "不得把城市、区、商圈或职位名当作公司" in prompt
+    assert "不要声称能调用简历顾问" in prompt
+    assert "retrieval_mode_label" in prompt
+    assert "不要只传“广州”或“教师”" in prompt
+    assert "不得把 `retrieval_mode=cache` 描述成" in prompt

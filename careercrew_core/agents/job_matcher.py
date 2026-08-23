@@ -120,4 +120,5 @@ class JobMatcher(BaseAgent):
             history_loader=history_loader,
             compaction=compaction,
             hitl_requires=hitl_requires,
+            include_tool_call_text=False,
         )

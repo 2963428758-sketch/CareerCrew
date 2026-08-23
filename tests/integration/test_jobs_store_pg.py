@@ -69,7 +69,37 @@ def test_search_recall_paths(store) -> None:
     assert len(store.search("java")) == 1  # title ILIKE 大小写无关
     assert len(store.search("腾讯")) == 1  # company 命中
     titles = [h["title"] for h in store.search("大模型")]
-    assert "大模型应用工程师" in titles and "算法实习生" in titles  # title + keywords 双路召回
+    assert titles == ["大模型应用工程师"]
+
+
+def test_teacher_query_requires_profession_and_city(store) -> None:
+    store.upsert([
+        _job("小学数学教师", company="广州实验小学", city="广州·天河区"),
+        _job("小学英语老师", company="广州双语学校", city="广州·番禺区"),
+        _job("Java 开发实习生", company="科技公司", city="广州·天河区"),
+        _job("小学数学教师", company="深圳实验小学", city="深圳·南山区"),
+    ], "混合岗位")
+
+    hits = store.search("小学数学教师 广州")
+    assert hits[0]["title"] == "小学数学教师"
+    assert all("Java" not in row["title"] for row in hits)
+    assert all(row["city"].startswith("广州") for row in hits)
+
+
+def test_location_only_match_is_not_a_cache_hit(store) -> None:
+    store.upsert([_job("Java 开发实习生", city="广州")], "Java 广州")
+    assert store.search("小学数学教师 广州") == []
+
+
+def test_teacher_alias_and_exact_match_ranking(store) -> None:
+    store.upsert([
+        _job("小学英语教师", city="广州"),
+        _job("高中数学教师", city="广州"),
+        _job("小学数学老师", city="广州"),
+    ], "教师 广州")
+    hits = store.search("小学数学教师 广州")
+    assert hits[0]["title"] == "小学数学老师"
+    assert hits[0]["matched_core_terms"] == ["小学", "数学", "教师"]
 
 
 def test_freshness_window_excludes_stale(store) -> None:

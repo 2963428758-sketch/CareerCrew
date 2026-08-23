@@ -11,6 +11,7 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urljoin
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
@@ -107,14 +108,40 @@ def _parse_structured(rj: dict) -> dict:
     """结构化 job 字段（title/salary/company/address）直接取用。"""
     title = (rj.get("title") or "").strip()
     salary = (rj.get("salary") or "").strip()
+    company = (
+        rj.get("company") or rj.get("companyName") or rj.get("company_name") or ""
+    ).strip()
+    tags = rj.get("tags") if isinstance(rj.get("tags"), list) else []
+    experience = next(
+        (
+            str(tag).strip()
+            for tag in tags
+            if re.search(r"(?:\d+[-~]?\d*年|经验不限|在校|应届)", str(tag))
+        ),
+        "",
+    )
+    detail = (
+        rj.get("jobDetail")
+        or rj.get("jobUrl")
+        or rj.get("job_url")
+        or rj.get("url")
+        or rj.get("link")
+        or ""
+    ).strip()
+    url = urljoin("https://www.liepin.com", detail)
+    raw = " ".join(
+        part for part in (title, company, " ".join(map(str, tags))) if part
+    )
     return {
         "title": title,
+        "company": company,
         "city": (rj.get("address") or rj.get("city") or "").strip(),
         "salary": salary,
         "salary_k": parse_salary_range(salary),
-        "experience": "",
-        "raw": title[:300],
-        "source": "mcp-jobs",
+        "experience": experience,
+        "raw": raw[:500],
+        "url": url,
+        "source": "liepin",
     }
 
 
@@ -152,10 +179,13 @@ def _parse_content(content: str) -> dict:
 
     return {
         "title": title,
+        # fallback 文本没有可靠字段边界，宁可留空也不把地区/行业猜成公司名
+        "company": "",
         "city": city,
         "salary": salary,
         "salary_k": parse_salary_range(salary),
         "experience": exp,
         "raw": content[:300],
-        "source": "mcp-jobs",
+        "url": "",
+        "source": "liepin",
     }

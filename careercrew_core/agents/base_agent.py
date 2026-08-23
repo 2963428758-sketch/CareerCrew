@@ -36,6 +36,7 @@ class BaseAgent:
         history_loader=None,   # 可选: Callable[[str, str], list]（user_id, thread_id）-> 历史消息
         compaction=None,       # 可选: dict(token_threshold_ratio/retention_tokens/max_summary_chunk_tokens)
         hitl_requires: set[str] | None = None,  # T3.5：本轮需 HITL 确认的工具名集合
+        include_tool_call_text: bool = True,  # False 时只向用户展示无工具调用的最终回答
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
@@ -45,6 +46,7 @@ class BaseAgent:
         self.stream_callback = stream_callback
         self.memory_injector = memory_injector
         self.history_loader = history_loader
+        self.include_tool_call_text = include_tool_call_text
         extra_middleware = []
         if compaction is not None:
             from careercrew_ai.agents.langchain_agent import ContextCompactionMiddleware
@@ -101,7 +103,11 @@ class BaseAgent:
 
                 messages = [SystemMessage(content=preamble)] + messages
         result = run_agent(
-            self.agent, messages, self.stream_callback, self.max_iterations
+            self.agent,
+            messages,
+            self.stream_callback,
+            self.max_iterations,
+            include_tool_call_text=self.include_tool_call_text,
         )
         self.last_result = result
         return self._build_update(result)

@@ -297,7 +297,7 @@ class ToolsAgentsMixin:
         return JobMatcher(
             llm=self.llm, tools=self._make_tools("matcher", episodic=episodic, allowed=allowed,
                                                   forced_doc_ids=forced_doc_ids),
-            max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
+            max_iterations=8, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
             compaction=self._compaction_kwargs() or None,
             hitl_requires=hitl_requires,

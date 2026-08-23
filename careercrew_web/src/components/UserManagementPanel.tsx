@@ -109,7 +109,9 @@ export function UserManagementPanel() {
         body: JSON.stringify({ password: next === "" ? null : next }),
       })
       if (!resp.ok) return await apiErrorText(resp, "重置密码失败，请重试")
-      notifySuccess("密码已重置（下次登录需修改密码），该用户所有会话已失效")
+      notifySuccess(next === ""
+        ? "密码已重置为默认密码（下次登录需修改），该用户所有会话已失效"
+        : "密码已重置，该用户可直接使用新密码登录，原有会话已失效")
     } catch (e) {
       return networkErrorText(e, "网络连接失败，请检查网络后重试")
     }

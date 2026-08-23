@@ -356,7 +356,7 @@ def reset_password(
     admin: Annotated[dict[str, str], Depends(require_admin)],
     auth: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, bool]:
-    """管理员重置密码：留空则重置为默认 123456；无论哪种，下次登录强制改密。"""
+    """管理员重置密码：留空使用默认 123456 并强制改密；自定义密码可直接使用。"""
     try:
         auth.admin_reset_password(admin, user_id, request.password)
     except SelfAdminError as err:

@@ -7,7 +7,11 @@ from __future__ import annotations
 import importlib
 import json
 
-from careercrew_core.tools.browser.boss_search import _looks_blocked, parse_job_cards
+from careercrew_core.tools.browser.boss_search import (
+    _decode_salary,
+    _looks_blocked,
+    parse_job_cards,
+)
 from careercrew_core.tools.browser.throttle import gauss_delay_ms
 from careercrew_core.tools.internal.search_jobs import make_search_jobs_tool
 
@@ -100,6 +104,16 @@ def test_parse_job_cards_relative_href_and_dirty_drop() -> None:
     assert len(jobs) == 1
 
 
+def test_decode_boss_private_font_salary_digits() -> None:
+    assert _decode_salary("\ue032\ue031-\ue032\ue036K") == "10-15K"
+    assert _decode_salary("\ue032\ue031\ue031\ue031-\ue034\ue031\ue031\ue031元/月") == "1000-3000元/月"
+    assert _decode_salary("25-35K") == "25-35K"
+
+
+def test_unknown_private_salary_char_degrades_without_guessing() -> None:
+    assert _decode_salary("\ue100-\ue101K") == "薪资请打开岗位链接查看"
+
+
 def test_gauss_delay_clamped(monkeypatch) -> None:
     monkeypatch.setattr("random.gauss", lambda mu, sigma: -999.0)
     assert gauss_delay_ms() == 300          # 下界 clamp
@@ -140,7 +154,7 @@ def test_search_jobs_falls_back_to_mcp_when_boss_disabled(monkeypatch) -> None:
 
     monkeypatch.setattr(
         sj_mod, "search_jobs_mcp",
-        lambda d, top_k=8: (calls.__setitem__("mcp", calls["mcp"] + 1) or [
+        lambda d, top_k=8, timeout=180.0: (calls.__setitem__("mcp", calls["mcp"] + 1) or [
             {"title": t, "company": "C", "city": "北京", "salary": "20K",
              "experience": "", "jd": "", "url": "", "source": "liepin"}
             for t in ("Java 工程师",)
@@ -152,27 +166,32 @@ def test_search_jobs_falls_back_to_mcp_when_boss_disabled(monkeypatch) -> None:
     assert out[0]["title"] == "Java 工程师"
 
 
-def test_search_jobs_boss_first_then_mcp_fallback(monkeypatch) -> None:
+def test_search_jobs_combines_boss_and_liepin(monkeypatch) -> None:
     store = FakeStore()
     mcp_calls = {"n": 0}
 
     def boss_ok(direction, top_k=8, cdp_url="", city="", pause=True):
-        return [{"title": f"Boss岗{i}", "company": "B", "city": "上海", "salary": "30K",
+        return [{"title": f"Boss大模型应用岗{i}", "company": "B", "city": "上海", "salary": "30K",
                  "experience": "", "jd": "", "url": f"https://www.zhipin.com/job{i}",
                  "source": "boss"} for i in range(top_k)]
 
-    def mcp_fail(direction, top_k=8):
+    def mcp_ok(direction, top_k=8, timeout=180.0):
         mcp_calls["n"] += 1
-        raise RuntimeError("mcp down")
+        return [{"title": "猎聘大模型应用岗", "company": "L", "city": "上海", "salary": "20K",
+                 "experience": "", "jd": "", "url": "https://www.liepin.com/job/1",
+                 "source": "liepin"}]
 
     monkeypatch.setattr(boss_mod, "search_boss_jobs", boss_ok)
-    monkeypatch.setattr(sj_mod, "search_jobs_mcp", mcp_fail)
+    monkeypatch.setattr(sj_mod, "search_jobs_mcp", mcp_ok)
 
     tool = make_search_jobs_tool(store, boss_cdp_url="http://127.0.0.1:9222")
     out = json.loads(tool.invoke({"direction": "大模型应用", "top_k": 2}))
-    assert len(out) == 2 and out[0]["title"] == "Boss岗0"
-    assert mcp_calls["n"] == 0                       # Boss 成功即不降级
-    assert [j["title"] for j in store.upserted] == ["Boss岗0", "Boss岗1"]  # 结果入库
+    assert [job["title"] for job in out] == ["Boss大模型应用岗0", "猎聘大模型应用岗"]
+    assert [job["source_label"] for job in out] == ["Boss直聘", "猎聘"]
+    assert mcp_calls["n"] == 1
+    assert [j["title"] for j in store.upserted] == [
+        "Boss大模型应用岗0", "猎聘大模型应用岗",
+    ]
 
 
 def test_search_jobs_boss_failure_degrades_to_mcp(monkeypatch) -> None:
@@ -182,9 +201,9 @@ def test_search_jobs_boss_failure_degrades_to_mcp(monkeypatch) -> None:
     monkeypatch.setattr(boss_mod, "search_boss_jobs", boss_fail)
     monkeypatch.setattr(
         sj_mod, "search_jobs_mcp",
-        lambda d, top_k=8: [{"title": "猎聘岗", "company": "L", "city": "深圳", "salary": "18K",
+        lambda d, top_k=8, timeout=180.0: [{"title": "猎聘数据分析岗", "company": "L", "city": "深圳", "salary": "18K",
                              "experience": "", "jd": "", "url": "", "source": "liepin"}],
     )
     tool = make_search_jobs_tool(None, boss_cdp_url="http://127.0.0.1:9222")
     out = json.loads(tool.invoke({"direction": "数据分析"}))
-    assert out[0]["title"] == "猎聘岗"
+    assert out[0]["title"] == "猎聘数据分析岗"

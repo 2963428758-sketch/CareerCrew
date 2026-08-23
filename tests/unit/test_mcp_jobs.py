@@ -42,13 +42,20 @@ def test_parse_content_extracts_salary_with_months() -> None:
 def test_parse_response_prefers_structured_fields() -> None:
     text = (
         '{"jobs": ['
-        '{"title": "大模型工程师", "salary": "30-50k", "company": "某公司", "address": "北京"},'
+        '{"title": "大模型工程师", "salary": "30-50k", "company": "某公司", '
+        '"address": "北京", "tags": ["1-3年", "本科"], '
+        '"jobDetail": "/a/123.html"},'
         '{"content": "电话客服【重庆-南岸区】5-9k经验不限重庆某公司"}'
         "]}"
     )
     jobs = _parse_response(text, 10)
     assert jobs[0]["title"] == "大模型工程师"
     assert jobs[0]["salary"] == "30-50k"
+    assert jobs[0]["company"] == "某公司"
+    assert jobs[0]["experience"] == "1-3年"
+    assert jobs[0]["url"] == "https://www.liepin.com/a/123.html"
+    assert jobs[0]["source"] == "liepin"
     assert jobs[0]["salary_k"] == {"min_k": 30.0, "max_k": 50.0, "months": None}
     assert jobs[1]["title"] == "电话客服"
+    assert jobs[1]["company"] == ""
     assert jobs[1]["salary_k"] == {"min_k": 5.0, "max_k": 9.0, "months": None}

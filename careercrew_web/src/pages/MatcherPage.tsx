@@ -42,6 +42,7 @@ export default function MatcherPage() {
   const attachRef = useRef<AttachmentPickerHandle>(null)
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [messages, setMessages] = useState<MatcherMessage[]>([])
+  const [progressPhase, setProgressPhase] = useState(0)
   const currentThreadId = useThreadStore((s) => s.currentThreadByModule.matcher)
   // 会话标题：首条消息后由 touchThread 落库，展示在 Header 左侧
   const threadTitle = useThreadStore((s) =>
@@ -55,6 +56,28 @@ export default function MatcherPage() {
   const { scrollRef, showJumpToLatest, jumpToLatest } = useChatScroll([stream.streamingText, messages])
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
   const meta = AGENT_META.job_matcher
+  const progressText = [
+    "正在读取求职条件…",
+    "正在查询近期岗位缓存…",
+    "正在综合检索 Boss直聘与猎聘…",
+    "正在核对公司、地区与来源…",
+    "正在整理匹配报告…",
+  ][progressPhase]
+
+  useEffect(() => {
+    if (stream.status !== "streaming") {
+      setProgressPhase(0)
+      return
+    }
+    setProgressPhase(0)
+    const timers = [
+      window.setTimeout(() => setProgressPhase(1), 2500),
+      window.setTimeout(() => setProgressPhase(2), 6500),
+      window.setTimeout(() => setProgressPhase(3), 18000),
+      window.setTimeout(() => setProgressPhase(4), 30000),
+    ]
+    return () => timers.forEach(window.clearTimeout)
+  }, [stream.status])
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -168,7 +191,7 @@ export default function MatcherPage() {
       <ConversationHeader
         parent="职位匹配"
         title={threadTitle ?? "新对话"}
-        subtitle="输入求职方向，匹配官检索岗位"
+        subtitle="综合检索 Boss直聘与猎聘岗位"
         threadId={currentThreadId}
         onNew={handleNew}
         onSearch={search.openSearch}
@@ -207,7 +230,9 @@ export default function MatcherPage() {
                   <>
                     输入求职方向与背景后，
                     <br />
-                    匹配官会搜索猎聘真实岗位并评估匹配度。
+                    匹配官会综合检索 Boss直聘与猎聘岗位，
+                    <br />
+                    并在结果中标注来源。
                   </>
                 }
                 accent={<AgentDots colors={["#0D9488", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
@@ -244,8 +269,8 @@ export default function MatcherPage() {
                           completed={!asstStreaming}
                           thinking={stream.thinking}
                           initializing={asstStreaming && initializing}
-                          initText="匹配官正在检索岗位"
-                          workingText="正在检索岗位…"
+                          initText={progressText}
+                          workingText={progressText}
                           versionSwitcher={<VersionSwitcher
                             index={selectedVersion + 1}
                             total={versions.length}
@@ -286,7 +311,7 @@ export default function MatcherPage() {
             streaming={lastIsStreaming}
             onStop={() => stopStream(currentThreadId)}
             placeholder="输入求职方向与背景，匹配官将自动检索岗位"
-            hint="匹配官会搜索猎聘真实岗位并评估匹配度"
+            hint="综合检索 Boss直聘与猎聘岗位，并在结果中标注来源"
             toolbar
             onAddAttachment={() => attachRef.current?.pick()}
             attachments={<AttachmentPicker ref={attachRef} embedded threadId={currentThreadId} disabled={lastIsStreaming} onAttachmentsChange={setAttachments} />}

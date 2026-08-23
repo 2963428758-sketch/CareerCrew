@@ -428,6 +428,7 @@ def run_agent(
     messages: list[BaseMessage],
     stream_callback=None,
     max_iterations: int = 10,
+    include_tool_call_text: bool = True,
 ) -> AgentResult:
     """驱动图并聚合 AgentResult。
 
@@ -443,6 +444,7 @@ def run_agent(
     max_reached = False
     failed = False
     stop_content = ""
+    pending_model_chunks: list[str] = []
 
     try:
         stream = agent.stream(
@@ -464,8 +466,10 @@ def run_agent(
                         max_reached = True
                         continue
                     text = _msg_text(msg)
-                    if text and stream_callback:
+                    if text and stream_callback and include_tool_call_text:
                         stream_callback(text)
+                    elif text and stream_callback:
+                        pending_model_chunks.append(text)
             else:
                 # updates：model 节点 -> 一轮迭代；tools 节点 -> 工具调用数
                 if "model" in payload:
@@ -485,6 +489,10 @@ def run_agent(
                             )
                         )
                         last_iter_idx = len(iterations) - 1
+                        if not include_tool_call_text and stream_callback:
+                            if not m.tool_calls and pending_model_chunks:
+                                stream_callback("".join(pending_model_chunks))
+                            pending_model_chunks.clear()
                 if "tools" in payload:
                     tool_msgs = (payload.get("tools") or {}).get("messages") or []
                     for m in tool_msgs:
@@ -502,7 +510,13 @@ def run_agent(
         # 多轮 ReAct 的最终可见内容 = 全部非空模型文本按序拼接（与流式回调
         # 所见一致）。常见形态：报告正文 -> memory_write/profile_update 收尾
         # 工具 -> 一句收尾语；若只取 iterations[-1] 会把正文丢得只剩一句。
-        texts = [it.content.strip() for it in iterations if it.content and it.content.strip()]
+        texts = [
+            it.content.strip()
+            for it in iterations
+            if it.content
+            and it.content.strip()
+            and (include_tool_call_text or not it.tool_calls)
+        ]
         content = "\n\n".join(texts)
     if failed:
         stopped_reason = "error"

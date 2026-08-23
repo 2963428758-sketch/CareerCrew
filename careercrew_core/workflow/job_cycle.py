@@ -65,23 +65,6 @@ class JobCycle:
         # 标注为历史画像：与用户最新消息冲突时以最新消息为准（避免旧画像带偏方向）
         return "[用户画像]（历史存档；若与用户最新消息冲突，一律以用户最新消息为准）\n" + "\n".join(parts)
 
-    def _sync_profile_from_intent(self, intent: str) -> None:
-        """用户最新消息里的明确字段优先：提取并刷新画像，历史画像不再带偏方向/技能。"""
-        if self._user_model_store is None:
-            return
-        llm = getattr(self.job_matcher, "llm", None)
-        if llm is None:
-            return
-        from careercrew_core.agents.job_matcher import extract_profile_from_intent
-
-        fields = extract_profile_from_intent(llm, intent)
-        if not fields:
-            return
-        try:
-            self._user_model_store.update(self._user_id, fields)
-        except Exception:
-            pass  # 刷新失败不阻塞匹配
-
     def _state(self, stage: str, text: str) -> dict:
         # 有 history_loader 时历史由 BaseAgent 从 episodic 恢复，避免内存累积重复
         msgs = [] if self._history_loader else list(self._messages)
@@ -102,7 +85,8 @@ class JobCycle:
         composed：可选的消息文本覆盖（附加上传文件/引用内容后的完整输入）；
         intent 仍用于画像抽取与记忆记录（保持展示层原话）。
         """
-        self._sync_profile_from_intent(intent)  # 用户最新消息优先, 历史画像不再带偏方向
+        # 画像更新由 JobMatcher 的 profile_update 工具负责；这里不再提前额外调用一次
+        # LLM 做重复抽取，避免用户在看到任何岗位进度前先空等一轮模型响应。
         text = composed or intent
         state = self._state("match", text)
         self.job_matcher.run(state)

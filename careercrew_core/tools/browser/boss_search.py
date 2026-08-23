@@ -14,6 +14,8 @@ from careercrew_core.tools.browser.patterns import BOSS_PATTERNS
 from careercrew_core.tools.browser.throttle import human_pause
 
 logger = logging.getLogger(__name__)
+_BOSS_DIGIT_START = 0xE031
+_BOSS_DIGIT_END = 0xE03A
 
 
 def _text(card: Any, selector: str) -> str:
@@ -25,6 +27,21 @@ def _text(card: Any, selector: str) -> str:
         return (el.inner_text() or "").strip()
     except Exception:
         return ""
+
+
+def _decode_salary(text: str) -> str:
+    """解码 Boss 列表页私有字体数字；未知私有字符不交给模型猜测。"""
+    decoded: list[str] = []
+    unknown_private_char = False
+    for char in text:
+        codepoint = ord(char)
+        if _BOSS_DIGIT_START <= codepoint <= _BOSS_DIGIT_END:
+            decoded.append(str(codepoint - _BOSS_DIGIT_START))
+        else:
+            decoded.append(char)
+            if 0xE000 <= codepoint <= 0xF8FF:
+                unknown_private_char = True
+    return "薪资请打开岗位链接查看" if unknown_private_char else "".join(decoded)
 
 
 def parse_job_cards(cards: list[Any]) -> list[dict]:
@@ -43,7 +60,7 @@ def parse_job_cards(cards: list[Any]) -> list[dict]:
             "title": title,
             "company": _text(card, f["company"]),
             "city": _text(card, f["area"]),
-            "salary": _text(card, f["salary"]),
+            "salary": _decode_salary(_text(card, f["salary"])),
             "experience": " | ".join(exp_parts),
             "jd": "",                      # 列表页无 JD 正文；详情按需再抓（MVP 不做）
             "url": url,

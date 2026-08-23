@@ -94,8 +94,8 @@ def test_job_cycle_injects_profile_preamble() -> None:
     assert any("[用户画像]" in str(m.content) and "Java" in str(m.content) for m in msgs)
 
 
-def test_run_match_syncs_profile_from_intent() -> None:
-    """用户最新消息的明确字段刷新画像：旧方向被新方向覆盖，避免历史画像带偏。"""
+def test_run_match_delegates_profile_update_without_pre_llm_call() -> None:
+    """画像更新交给 matcher 同轮工具调用，JobCycle 不再额外预调一次 LLM。"""
     from careercrew_core.memory.db import FakeMemoryDb
     from careercrew_core.memory.semantic import SemanticFactStore
 
@@ -104,21 +104,26 @@ def test_run_match_syncs_profile_from_intent() -> None:
 
     class FakeLLM:
         def invoke(self, messages, config=None):
-            return type("R", (), {"content": '{"profile.direction": "大模型应用"}'})()
+            raise AssertionError("JobCycle 不应在 matcher 前额外调用 LLM")
 
     class AgentWithLLM:
         def __init__(self):
             self.llm = FakeLLM()
             self.last_result = type("R", (), {"content": "匹配完成"})()
             self.run_calls = 0
+            self.seen = None
 
         def run(self, state):
             self.run_calls += 1
+            self.seen = state
 
-    cycle = JobCycle(AgentWithLLM(), AgentWithLLM(), user_model_store=um, user_id="u1")
+    matcher = AgentWithLLM()
+    cycle = JobCycle(matcher, AgentWithLLM(), user_model_store=um, user_id="u1")
     cycle.run_match("我是大模型应用方向")
-    m = um.load("u1")
-    assert m.profile.direction == "大模型应用"  # 新方向覆盖旧 Java 方向
+    assert matcher.run_calls == 1
+    assert any("我是大模型应用方向" in str(m.content) for m in matcher.seen["messages"])
+    # fake matcher 没执行 profile_update，所以旧画像不应被 JobCycle 私自改写
+    assert um.load("u1").profile.direction == "Java 后端"
 
 
 def test_run_match_keeps_profile_when_no_new_field() -> None:

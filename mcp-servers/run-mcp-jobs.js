@@ -120,4 +120,47 @@ const { jobSearchUrls } = require('mcp-jobs/dist/config/urlConfig');
 jobSearchUrls.length = 0;
 jobSearchUrls.push({ url: 'https://www.liepin.com/zhaopin/', name: 'liepin' });
 
+// 上游猎聘选择器偶尔改版；旧实现只要 title 一个选择器失败，就整卡退化成
+// 无字段边界的 content，导致公司名丢失。这里把各字段改为独立容错抓取。
+const { crawlerConfigs } = require('mcp-jobs/dist/config/crawlerConfig');
+const liepinConfig = crawlerConfigs.find((item) => item.name === 'liepin');
+if (liepinConfig?.rules?.jobInfo) {
+  liepinConfig.rules.jobInfo.handler = async (currentData, value, element) => {
+    const pickText = async (selectors) => {
+      for (const selector of selectors) {
+        try {
+          const text = await element.$eval(selector, (el) => el.textContent?.trim() || '');
+          if (text) return text;
+        } catch (e) {
+          // 当前选择器不存在，继续尝试兼容项
+        }
+      }
+      return '';
+    };
+    const title = await pickText(['.job-title-box .ellipsis-1', '.job-title-box', '.job-title']);
+    const salary = await pickText(['.job-salary', '.salary']);
+    const company = await pickText(['.company-name', '.company-info .ellipsis-1']);
+    const address = await pickText(['.job-dq-box', '.job-address', '.workplace']);
+    let tags = [];
+    try {
+      tags = await element.$$eval(
+        '.job-labels-box span, .company-tags-box span',
+        (elements) => elements.map((el) => el.textContent?.trim() || '').filter(Boolean),
+      );
+    } catch (e) {
+      // 标签不是必填字段
+    }
+    let jobDetail = '';
+    try {
+      jobDetail = await element.$eval('a', (el) => el.getAttribute('href') || '');
+    } catch (e) {
+      // 链接不是必填字段
+    }
+    if (title || salary || company || address) {
+      return { title, salary, company, address, tags, jobDetail };
+    }
+    return { content: (await element.textContent()) || '' };
+  };
+}
+
 require('mcp-jobs/dist/mcp.js');

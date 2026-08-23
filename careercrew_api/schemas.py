@@ -72,7 +72,7 @@ class UserPatchRequest(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，下次登录强制改密
+    password: str | None = Field(default=None, max_length=64)  # 留空=默认 123456，并强制首次改密
 
 
 class UpdateDisplayNameRequest(BaseModel):
