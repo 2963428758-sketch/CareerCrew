@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -183,6 +185,10 @@ def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
         meta = {
             "resume_id": resume_id,
             "user_id": user_id,
+            # 上传任务 id：原件（resumes_raw/{user}/{job_id}{ext}）与 MinerU
+            # 解析产物目录（parsed/resumes/{user}/{job_id}/）的磁盘键名，
+            # 删除简历时据此连带清理，避免磁盘只进不出。
+            "job_id": job_id,
             "filename": filename,
             "doc_type": doc_type,
             "char_count": len(text),
@@ -291,7 +297,7 @@ def library_content(resume_id: str, current_user: CurrentUser) -> dict:
 
 @router.delete("/library/{resume_id}")
 def delete_library(resume_id: str, current_user: CurrentUser) -> dict:
-    """从简历库删除某份简历（文本 + 元数据）。"""
+    """从简历库删除某份简历：条目目录 + 原件 + 解析产物目录一并清理。"""
     try:
         lib_dir = _resume_lib_dir(current_user["id"], resume_id)
     except ValueError as ve:
@@ -311,6 +317,27 @@ def delete_library(resume_id: str, current_user: CurrentUser) -> dict:
             removed += 1
     if removed == 0:
         raise HTTPException(status_code=404, detail=f"简历不存在：{resume_id}")
+
+    # 连带清理磁盘残留（尽力而为）：原件 + MinerU 解析产物目录 + 条目目录本身。
+    # 存量旧条目的 meta 无 job_id 记录，只能清掉条目目录，原件需脚本兜底。
+    job_id = str(meta.get("job_id") or "")
+    user_id = current_user["id"]
+    if _RESUME_ID_RE.match(job_id):
+        raw_dir = storage.L.resumes_raw / user_id
+        try:
+            if raw_dir.is_dir():
+                for f in raw_dir.iterdir():
+                    # stem 精确匹配而非 glob，防 job_id 含通配符注入
+                    if f.is_file() and f.stem == job_id:
+                        f.unlink(missing_ok=True)
+            parse_dir = storage.resolve_under(storage.L.parsed_resumes, user_id, job_id)
+            if parse_dir.is_dir():
+                shutil.rmtree(parse_dir, ignore_errors=True)
+        except OSError:
+            logging.getLogger(__name__).exception(
+                "简历磁盘清理失败：%s/%s", user_id, job_id
+            )
+    shutil.rmtree(lib_dir, ignore_errors=True)
     return {"deleted": resume_id}
 
 

@@ -99,7 +99,7 @@ class KnowledgeDocsMixin:
         return {"doc_id": p.stem, "points": n, "path": str(p)}
 
     def delete_document(self, user_id: str, doc_id: str, is_admin: bool = False) -> tuple[int, bool]:
-        """删除知识文档向量点。返回 (deleted, public_blocked)。
+        """删除知识文档向量点 + 磁盘残留（原件/解析产物）。返回 (deleted, public_blocked)。
 
         非 admin 只能删本人私有；admin 可额外删除公共条目。
         """
@@ -115,7 +115,50 @@ class KnowledgeDocsMixin:
         )
         if has_public and is_admin:
             deleted += self.store.delete_by_metadata({"doc": doc_id, "visibility": "public"})
+        # 向量点已删，磁盘上的原件与解析产物一并清掉（尽力而为，失败不影响删除结果）
+        self._cleanup_knowledge_files(visible)
         return deleted, False
+
+    @staticmethod
+    def _cleanup_knowledge_files(docs: list[dict]) -> None:
+        """清理知识文档的磁盘残留：原件 knowledge_raw/{owner}/{doc}.* 与解析产物目录。
+
+        doc_id 即原件 UUID 键名（上传时 {job_id}{ext}），据此定位文件；
+        owner 取 payload 的 owner_user_id（admin 删公共文档时按其上传者定位）。
+        历史数据缺 owner 信息时跳过该条。任何 IO 失败只记日志，不抛错。
+        """
+        import logging
+        import shutil
+
+        from careercrew_api import storage
+
+        logger = logging.getLogger(__name__)
+        seen: set[tuple[str, str]] = set()
+        for d in docs:
+            owner = str(d.get("owner_user_id") or "")
+            doc = str(d.get("doc") or "")
+            if not owner or not doc or (owner, doc) in seen:
+                continue
+            seen.add((owner, doc))
+            try:
+                raw_dir = storage.resolve_under(storage.L.knowledge_raw, owner)
+                if raw_dir.is_dir():
+                    for f in raw_dir.iterdir():
+                        # 用 stem 精确匹配而非 glob，防 doc_id 含通配符注入
+                        if f.is_file() and f.stem == doc:
+                            try:
+                                f.unlink(missing_ok=True)
+                            except OSError:
+                                logger.exception("知识库原件清理失败：%s", f)
+            except (OSError, ValueError):
+                logger.exception("知识库原件目录定位失败：%s/%s", owner, doc)
+
+            try:
+                out_dir = storage.resolve_under(storage.L.parsed_knowledge, owner, doc)
+                if out_dir.is_dir():
+                    shutil.rmtree(out_dir)
+            except (OSError, ValueError):
+                logger.exception("知识库解析产物清理失败：%s/%s", owner, doc)
 
     def publish_document(self, user_id: str, doc_id: str) -> int:
         self._ensure_heavy()

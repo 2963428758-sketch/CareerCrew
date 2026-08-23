@@ -166,6 +166,33 @@ def test_resume_library_delete(client):
 
 
 @pytest.mark.web
+def test_resume_library_delete_cleans_disk(client):
+    """删除简历连带清理磁盘：条目目录与原件都不残留（防磁盘只进不出）。"""
+    from careercrew_api import storage
+
+    resp = client.post(
+        "/api/resume/upload",
+        files={"file": ("r.txt", io.BytesIO("简历正文".encode()), "text/plain")},
+    )
+    job = _poll_job(client, resp.json()["job_id"])
+    resume_id = job["result"]["resume_id"]
+    job_id = job["result"]["job_id"]
+    user_dir = storage.L.parsed_resumes / "u_001"
+
+    # 上传后磁盘上应存在：条目目录 + 原件
+    lib_dir = user_dir / resume_id
+    raw_file = storage.L.resumes_raw / "u_001" / f"{job_id}.txt"
+    assert lib_dir.is_dir()
+    assert raw_file.is_file()
+
+    assert client.delete(f"/api/resume/library/{resume_id}").status_code == 200
+
+    # 删除后条目目录与原件一并清掉，不留空目录
+    assert not lib_dir.exists()
+    assert not raw_file.exists()
+
+
+@pytest.mark.web
 def test_generate_stream(client, fake_runtime):
     """简历优化流式：stage=resume + chunk + done。"""
     fake_runtime.resume_output = "优化后的简历内容"
