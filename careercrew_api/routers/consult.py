@@ -11,14 +11,17 @@ import re
 import threading
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from careercrew_api.attachment_context import AttachmentRejected, build_user_message
+from careercrew_api.attachment_context import build_user_message
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.limits import user_stream_slot
-from careercrew_api.mentions import MentionRejected
+from careercrew_api.request_helpers import (
+    resolve_attachments_or_422,
+    resolve_mentions_or_422,
+)
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
 from careercrew_api.sse import (
@@ -129,27 +132,11 @@ def consult(
 ) -> StreamingResponse:
     """会诊总调度官：自动编排顾问 -> 多轮并行调度 -> 最终答案。"""
 
-    # T3.4 §15.2：mentions 服务端二次校验（拒绝越权引用 → 422）。
-    mentions: list[dict] = []
-    if req.mentions:
-        try:
-            mentions = rt.resolve_mentions(
-                current_user["id"], [m.model_dump() for m in req.mentions]
-            )
-        except MentionRejected as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
-        except RuntimeInitError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-
-    # T3.2：附件服务端校验所有权 + 读取内容（文本块）；整体拒绝 → 422。
-    try:
-        attachment_blocks = rt.resolve_attachment_blocks(
-            current_user["id"], [a.model_dump() for a in req.attachments]
-        )
-    except AttachmentRejected as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeInitError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+    # T3.4 §15.2 / T3.2：mentions 与附件服务端二次校验（越权 → 422）。
+    mentions = resolve_mentions_or_422(rt, current_user["id"], req.mentions)
+    attachment_blocks = resolve_attachments_or_422(
+        rt, current_user["id"], req.attachments
+    )
 
     def gen() -> Generator[str, None, None]:
         q: queue.Queue = queue.Queue(maxsize=512)

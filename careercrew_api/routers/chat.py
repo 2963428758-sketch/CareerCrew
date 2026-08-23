@@ -8,15 +8,22 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from careercrew_api.attachment_context import AttachmentRejected
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.limits import user_stream_slot
-from careercrew_api.mentions import MentionRejected
-from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
+from careercrew_api.request_helpers import (
+    ndjson_response as _ndjson_response,
+)
+from careercrew_api.request_helpers import (
+    resolve_attachments_or_422 as _resolve_attachments,
+)
+from careercrew_api.request_helpers import (
+    resolve_mentions_or_422 as _resolve_mentions,
+)
+from careercrew_api.runtime import CareerCrewRuntime
 from careercrew_api.schemas import MatchRequest, ResumeRequest
 from careercrew_api.sse import (
     CancellationEvent,
@@ -29,39 +36,6 @@ from careercrew_api.sse import (
 )
 
 router = APIRouter()
-
-
-def _resolve_mentions(rt: CareerCrewRuntime, user_id: str, mentions) -> list[dict]:
-    """T3.4 §15.2：mentions 服务端二次校验；拒绝越权引用 → 422。"""
-    if not mentions:
-        return []
-    try:
-        return rt.resolve_mentions(user_id, [m.model_dump() for m in mentions])
-    except MentionRejected as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeInitError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-
-
-def _resolve_attachments(rt: CareerCrewRuntime, user_id: str, refs) -> list[dict]:
-    """T3.2：附件服务端校验所有权 + 读取内容（文本块）；整体拒绝 → 422。"""
-    if not refs:
-        return []
-    try:
-        return rt.resolve_attachment_blocks(user_id, [r.model_dump() for r in refs])
-    except AttachmentRejected as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeInitError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-
-
-def _ndjson_response(gen: Generator[str, None, None]) -> StreamingResponse:
-    """统一 NDJSON 响应头。"""
-    return StreamingResponse(
-        gen,
-        media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 @router.post("/match")
