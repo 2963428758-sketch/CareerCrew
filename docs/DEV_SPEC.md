@@ -2106,7 +2106,7 @@ langsmith:
 
 ## 8. 面试考点与简历亮点映射
 
-> "教是最好的学"--每个模块对应的高频面试题与简历 bullet，开发时同步整理。配套 skill：`interview-prep`（模拟面试）/ `resume-writer`（写简历）/ `project-review`（复习）/ `project-learner`（知识点学习）。
+> "教是最好的学"--每个模块对应的高频面试题与简历 bullet，开发时同步整理。
 
 | 模块 | 高频面试题 | 简历亮点 bullet |
 |------|-----------|----------------|
@@ -2124,13 +2124,11 @@ langsmith:
 | 可观测 | 为什么用 LangSmith 替代自建 trace？anonymizer 怎么脱敏？怎么按会话过滤？ | LangSmith 全链路追踪 + anonymizer 脱敏（手机号/邮箱/薪资），按会话过滤根 run |
 | 工程化 | 多层依赖方向？TDD 分层？conda env？CI？FastAPI+React+MCP 三前端？ | 多层单向依赖架构 + TDD 分层测试，FastAPI/React/MCP 三前端落地 |
 
-> 每完成一个模块：用 `project-review` / `project-learner` 自测掌握度，用 `resume-writer` 沉淀简历 bullet，用 `interview-prep` 模拟面试。
-
 ---
 
 ## 9. 快速开始
 
-> 开发/运行速查。自动开发直接说 `auto code`，auto-coder skill 走"同步 spec -> 找任务 -> 实现 -> 测试 -> 持久化"流水线。
+> 开发/运行速查。
 
 ### 9.1 环境准备
 
@@ -2173,14 +2171,6 @@ conda run -n careercrew python scripts/langsmith_smoke.py --list  # LangSmith �
 conda run -n careercrew pytest -q tests/unit/         # 单元（秒级）
 conda run -n careercrew pytest -q tests/integration/  # 集成（多组件协作）
 conda run -n careercrew pytest -q tests/e2e/          # 端到端（求职闭环）
-```
-
-### 9.5 自动开发（auto-coder）
-
-```bash
-# 说 "auto code" -> 自动找下一个待办任务并实现
-# 说 "auto code A1" -> 指定任务
-# 说 "auto code --no-commit" -> 跑完不 commit
 ```
 
 > 所有 python/pytest 命令都在 conda env `careercrew` 下（`conda activate careercrew` 或 `conda run -n careercrew ...`）。
