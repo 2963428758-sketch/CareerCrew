@@ -16,7 +16,6 @@ import { apiFetch } from "@/lib/auth"
 export interface StreamSession {
   threadId: string
   status: StreamStatus
-  events: StreamEvent[]
   streamingText: string
   agentChunks: Record<string, string>
   stage: string
@@ -45,7 +44,6 @@ export interface StreamSession {
 export const IDLE_SESSION: StreamSession = {
   threadId: "",
   status: "idle",
-  events: [],
   streamingText: "",
   agentChunks: {},
   stage: "",
@@ -149,7 +147,22 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
       let buffer = ""
       let textAccum = ""
       const agentAccum: Record<string, string> = {}
-      const eventsAccum: StreamEvent[] = []
+
+      // chunk 高频到达（每 token 一次）：本地累积 + ~50ms 合并刷盘，避免每 chunk
+      // 触发一次全 store set（整页重渲染）。非 chunk 事件与流结束前强制 flush，
+      // 保证 stage/done/error 等状态不丢、最终文本完整。
+      let flushTimer: ReturnType<typeof setTimeout> | null = null
+      const flushNow = () => {
+        if (flushTimer) {
+          clearTimeout(flushTimer)
+          flushTimer = null
+        }
+        patchS({ streamingText: textAccum, agentChunks: { ...agentAccum } })
+      }
+      const scheduleFlush = () => {
+        if (flushTimer) return
+        flushTimer = setTimeout(flushNow, 50)
+      }
 
       while (true) {
         const { done, value } = await reader.read()
@@ -164,27 +177,27 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
           if (!trimmed) continue
           try {
             const evt = JSON.parse(trimmed) as StreamEvent
-            eventsAccum.push(evt)
-            patchS({ events: [...eventsAccum] })
 
             if (evt.type === "stage") {
+              flushNow()
               patchS({ stage: evt.stage })
             } else if (evt.type === "dispatch") {
+              flushNow()
               patchS({ dispatch: { round: evt.round, agents: evt.agents } })
             } else if (evt.type === "chunk") {
               disarmThinking()
               armThinking()
               if (evt.agent) {
                 agentAccum[evt.agent] = (agentAccum[evt.agent] ?? "") + evt.text
-                patchS({ agentChunks: { ...agentAccum } })
               } else {
                 textAccum += evt.text
-                patchS({ streamingText: textAccum })
               }
+              scheduleFlush()
             } else if (evt.type === "agent_start" || evt.type === "agent_end") {
               disarmThinking()
               armThinking()
             } else if (evt.type === "done") {
+              flushNow()
               const p: Partial<StreamSession> = {
                 doneContent: evt.content,
                 status: "done",
@@ -286,8 +299,10 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
               }
               useThreadStore.getState().bumpNonce()
             } else if (evt.type === "input_request") {
+              flushNow()
               patchS({ pendingInput: { message: evt.message, fields: evt.fields } })
             } else if (evt.type === "error") {
+              flushNow()
               patchS({ errorMsg: evt.message, status: "error" })
             }
           } catch {
@@ -296,6 +311,9 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
         }
       }
 
+      // 流自然结束：把尚未刷盘的尾部 chunk 落地（并清掉挂起的 timer，防止
+      // 迟到的 flush 写进已被 reset 的新会话）。
+      flushNow()
       patchS((s) => ({
         status: s.status === "streaming" ? "done" : s.status,
       }))

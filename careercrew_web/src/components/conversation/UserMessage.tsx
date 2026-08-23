@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import { Check, Copy, FileImage, FileText, MoreHorizontal, Pencil } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { copyText } from "@/components/conversation/copy"
@@ -9,8 +9,9 @@ import type { MessageAttachment } from "@/types"
 /**
  * 用户消息气泡（Codex 风格）：右对齐、弱灰、轻微不对称圆角（右下 5px）。
  * Hover 时左下浮现 Copy / Edit / ⋯ 操作；Copy 成功后图标短暂变为 Check（1.5s）。
+ * memo：流式/输入引发的高频父级重渲染在 props 不变时 bail out。
  */
-export function UserMessage({
+export const UserMessage = memo(function UserMessage({
   content,
   turnId,
   highlighted = false,
@@ -164,7 +165,7 @@ export function UserMessage({
       )}
     </div>
   )
-}
+})
 
 function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
