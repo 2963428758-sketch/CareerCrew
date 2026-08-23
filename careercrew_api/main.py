@@ -193,7 +193,7 @@ def create_app() -> FastAPI:
         """readiness：基础设施可达性（Postgres/Qdrant）。任一不可达 → 503，LB 摘除流量。
 
         有意绕过 runtime 重组件惰性初始化：探针只探测依赖连通性，不触发模型加载。
-        组件级明细仍走带鉴权的 GET /api/data/health。
+        组件级明细仍走带鉴权的 GET /api/health（data 路由）。
         """
         import os
 
@@ -210,16 +210,19 @@ def create_app() -> FastAPI:
             with store._connect() as conn:  # noqa: SLF001 — 探针复用账号库连接池
                 conn.execute("SELECT 1")
             checks["postgres"] = "ok"
-        except Exception as exc:
-            checks["postgres"] = f"unavailable: {exc}"
+        except Exception:
+            # 探针无鉴权，异常细节（DSN/主机/驱动错误）只进服务端日志，不回给客户端
+            logger.warning("readyz postgres check failed", exc_info=True)
+            checks["postgres"] = "unavailable"
 
         try:
             cfg = load_settings().vector_store
             client = QdrantClient(url=cfg.url or os.environ.get("QDRANT_URL", ""), timeout=3)
             client.get_collections()
             checks["qdrant"] = "ok"
-        except Exception as exc:
-            checks["qdrant"] = f"unavailable: {exc}"
+        except Exception:
+            logger.warning("readyz qdrant check failed", exc_info=True)
+            checks["qdrant"] = "unavailable"
 
         ok = all(v == "ok" for v in checks.values())
         return JSONResponse(
@@ -235,8 +238,10 @@ def create_app() -> FastAPI:
         # SPA fallback：非 /api 路径 -> index.html（支持前端路由如 /interview）
         @app.get("/{full_path:path}")
         async def spa_fallback(full_path: str):
-            file_path = DIST / full_path
-            if full_path and file_path.is_file():
+            # full_path 来自 URL，可能含 ../ 等点段（如 /..%2f..%2f.env）；
+            # 必须解析后确认仍落在 DIST 内，否则回退 index.html，防止任意文件读取。
+            file_path = (DIST / full_path).resolve()
+            if full_path and file_path.is_relative_to(DIST) and file_path.is_file():
                 return FileResponse(file_path)
             return FileResponse(str(DIST / "index.html"))
 

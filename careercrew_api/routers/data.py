@@ -64,8 +64,13 @@ class MemorySettingsRequest(BaseModel):
 
 
 @router.get("/health", response_model=HealthResponse)
-def health(rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> HealthResponse:
-    """健康检查：读 settings 不触发重初始化。"""
+def health(current_user: CurrentUser,
+           rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> HealthResponse:
+    """健康检查：读 settings 不触发重初始化。
+
+    返回模型名 / embedding / 向量库后端等部署细节，须登录后访问
+    （无鉴权探针走公开的 GET /healthz 与 /readyz）。
+    """
     info = rt.health_info()
     return HealthResponse(
         status=info.get("status", "ok"),
@@ -78,7 +83,7 @@ def health(rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> HealthResponse:
 
 
 @router.get("/config")
-def config() -> dict:
+def config(_current_user: CurrentUser) -> dict:
     """读 settings 汇总（llm / embedding / rerank / vector_store / rag）。"""
     from careercrew_core.state.settings import load_settings
 
