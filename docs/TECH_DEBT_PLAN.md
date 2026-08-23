@@ -285,3 +285,30 @@
 爬虫启动即失败但 MCP 层只回空列表。日志在 logs/mcp-jobs.log 有明确报错。
 修复：cd mcp-servers && npx playwright install chromium
 经验：猎聘返回空结果先查 logs/mcp-jobs.log 再怀疑反爬/登录墙。
+
+---
+
+## 执行记录（2026-08-23 · 六批次全部落地）
+
+| 批次 | 内容 | 结果 |
+|---|---|---|
+| A | 运维/安全/顺手 8 项（compose·探针·日志·附件清理·限流·contextual 开关·embedding 设备·前端拆分） | ✅ |
+| B | N5 四条关键 E2E（match_resume/interview/apply_hitl/dogfood） | ✅ |
+| C·D | N1 Boss CDP 渠道 + N2 投递变真（HITL→真实发送→验证→留痕） | ✅ |
+| E | HR 回复监听闭环（hr_reply 入情景记忆） | ✅ |
+| F | M7 ColBERT 本地精排 + M5 CRAG 自评估（默认关闭，开关启用） | ✅ |
+
+### 排障实录（matcher 空产出三层根因）
+1. get_runtime() 不加载 settings → 首批请求工具白名单空 → 六工具全裁（主因，已修）
+2. GLM-4.5V 是视觉定位模型：文本场景输出 box token、偶发空回复 → llm 切 DeepSeek-V3.2 / vlm 看图切 Qwen3-VL-32B-Instruct
+3. 多轮 ReAct 后 memory_write 收尾 → content=iterations[-1] 丢正文 → 改全量非空迭代拼接
+
+### 遗留（明确延后，非缺陷）
+- M7 Qdrant multivector（MAX_SIM 原生）路线：需重建索引；payload 方案够用
+- contextual 知识库级开关：现全局开关；KB 粒度待做
+- hr_monitor 多账号会话归属映射：单用户部署无影响
+
+### 环境坑备忘
+- mcp-jobs 空结果先查 logs/mcp-jobs.log：playwright 二进制缺失用 
+px playwright install chromium
+- Boss 已改版 /web/geek/jobs：选择器集中在 tools/browser/patterns.py 新旧兼容
