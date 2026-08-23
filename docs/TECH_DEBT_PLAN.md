@@ -253,3 +253,28 @@
 | 2026-08-22 | #7 supervisor 图接入 | JobCycle.run 改由 build_graph 驱动 match→resume 流转（stage 条件路由）；DEV_SPEC 双处诚实声明「端点即编排 + 图驱动自动流转」；585 unit+e2e passed |
 | 2026-08-22 | #8 Alembic baseline | alembic 脚手架 + pg_dump 快照冻结 0001_baseline（24 表）+ 双库一致性守卫测试；803 passed / ruff 绿 |
 | 2026-08-23 | #6 runtime 拆分 | runtime.py(2444 行) → runtime/ 包 9 文件（全部 ≤526 行），mixin 组装、导入路径零变更；首次遭并行编辑踩踏，v2 以快照+hash 校验重做；805 passed / ruff 绿。**10/10 全部完成** |
+
+---
+
+## 附录：N 批次手动验收清单（需真实 Boss 账号，代码侧已就绪）
+
+### N1 Boss 搜索渠道
+1. 启动带调试端口的 Chrome 并登录 zhipin.com：
+   chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\chrome-cdp
+2. config/settings.yaml 设 	ools.search.boss_cdp_url: "http://127.0.0.1:9222"
+3. 对话让 matcher 调 search_jobs（新关键词，确保库内未命中）
+4. 验收：返回含 Boss 岗位（source=boss 入库）；故意触发风控页时降级猎聘 MCP 且日志有 warning
+
+### N2 投递变真
+1. 同上环境；对话走到投递环节，agent 调 send_greeting(job_url=…)
+2. HITL 弹确认 -> 用户确认后执行
+3. 验收：Boss 页面收到招呼语气泡；情景记忆新增 type=application status=sent 条目；
+   断网/改版场景产生 status=failed 记录且工具返回可重试提示
+
+### E HR 回复监听
+1. settings 开 hr_monitor.enabled=true；有 HR 回复后等待一个轮询周期
+2. 验收：memory 出现 type=hr_reply 事件，后续对话顾问能引用该回复
+
+### M5/M7（可选开启）
+- crag=true：检索偏题问题时观察 LangSmith 中 trail=["incorrect","correct"] 重检链
+- colbert_store+colbert_rerank=true：重建知识库索引后检索，验证排序变化（库体积会显著增大）
