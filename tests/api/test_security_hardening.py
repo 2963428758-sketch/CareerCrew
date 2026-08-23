@@ -80,6 +80,18 @@ def test_spa_fallback_still_serves_assets_and_index(tmp_path, monkeypatch):
     assert "careercrew-spa" in unknown.text
 
 
+@pytest.mark.web
+def test_spa_fallback_never_returns_html_for_unknown_api_path(tmp_path, monkeypatch):
+    """接口拼错或后端尚未更新时，前端必须收到 JSON 404 而非 index.html。"""
+    client, _secret = _client_with_dist(tmp_path, monkeypatch)
+
+    resp = client.get("/api/memory/records-not-registered")
+
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json()["detail"] == "API 接口不存在"
+
+
 # ── 未鉴权信息端点 ──
 
 

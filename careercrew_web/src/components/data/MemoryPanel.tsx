@@ -57,7 +57,11 @@ export function MemoryPanel() {
       if (requestedCursor) params.set("cursor", requestedCursor)
       const resp = await apiFetch(`/api/memory/records?${params.toString()}`)
       if (!resp.ok) throw new Error(await apiErrorText(resp, "加载记忆数据失败"))
-      const page = await resp.json() as MemoryPage
+      const body = await resp.text()
+      if (body.trimStart().startsWith("<")) {
+        throw new Error("记忆服务返回了网页，请刷新页面；若仍存在，请重启 API 服务。")
+      }
+      const page = JSON.parse(body) as MemoryPage
       setItems((previous) => reset ? page.items : [...(previous ?? []), ...page.items])
       setCursor(page.next_cursor)
       setTotal(page.total)

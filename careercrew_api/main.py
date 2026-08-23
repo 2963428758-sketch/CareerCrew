@@ -255,6 +255,10 @@ def create_app() -> FastAPI:
         # SPA fallback：非 /api 路径 -> index.html（支持前端路由如 /interview）
         @app.get("/{full_path:path}")
         async def spa_fallback(full_path: str):
+            # API 路径绝不能回退到 HTML。否则前端调用一个尚未部署的接口时，
+            # 会把 index.html 当 JSON 解析，最终只看到 "Unexpected token '<'"。
+            if full_path == "api" or full_path.startswith("api/"):
+                return JSONResponse(status_code=404, content={"detail": "API 接口不存在"})
             # full_path 来自 URL，可能含 ../ 等点段（如 /..%2f..%2f.env）；
             # 必须解析后确认仍落在 DIST 内，否则回退 index.html，防止任意文件读取。
             file_path = (DIST / full_path).resolve()

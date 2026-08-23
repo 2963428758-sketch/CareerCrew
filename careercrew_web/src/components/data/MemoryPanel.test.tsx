@@ -40,4 +40,16 @@ describe("MemoryPanel", () => {
       ([url]) => String(url).includes("record_id=550e8400"),
     )).toBe(true))
   })
+
+  it("服务错误返回 HTML 时给出可操作提示，而非暴露 JSON 解析异常", async () => {
+    apiFetch.mockResolvedValueOnce(new Response("<!doctype html><html></html>", {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    }))
+
+    render(<MemoryPanel />)
+
+    expect(await screen.findByText(/记忆服务返回了网页，请刷新页面/))
+      .toBeTruthy()
+  })
 })
