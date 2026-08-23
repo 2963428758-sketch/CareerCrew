@@ -149,9 +149,9 @@ class PostgresAccountStore(AccountStore):
 
     def _get_pool(self):
         if self._pool is None:
-            from careercrew_core.pg_pool import get_shared_pool
+            from careercrew_core.pg_pool import get_shared_pool, normalize_dsn
 
-            self._pool = get_shared_pool(self._dsn)
+            self._pool = get_shared_pool(normalize_dsn(self._dsn))
         return self._pool
 
     def _ensure(self) -> None:
@@ -163,8 +163,10 @@ class PostgresAccountStore(AccountStore):
             import psycopg
             import psycopg.rows
 
+            from careercrew_core.pg_pool import normalize_dsn
+
             with psycopg.connect(
-                self._dsn, row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
+                normalize_dsn(self._dsn), row_factory=psycopg.rows.dict_row, connect_timeout=self._connect_timeout
             ) as conn:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS auth_accounts ("

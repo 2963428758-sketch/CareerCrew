@@ -49,12 +49,14 @@ def get_checkpointer(settings: Settings) -> BaseCheckpointSaver:
         import psycopg
         from langgraph.checkpoint.postgres import PostgresSaver
 
+        from careercrew_core.pg_pool import normalize_dsn
+
         dsn = cfg.url or settings.memory.postgres.dsn
         if not dsn:
             raise ValueError("checkpointer backend=postgres 需要 supervisor.checkpointer.url 或 memory.postgres.dsn")
         # autocommit=True：PostgresSaver.setup() 的 CREATE INDEX CONCURRENTLY
         # 不能在事务块内执行（官方示例同款用法）
-        conn = psycopg.connect(dsn, autocommit=True)
+        conn = psycopg.connect(normalize_dsn(dsn), autocommit=True)
         saver = PostgresSaver(conn)
         saver.setup()  # 建 checkpoints/writes 表
         return saver

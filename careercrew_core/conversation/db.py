@@ -291,7 +291,10 @@ class PostgresConversationDb(ConversationDb):
     """Postgres 实现（psycopg 3）。连接从共享池借还；首次操作才建表。"""
 
     def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
+        from careercrew_core.pg_pool import normalize_dsn
+
+        # 入口归一：兼容 postgresql+psycopg://（容器 compose 注入的 SQLAlchemy 方言写法）
+        self._dsn = normalize_dsn(dsn)
         self._connected = False
         self.write_lock = threading.RLock()
         self._connect_timeout = 5

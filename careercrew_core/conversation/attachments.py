@@ -113,7 +113,10 @@ class PostgresAttachmentDb(AttachmentDb):
     """Postgres 实现（psycopg 3，惰性连接 + 幂等建表）。"""
 
     def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
+        from careercrew_core.pg_pool import normalize_dsn
+
+        # 入口归一：兼容 postgresql+psycopg://（容器 compose 注入的 SQLAlchemy 方言写法）
+        self._dsn = normalize_dsn(dsn)
         self._connected = False
         self.write_lock = threading.RLock()
 

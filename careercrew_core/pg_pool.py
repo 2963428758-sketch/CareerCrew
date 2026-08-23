@@ -21,11 +21,39 @@ _lock = threading.Lock()
 _pools: dict[str, Any] = {}
 
 
+def normalize_dsn(dsn: str) -> str:
+    """把 SQLAlchemy 风格的方言 DSN 归一为 psycopg 可直接解析的形式。
+
+    `postgresql+psycopg://...` 这类带驱动后缀的写法只有 SQLAlchemy/Alembic 认识
+    （migrations/env.py 做映射）；psycopg3 的 conninfo 解析不认识 `+driver` 后缀，
+    会直接连接失败。此处统一剥掉方言后缀，应用侧对两种写法都兼容——容器部署
+    （docker-compose 注入 postgresql+psycopg://）与本地 .env（postgresql://）等价。
+    """
+    dsn = (dsn or "").strip()
+    for sep in ("postgresql+", "postgres+"):
+        idx = dsn.find(sep)
+        if idx != -1:
+            head = dsn[:idx + len(sep) - 1]  # 保留 "postgresql"/"postgres" 前缀
+            tail = dsn[idx + len(sep):]
+            # 只剥离紧随的字母数字驱动名（psycopg/psycopg2/asyncpg），不动其余内容
+            driver = ""
+            for ch in tail:
+                if ch.isalnum():
+                    driver += ch
+                else:
+                    break
+            if driver:
+                return head + tail[len(driver):]
+            return dsn
+    return dsn
+
+
 def get_shared_pool(dsn: str):
     """按 DSN 返回进程级共享 ConnectionPool（惰性创建）。
 
     需要 psycopg_pool：pip install 'psycopg[binary]' 'psycopg-pool'。
     """
+    dsn = normalize_dsn(dsn)
     with _lock:
         pool = _pools.get(dsn)
         if pool is not None:

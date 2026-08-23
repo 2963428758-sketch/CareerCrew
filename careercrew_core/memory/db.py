@@ -161,7 +161,10 @@ class PostgresMemoryDb(MemoryDb):
     """
 
     def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
+        from careercrew_core.pg_pool import normalize_dsn
+
+        # 入口归一：兼容 postgresql+psycopg://（容器 compose 注入的 SQLAlchemy 方言写法）
+        self._dsn = normalize_dsn(dsn)
         self.write_lock = threading.RLock()
         self._schema_ready = False
         self._tls = threading.local()  # 当前方法借出的连接，_ensure() 取用
