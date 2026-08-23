@@ -107,3 +107,14 @@ def test_service_mirrors_explicit_facts_with_source_lineage() -> None:
 
     assert record["normalized_key"] == "semantic:preferences.work_mode"
     assert service.records.list_sources(record["id"])[0]["source_type"] == "explicit"
+
+
+def test_new_active_records_win_over_legacy_projection_and_delete_is_soft() -> None:
+    service, _ = _service()
+    service.save_explicit("u1", name="preferences.work_mode", value="远程")
+    record = service.records.list_active("u1")[0]
+
+    page = service.list_records("u1")
+    assert [row["id"] for row in page["items"]] == [record["id"]]
+    assert service.delete("u1", kind="fact", record_id=record["id"]) == 1
+    assert service.records.list_active("u1") == []

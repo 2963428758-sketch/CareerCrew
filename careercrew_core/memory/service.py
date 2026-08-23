@@ -203,8 +203,23 @@ class MemoryService:
                      query: str = "", limit: int = 20,
                      cursor: str | None = None) -> dict[str, Any]:
         """供管理页面使用的统一、latest-first 游标列表；不受 use 开关限制。"""
-        facts = SemanticFactStore(self._db, user_id).list_facts(category or None)
+        active = self.records.list_active(user_id)
+        active_keys = {str(record["normalized_key"]) for record in active}
         records: list[dict[str, Any]] = [
+            {
+                "kind": "fact" if row["memory_type"] == "semantic" else "event",
+                "id": row["id"], "type": row["category"], "category": row["category"],
+                "ts": row.get("updated_at") or row.get("created_at"), "content": row.get("payload"),
+                "name": str(row.get("normalized_key") or "").removeprefix("semantic:"),
+                "description": row.get("display_text", ""), "source": row.get("capture_mode", ""),
+                "confidence": row.get("confidence"), "version": row.get("row_version"),
+            }
+            for row in active
+            if (not kind or kind == ("fact" if row["memory_type"] == "semantic" else "event"))
+            and (not category or row["category"] == category)
+        ]
+        facts = SemanticFactStore(self._db, user_id).list_facts(category or None)
+        records.extend([
             {
                 "kind": "fact", "id": fact.name, "type": fact.type,
                 "category": fact.type, "ts": fact.modified_at, "content": fact.content,
@@ -212,11 +227,13 @@ class MemoryService:
                 "confidence": fact.confidence, "version": fact.version,
             }
             for fact in facts
-            if not kind or kind == "fact"
-        ]
+            if (not kind or kind == "fact") and f"semantic:{fact.name.casefold()}" not in active_keys
+        ])
         if not kind or kind == "event":
             for row in self._db.list_episodic(user_id, type=category or None):
                 if row.get("type") in _TRANSCRIPT_TYPES:
+                    continue
+                if f"event:{row['type']}:{row['id']}" in active_keys:
                     continue
                 records.append({
                     "kind": "event", "id": row["id"], "type": row["type"],
@@ -252,11 +269,26 @@ class MemoryService:
 
     def delete(self, user_id: str, *, kind: str = "", name: str | None = None,
                entry_id: str | None = None, thread_id: str | None = None,
-               category: str = "") -> int:
+               category: str = "", record_id: str | None = None) -> int:
         """删除数据库记录，并同步请求删除可定位的向量点。"""
+        if record_id:
+            record = self.records.get(record_id)
+            if not record or record.get("user_id") != user_id:
+                return 0
+            removed = int(self.records.soft_delete(user_id, record_id))
+            key = str(record.get("normalized_key") or "")
+            if key.startswith("semantic:"):
+                SemanticFactStore(self._db, user_id).delete_fact(key.removeprefix("semantic:"))
+            elif key.startswith("event:"):
+                _prefix, event_type, old_entry_id = key.split(":", 2)
+                self._db.delete_episodic(user_id, entry_id=old_entry_id, type=event_type)
+            return removed
         removed = 0
         if kind in ("", "fact") and name:
             removed += SemanticFactStore(self._db, user_id).delete_fact(name)
+            record = self.records.find_active(user_id, f"semantic:{name.casefold()}")
+            if record:
+                self.records.soft_delete(user_id, record["id"])
         elif kind == "fact" and category:
             removed += SemanticFactStore(self._db, user_id).delete_fact(type=category)
         if kind in ("", "event"):
@@ -275,4 +307,9 @@ class MemoryService:
                     if category:
                         filters["type"] = category
                     self._vector_store.delete_by_metadata(filters)
+            if entry_id and category:
+                key = f"event:{category}:{entry_id}"
+                record = self.records.find_active(user_id, key)
+                if record:
+                    self.records.soft_delete(user_id, record["id"])
         return removed

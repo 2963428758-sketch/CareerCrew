@@ -84,7 +84,8 @@ class ServicesMixin:
 
     def memory_delete(self, user_id: str, kind: str = "",
                       name: str | None = None, entry_id: str | None = None,
-                      thread_id: str | None = None, type: str = "") -> int:
+                      thread_id: str | None = None, type: str = "",
+                      record_id: str | None = None) -> int:
         """删除语义事实（kind=fact / name）或情景事件（kind=event / entry_id）。"""
         self._ensure_stores()
         if self.memory_service is not None:
@@ -93,7 +94,7 @@ class ServicesMixin:
             self.memory_service._vector_store = self._get_episodic_vector_store()
             return self.memory_service.delete(
                 user_id, kind=kind, name=name, entry_id=entry_id,
-                thread_id=thread_id, category=type,
+                thread_id=thread_id, category=type, record_id=record_id,
             )
         from careercrew_core.memory.semantic import SemanticFactStore
 

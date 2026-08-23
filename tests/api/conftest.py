@@ -676,7 +676,8 @@ class FakeRuntime:
 
     def memory_delete(self, user_id: str = "u_001", kind: str = "",
                       name: str | None = None, entry_id: str | None = None,
-                      thread_id: str | None = None, type: str = "") -> int:
+                      thread_id: str | None = None, type: str = "",
+                      record_id: str | None = None) -> int:
         removed = 0
         if kind in ("", "fact") and name:
             from careercrew_core.memory.semantic import SemanticFactStore

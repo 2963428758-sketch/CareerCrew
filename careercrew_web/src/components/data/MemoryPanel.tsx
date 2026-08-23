@@ -74,7 +74,9 @@ export function MemoryPanel() {
     setDeleting(item.id)
     try {
       const params = new URLSearchParams({ kind: item.kind })
-      if (item.kind === "fact") params.set("name", item.id)
+      // 新 memory_records 使用 UUID；旧兼容行仍沿用 name / entry_id。
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)) params.set("record_id", item.id)
+      else if (item.kind === "fact") params.set("name", item.id)
       else params.set("entry_id", item.id)
       const resp = await apiFetch(`/api/memory?${params.toString()}`, { method: "DELETE" })
       if (!resp.ok) throw new Error(await apiErrorText(resp, "删除记忆失败"))

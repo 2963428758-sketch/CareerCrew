@@ -186,12 +186,12 @@ def memory_records(
 @router.delete("/memory")
 def delete_memory(current_user: CurrentUser, kind: str = Query(""), name: str | None = Query(None),
                   entry_id: str | None = Query(None), thread_id: str | None = Query(None),
-                  type: str = Query(""),
+                  type: str = Query(""), record_id: str | None = Query(None),
                   rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
     """删除语义事实（kind=fact&name）或情景事件（kind=event&entry_id）。"""
     removed = rt.memory_delete(
         current_user["id"], kind=kind, name=name, entry_id=entry_id,
-        thread_id=thread_id, type=type,
+        thread_id=thread_id, type=type, record_id=record_id,
     )
     return {"deleted": removed, "removed": removed}
 

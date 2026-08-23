@@ -298,6 +298,20 @@ class LongTermMemoryRepository:
             "FROM memory_records WHERE id=%s", (memory_id,),
         ).fetchone()) else None))
 
+    def find_active(self, user_id: str, normalized_key: str) -> dict[str, Any] | None:
+        if self._fake:
+            for record in self._fake_state()["records"].values():
+                if (record["user_id"], record["normalized_key"], record["status"]) == (
+                    user_id, normalized_key, "active",
+                ):
+                    return dict(record)
+            return None
+        return self._pg(lambda conn: (dict(row) if (row := conn.execute(
+            "SELECT id,user_id,memory_type,category,normalized_key,display_text,status FROM memory_records "
+            "WHERE user_id=%s AND normalized_key=%s AND status='active' LIMIT 1",
+            (user_id, normalized_key),
+        ).fetchone()) else None))
+
     def soft_delete(self, user_id: str, memory_id: str) -> bool:
         """立即从 active 集合移除并排队向量 delete，不物理抹除审计数据。"""
         if self._fake:
