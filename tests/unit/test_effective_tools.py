@@ -4,9 +4,28 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from careercrew_core.tools.capabilities import build_capabilities
-from careercrew_core.tools.effective import compute_effective_tools
+from careercrew_core.tools.effective import compute_effective_tools, planner_tools_for_intent
 
 # ── effective_tools 纯函数矩阵（§16.3）──
+
+
+def test_planner_general_plan_does_not_bind_external_query_tools() -> None:
+    """画像、公司分层与阶段计划不是薪资/资料查询的充分理由。"""
+    tools = ["rag_query", "memory_search", "profile_update", "salary_query"]
+
+    assert planner_tools_for_intent(
+        "我有3年Java后端经验，想转大模型应用工程师，请给能力画像、公司分层和6个月计划",
+        tools,
+    ) == ["memory_search", "profile_update"]
+
+
+def test_planner_explicit_salary_and_reference_requests_unlock_only_matching_tool() -> None:
+    tools = ["rag_query", "memory_search", "profile_update", "salary_query"]
+
+    assert "salary_query" in planner_tools_for_intent("深圳大模型工程师薪资行情如何，offer 该怎么谈？", tools)
+    assert "rag_query" not in planner_tools_for_intent("深圳大模型工程师薪资行情如何，offer 该怎么谈？", tools)
+    assert "rag_query" in planner_tools_for_intent("请给我可靠的学习资料和来源，了解最新 RAG 岗位要求", tools)
+    assert "salary_query" not in planner_tools_for_intent("请给我可靠的学习资料和来源，了解最新 RAG 岗位要求", tools)
 
 
 def test_client_superset_clipped_to_server_allowlist() -> None:

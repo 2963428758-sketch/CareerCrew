@@ -97,8 +97,11 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
   start: async (threadId, endpoint, body, opts) => {
     const isRegenerate = Boolean(opts?.regenerate)
     // 同一会话重新发送：只终止该会话自己的旧请求，不影响其他会话
-    controllers.get(threadId)?.abort()
-    notifyServerCancel(threadId)
+    const previousController = controllers.get(threadId)
+    if (previousController) {
+      previousController.abort()
+      notifyServerCancel(threadId)
+    }
     useThreadStore.getState().clearCompletedUnread(threadId)
     set((s) => ({ sessions: { ...s.sessions, [threadId]: freshSession(threadId) } }))
 

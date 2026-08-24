@@ -36,6 +36,28 @@ describe("streamStore done 解析", () => {
     useStreamStore.setState({ sessions: {} })
   })
 
+  it("新会话的首条请求不会取消自身", async () => {
+    const done = {
+      type: "done",
+      content: "答案",
+      thread_id: "t-fresh",
+      legacy_thread_id: "t-fresh",
+      status: "completed",
+    }
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/chat/plan") return streamResponse([JSON.stringify(done)])
+      return { ok: true, status: 200, body: null } as unknown as Response
+    })
+
+    await useStreamStore.getState().start("t-fresh", "/chat/plan", { intent: "hi", thread_id: "t-fresh" })
+
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/api/chat/plan",
+      expect.objectContaining({ method: "POST" })
+    )
+  })
+
   it("done 事件把 message_id/turn_id/run_id 挂到该轮 assistant 消息", async () => {
     // 预置一条 streaming assistant 消息（模拟发送时占位）
     useChatStore.setState({
@@ -114,16 +136,20 @@ describe("streamStore done 解析", () => {
     let signal: AbortSignal | undefined
     const chunks = [encoder.encode(body)]
     let i = 0
-    apiFetch.mockImplementation(async (_url: string, init?: RequestInit) => {
+    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/chat/cancel") {
+        return { ok: true, status: 200, body: null } as unknown as Response
+      }
       signal = init?.signal as AbortSignal | undefined
+      const requestSignal = signal
       const reader = {
         read: async () => {
           if (i < chunks.length) {
             const value = chunks[i++]
             return { done: false, value }
           }
-          if (signal?.aborted) return { done: true, value: undefined }
-          await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }))
+          if (requestSignal?.aborted) return { done: true, value: undefined }
+          await new Promise<void>((resolve) => requestSignal?.addEventListener("abort", () => resolve(), { once: true }))
           return { done: true, value: undefined }
         },
       }

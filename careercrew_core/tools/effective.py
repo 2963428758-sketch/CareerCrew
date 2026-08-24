@@ -8,6 +8,35 @@
 """
 from __future__ import annotations
 
+import re
+
+_PLANNER_SALARY_INTENT = re.compile(
+    r"薪资|薪酬|工资|待遇|月薪|年薪|年包|谈薪|涨薪|薪水|offer|compensation|salary",
+    re.IGNORECASE,
+)
+_PLANNER_REFERENCE_INTENT = re.compile(
+    r"学习资料|学习资源|资料|文档|来源|依据|报告|研究|政策|行业动态|岗位要求|最新(?:的|信息|动态)?|reference|source",
+    re.IGNORECASE,
+)
+
+
+def planner_tools_for_intent(intent: str, allowed_tools: list[str]) -> list[str]:
+    """按职业规划请求意图收窄外部查询工具。
+
+    ``salary_query`` 和 ``rag_query`` 成本高且会诱发模型把检索过程写进答案；
+    它们不是一般画像、公司分层或阶段计划的默认依赖。保留原有 allowlist 的
+    顺序和其余工具，只在用户明确请求薪资/薪酬市场或可核验资料时放行对应工具。
+    """
+    text = (intent or "").strip()
+    allow_salary = bool(_PLANNER_SALARY_INTENT.search(text))
+    allow_references = bool(_PLANNER_REFERENCE_INTENT.search(text))
+    blocked: set[str] = set()
+    if not allow_salary:
+        blocked.add("salary_query")
+    if not allow_references:
+        blocked.add("rag_query")
+    return [name for name in allowed_tools if name not in blocked]
+
 
 def compute_effective_tools(
     client_requested: list[str] | None,

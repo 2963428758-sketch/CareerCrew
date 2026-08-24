@@ -44,3 +44,33 @@ def test_planner_prompt_includes_salary_query() -> None:
     text = path.read_text(encoding="utf-8")
     assert "salary_query" in text
     assert "最多 2 次" in text
+    assert "工具按需使用，禁止为“可能有用”而预取" in text
+    assert "回答中必须使用其结果" in text
+    assert "可规划的结构化请求" in text
+    assert "本轮必须直接交付所要求的画像、公司池和/或阶段计划" in text
+    assert "用户明确请求薪资、薪资谈判或薪酬市场校准" in text
+    assert "不得向用户转述检索或工具调用过程" in text
+
+
+def test_planner_prompt_salary_fact_boundary() -> None:
+    """P3 无来源薪资区间：未经 salary_query 结果禁止给出具体数字/区间。"""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "career_planner.txt"
+    text = path.read_text(encoding="utf-8")
+    assert "未经 `salary_query` 结果，禁止在回答中出现任何具体薪资数字或区间" in text
+    assert "只能定性描述或标注“待确认”" in text
+    # 旧措辞曾鼓励在阶段规划里写薪资区间，必须已被替换
+    assert "结合真实薪资区间给出合理预期" not in text
+
+
+def test_planner_prompt_forbids_pseudo_tool_call_text() -> None:
+    """P2 伪工具调用文本泄漏：正文严禁出现调用语法与过程叙述。"""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "careercrew_ai" / "prompts" / "career_planner.txt"
+    text = path.read_text(encoding="utf-8")
+    assert "回答正文中严禁输出 `<call>`、`<arg>`、`tool_call` 等任何调用语法" in text
+    assert "不得以“先检索/查询”为由中断或推迟回答" in text
+    assert "即使历史记录中出现过这类文本" in text
+    assert "所需工具不可用时，直接基于已有信息完成交付" in text

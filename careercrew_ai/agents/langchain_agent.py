@@ -417,6 +417,113 @@ def build_agent(
 _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:begin_of_box|end_of_box)\|>")
 _FINALIZATION_TOOL_NAMES = {"memory_write", "profile_update"}
 
+# 伪工具调用语法：模型在所需工具未绑定时（如意图级裁剪后的普通规划），
+# 会模仿历史里的调用格式把 ``<call name="rag_query">`` 等当正文输出给用户，
+# 且常就此截断。与 _SPECIAL_TOKEN_RE 同类：模型产物清理，不是业务内容。
+_PSEUDO_TOOL_BLOCK_RE = re.compile(
+    r"<(?:call|tool_call|function_call)\b[^>]*>"
+    r".*?"
+    r"</(?:call|tool_call|function_call)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_PSEUDO_TOOL_TAIL_RE = re.compile(
+    r"<(?:call|tool_call|function_call)\b[^>]*>"
+    r"(?:(?!<(?:call|tool_call|function_call)[\s>]).)*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_PSEUDO_ARG_TAG_RE = re.compile(r"</?arg\b[^>]*/?>", re.IGNORECASE)
+
+
+def strip_pseudo_tool_calls(text: str) -> str:
+    """剥离模型写成正文文本的伪工具调用语法。
+
+    删除完整伪调用块、结尾被截断的未闭合块和游离 ``<arg>`` 标签，保留正常
+    正文。真实工具调用走 ``AIMessage.tool_calls`` 结构化通道，不受影响。
+    """
+    if not text or "<" not in text:
+        return text
+    cleaned = _PSEUDO_TOOL_BLOCK_RE.sub("", text)
+    cleaned = _PSEUDO_TOOL_TAIL_RE.sub("", cleaned)
+    cleaned = _PSEUDO_ARG_TAG_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+class PseudoToolCallStreamFilter:
+    """流式回调过滤：拦截伪工具调用块，避免其以正文形式流给用户。
+
+    与 :func:`strip_pseudo_tool_calls` 语义一致，面向 token 级 chunk：
+    - 遇到伪调用开标签进入抑制态，直到闭标签出现，整块丢弃；
+    - 正常态只回吐安全前缀，扣留可能是开标签前缀的尾部碎片；
+    - 抑制未结束时流终止（``flush``），残余内容一并丢弃。
+    """
+
+    _OPEN_RE = re.compile(r"<(?:call|tool_call|function_call)\b", re.IGNORECASE)
+    _CLOSE_RE = re.compile(r"</(?:call|tool_call|function_call)\s*>", re.IGNORECASE)
+    _OPEN_TAGS = ("<call", "<tool_call", "<function_call")
+    _MAX_OPEN_TAG_LEN = max(len(tag) for tag in _OPEN_TAGS)
+
+    def __init__(self, sink) -> None:
+        self._sink = sink
+        self._buf: list[str] = []
+        self._suppressed = False
+
+    def __call__(self, text: str) -> None:
+        if not text:
+            return
+        self._buf.append(text)
+        self._drain(final=False)
+
+    def flush(self) -> None:
+        """流结束时调用：放行安全残余；抑制中的伪调用块直接丢弃。"""
+        self._drain(final=True)
+
+    def _emit(self, piece: str) -> None:
+        if piece:
+            self._sink(piece)
+
+    def _drain(self, *, final: bool) -> None:
+        buf = "".join(self._buf)
+        self._buf = []
+        while True:
+            if self._suppressed:
+                m = self._CLOSE_RE.search(buf)
+                if m is None:
+                    break
+                buf = buf[m.end():]
+                self._suppressed = False
+            else:
+                m = self._OPEN_RE.search(buf)
+                if m is None:
+                    break
+                self._emit(buf[: m.start()])
+                buf = buf[m.end():]
+                self._suppressed = True
+        if self._suppressed:
+            if final:
+                # 截断的伪调用块：整体丢弃，不放行半截语法
+                self._suppressed = False
+            else:
+                self._buf.append(buf)
+            return
+        if final:
+            self._emit(buf)
+            return
+        hold = self._partial_hold_len(buf)
+        if hold:
+            self._buf.append(buf[-hold:])
+            buf = buf[:-hold]
+        self._emit(buf)
+
+    def _partial_hold_len(self, buf: str) -> int:
+        low = buf.lower()
+        n = len(low)
+        for start in range(max(0, n - (self._MAX_OPEN_TAG_LEN - 1)), n):
+            frag = low[start:]
+            if any(tag.startswith(frag) for tag in self._OPEN_TAGS):
+                return n - start
+        return 0
+
 
 def _msg_text(msg: BaseMessage) -> str:
     """提取消息文本;剥离视觉定位类模型的特殊标记(如 GLM-4.5V 的 box token)。"""
@@ -467,6 +574,8 @@ def run_agent(
     max_reached = False
     stop_content = ""
     pending_model_chunks: list[str] = []
+    if stream_callback is not None:
+        stream_callback = PseudoToolCallStreamFilter(stream_callback)
 
     try:
         stream = agent.stream(
@@ -506,7 +615,7 @@ def run_agent(
                         iterations.append(
                             ReactIteration(
                                 iteration=len(iterations),
-                                content=_msg_text(m),
+                                content=strip_pseudo_tool_calls(_msg_text(m)),
                                 tool_calls=list(m.tool_calls or []),
                             )
                         )
@@ -525,6 +634,9 @@ def run_agent(
     except Exception as e:  # noqa: BLE001 - 记录后上抛，由 API 生命周期标记 failed
         logger.exception("agent.stream 执行异常，交由上层标记失败：%s", e)
         raise
+    if isinstance(stream_callback, PseudoToolCallStreamFilter):
+        # 只在成功路径 flush：放行扣留的安全尾部；异常路径保持原失败语义
+        stream_callback.flush()
 
     if max_reached:
         content = stop_content or _MAX_ITERATIONS_PROMPT

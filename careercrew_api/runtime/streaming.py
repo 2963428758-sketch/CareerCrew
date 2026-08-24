@@ -315,7 +315,12 @@ class StreamingMixin:
                 user_meta["mentions"] = mentions
             if attachments:
                 user_meta["attachments"] = attachments
-        effective = self.compute_effective_tools("chat", tools, user_id=user_id)
+        from careercrew_core.tools.effective import planner_tools_for_intent
+
+        effective = planner_tools_for_intent(
+            intent,
+            self.compute_effective_tools("chat", tools, user_id=user_id),
+        )
         hitl = self._hitl_requires()
         ctx = self._begin_chat_turn(
             thread_id, user_id, module="chat", agent_id="career_planner",
