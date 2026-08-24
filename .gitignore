@@ -32,6 +32,7 @@ secrets.yaml
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+output/
 .coverage
 .coverage.*
 htmlcov/
