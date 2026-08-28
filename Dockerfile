@@ -15,7 +15,7 @@ COPY careercrew_web/ ./
 RUN npm run build
 
 # ── 阶段一：依赖构建 ──
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -42,7 +42,7 @@ COPY alembic.ini ./
 RUN pip install --no-deps .
 
 # ── 阶段二：运行时 ──
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
