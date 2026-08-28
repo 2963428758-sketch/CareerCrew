@@ -12,7 +12,7 @@
 - LangGraph supervisor 按阶段路由（intent / planning / match / resume / interview / negotiate / apply / track / review），agent 节点内由 LangChain 1.x `create_agent` 执行 LLM + 工具循环
 - 多顾问会诊：LLM 编排器多轮并行分派 → 各顾问独立意见 → 综合结论；缺少背景资料时可向前端下发资料填写表单
 - HITL 闸门：高风险动作（`submit_application` 投递简历等）默认拦截等待用户确认；apply 阶段直接终止图执行
-- 内部工具集：`rag_query` / `memory_search` / `memory_write` / `profile_update` / `search_jobs`（mcp-jobs 抓取猎聘岗位）/ `salary_query` / `read_image` / `submit_application`
+- 内部工具集：`rag_query` / `memory_search` / `memory_write` / `profile_update` / `search_jobs`（CDP 接管 Boss直聘 + 猎聘真实岗位，库缓存优先）/ `salary_query` / `read_image` / `submit_application`
 
 **自建多模态 RAG**
 
@@ -58,7 +58,6 @@ CareerCrew/
 ├── careercrew_api/       # FastAPI 应用（auth / routers / NDJSON 流式 / 附件 / OSS 头像）
 ├── careercrew_mcp/       # 自建 MCP server「careercrew-mm-rag」（multimodal RAG 工具）
 ├── careercrew_web/       # React + Vite 前端（生产构建产物 dist/ 由后端托管）
-├── mcp-servers/          # mcp-jobs Node 启动器（Playwright 抓取猎聘岗位，供 search_jobs 工具使用）
 ├── config/
 │   ├── settings.yaml        # 主配置（${VAR} 占位符从环境变量替换）
 │   └── settings.docker.yaml # 容器部署变体（production 环境口径，与主配置字段保持对齐）
@@ -80,10 +79,11 @@ CareerCrew/
 ## 环境要求
 
 - **Python 3.12**（`requires-python = ">=3.12,<3.13"`，其他版本不可用）
-- **Node.js 22**（CI 使用版本；前端开发构建与 mcp-jobs 岗位抓取需要）
+- **Node.js 22**（CI 使用版本；前端开发构建需要）
 - **Docker**（运行 PostgreSQL 16 与 Qdrant 官方镜像）
 - **BGE-M3 本地模型权重**（约 2GB；下载后将路径填入 `config/settings.yaml` 的 `embedding.model_path`，默认值是开发者本机路径，必须修改）
 - **API Key**：硅基流动（必需）；MinerU（文档解析 `rag.loaders.provider=api` 时必需）
+- **Google Chrome**（岗位匹配实时抓取需要：通过 CDP 调试端口接管已登录的 Boss直聘 与 猎聘）
 
 ## 快速开始
 
@@ -100,7 +100,7 @@ cd CareerCrew
 cp .env.example .env   # 然后按需填写
 ```
 
-本地开发必填 `SILICONFLOW_API_KEY` 与 `DATABASE_URL`；容器部署由 compose 注入 `DATABASE_URL`，另需 `AUTH_JWT_SECRET`（≥32 字符）。各变量含义见 [配置说明](#配置说明)，完整模板见 [.env.example](.env.example)。
+本地开发必填 `DASHSCOPE_API_KEY` 与 `DATABASE_URL`；容器部署由 compose 注入 `DATABASE_URL`，另需 `AUTH_JWT_SECRET`（≥32 字符）。各变量含义见 [配置说明](#配置说明)，完整模板见 [.env.example](.env.example)。
 
 > `.env` 已被 `.gitignore` 排除（含 `!.env.example` 否定规则），**绝不提交真实密钥**。
 
@@ -117,10 +117,11 @@ pip install -e ".[eval]"
 # 前端
 cd careercrew_web
 npm install
+cd ..
 
-# mcp-jobs（search_jobs 岗位抓取工具依赖，不用岗位搜索可跳过）
-cd ../mcp-servers
-npm install
+# （可选）启动 Chrome CDP 调试实例以开启 Boss直聘/猎聘 真实岗位实时抓取：
+# 运行脚本自动调起 Chrome，并在打开的页面中分别登录 Boss直聘 与 猎聘 即可：
+powershell -ExecutionPolicy Bypass -File scripts/start_chrome_cdp.ps1
 ```
 
 ### 4. 启动基础服务
@@ -173,7 +174,7 @@ uvicorn careercrew_api.main:app --port 8000   # 检测到 dist/ 即自动托管 
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `SILICONFLOW_API_KEY` | ✅ | 硅基流动密钥，LLM / rerank / VLM 调用均使用 |
+| `DASHSCOPE_API_KEY` | ✅ | 阿里云百炼平台密钥，通义千问 LLM / gte-rerank / qwen-vl 调用均使用 |
 | `DATABASE_URL` | ✅ | PostgreSQL 连接串（账号 / 会话 / 记忆 / checkpoint 共用） |
 | `MINERU_API_KEY` | 视配置 | MinerU 云端解析 token；`rag.loaders.provider: api`（默认值）时必填 |
 | `AUTH_JWT_SECRET` | 生产必填 | JWT 签名密钥，生产环境要求 ≥32 字符；development 下缺省时进程内随机回退 |
@@ -208,7 +209,7 @@ FastAPI 默认文档页开启：Swagger UI `/docs`、ReDoc `/redoc`、OpenAPI Sc
 仓库提供多阶段 `Dockerfile` 与一键编排 `docker-compose.yml`（postgres + qdrant + app 三服务，克隆即跑）：
 
 ```bash
-cp .env.example .env          # 填 SILICONFLOW_API_KEY / AUTH_JWT_SECRET（≥32 字符）
+cp .env.example .env          # 填 DASHSCOPE_API_KEY / AUTH_JWT_SECRET（≥32 字符）
 mkdir -p models/bge-m3        # 放置 BGE-M3 权重（只读挂载进容器 /models/bge-m3）
 docker compose up -d --build
 curl http://localhost:8000/readyz   # {"status":"ready","checks":{"postgres":"ok","qdrant":"ok"}} 即就绪
@@ -275,14 +276,14 @@ python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail
 | 现象 | 原因与处理 |
 |------|-----------|
 | 前端启动报端口占用退出 | Vite 配置了 `strictPort: true`（5175 固定），释放端口或改 `vite.config.ts`（注意同步 `auth.trusted_origins`） |
-| 后端启动即抛 `SettingsError` | `.env` 缺少必填变量（`SILICONFLOW_API_KEY` / `DATABASE_URL`），或 `config/settings.yaml` 字段非法 |
+| 后端启动即抛 `SettingsError` | `.env` 缺少必填变量（`DASHSCOPE_API_KEY` / `DATABASE_URL`），或 `config/settings.yaml` 字段非法 |
 | 接口返回 503「AI 服务暂不可用」 | Qdrant / Postgres 未启动，或重组件初始化失败；确认两个容器在跑后重试 |
 | 首个请求卡住 10–30 秒 | 正常现象：embedding 等重组件按需惰性加载 |
 | 启动时报 BGE-M3 模型路径错误 | `config/settings.yaml` 的 `embedding.model_path` 默认是开发者本机路径，改为本地实际权重路径 |
 | 登录提示锁定 | 连续失败 5 次锁定 15 分钟（按用户名+IP 计数），稍后再试 |
-| `search_jobs` 很慢或不可用 | 该工具经 Playwright 实时抓取猎聘，单次约 1–2 分钟；需安装 `mcp-servers` 依赖且本机有 Node.js |
+| `search_jobs` 无法获取岗位或提示未配置 | 职位搜索优先读本地 jobs 库缓存；实时抓取使用已登录 Chrome 的 CDP 调试通道（端口 9222），请运行 `scripts/start_chrome_cdp.ps1` 并在浏览器中登录 Boss 直聘与猎聘 |
 | 文档 / 简历解析失败 | `MINERU_API_KEY` 未配置（`provider: api` 时必需），或文件超出大小上限（简历 20MB / 知识库 50MB / 附件 25MB） |
-| 国内访问 SiliconFlow / LangSmith 超时 | 配置代理（如 Clash `http://127.0.0.1:7890`）后重试 |
+| 国内访问百炼 / LangSmith 超时 | 配置代理（如 Clash `http://127.0.0.1:7890`）后重试 |
 
 ## 安全说明
 

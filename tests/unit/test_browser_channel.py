@@ -207,3 +207,50 @@ def test_search_jobs_boss_failure_degrades_to_mcp(monkeypatch) -> None:
     tool = make_search_jobs_tool(None, boss_cdp_url="http://127.0.0.1:9222")
     out = json.loads(tool.invoke({"direction": "数据分析"}))
     assert out[0]["title"] == "猎聘数据分析岗"
+
+
+def test_resolve_liepin_city_code() -> None:
+    from careercrew_core.tools.browser.liepin_search import _resolve_liepin_city_code
+
+    assert _resolve_liepin_city_code("北京") == "010"
+    assert _resolve_liepin_city_code("广州市") == "050"
+    assert _resolve_liepin_city_code("深圳") == "060"
+    assert _resolve_liepin_city_code("未知城市") == ""
+
+
+def test_parse_liepin_job_cards() -> None:
+    from careercrew_core.tools.browser.liepin_search import parse_liepin_job_cards
+
+    card = FakeEl(
+        tags=("div.job-detail-box",),
+        text="招聘Java 后端工程师 【北京-海淀区】 15-20k 2-5年 本科 勋厚人力 人力资源服务",
+        children=[
+            FakeEl(
+                tags=("a[data-nick='job-detail-job-info']", "a"),
+                attrs={"href": "https://www.liepin.com/job/1984882287.shtml"},
+                text="招聘Java 后端工程师 【北京-海淀区】 15-20k 2-5年 本科",
+                children=[
+                    FakeEl(tags=(".ellipsis-1",), text="招聘Java 后端工程师"),
+                    FakeEl(tags=("span",), text="2-5年"),
+                    FakeEl(tags=("span",), text="本科"),
+                ],
+            ),
+            FakeEl(
+                tags=("div[data-nick='job-detail-company-info']", "[data-nick='job-detail-company-info']"),
+                children=[
+                    FakeEl(tags=(".ellipsis-1",), text="勋厚人力"),
+                ],
+            ),
+        ],
+    )
+    jobs = parse_liepin_job_cards([card])
+    assert len(jobs) == 1
+    j = jobs[0]
+    assert j["title"] == "Java 后端工程师"
+    assert j["company"] == "勋厚人力"
+    assert j["city"] == "北京-海淀区"
+    assert j["salary"] == "15-20k"
+    assert j["source"] == "liepin"
+    assert j["salary_k"] == {"min_k": 15.0, "max_k": 20.0, "months": None}
+    assert "1984882287.shtml" in j["url"]
+

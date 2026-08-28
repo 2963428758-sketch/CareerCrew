@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { ProfilePanel } from "@/components/data/ProfilePanel"
 import { MemoryPanel } from "@/components/data/MemoryPanel"
 import { MemorySettingsPanel } from "@/components/data/MemorySettingsPanel"
+import { ApiKeySettingsPanel } from "@/components/data/ApiKeySettingsPanel"
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader"
 import { AvatarImage } from "@/components/UserMenu"
 import { Tooltip } from "@/components/ui/tooltip"
@@ -47,6 +48,7 @@ export default function SettingsPage({ section }: { section: string }) {
           {active.key === "profile" && <ProfilePanel />}
           {active.key === "memory" && <MemoryPanel />}
           {active.key === "memory-settings" && <MemorySettingsPanel />}
+          {active.key === "apikey" && <ApiKeySettingsPanel />}
           {active.key === "account" && <AccountPanel />}
           {active.key === "about" && <AboutPanel />}
         </div>

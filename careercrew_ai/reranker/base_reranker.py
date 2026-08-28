@@ -69,12 +69,16 @@ def create_reranker(settings: Settings) -> BaseReranker:
         from careercrew_ai.reranker.siliconflow_reranker import SiliconFlowReranker
 
         return SiliconFlowReranker(settings)
+    if backend == "dashscope":
+        from careercrew_ai.reranker.dashscope_reranker import DashScopeReranker
+
+        return DashScopeReranker(settings)
     if backend == "siliconflow_vl":
         from careercrew_ai.reranker.siliconflow_vl_reranker import SiliconFlowVLReranker
 
         return SiliconFlowVLReranker(settings)
     raise NotImplementedError(
-        f"rerank backend '{backend}' 尚未实现（已实现: none, fake, siliconflow, siliconflow_vl）"
+        f"rerank backend '{backend}' 尚未实现（已实现: none, fake, siliconflow, dashscope, siliconflow_vl）"
     )
 
 

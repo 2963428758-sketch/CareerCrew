@@ -63,6 +63,8 @@ class HeavyInitMixin:
 
         # 重组件（_ensure_heavy 后填充）
         self.llm: BaseChatModel | None = None
+        self._user_llms: dict[str, tuple[str, BaseChatModel]] = {}
+        self._user_llms_lock = threading.Lock()
         self.embedding = None
         self.store = None
         self.reranker = None
@@ -156,7 +158,7 @@ class HeavyInitMixin:
         _ensure_stores 的产物，避免同一批连接初始化两遍。"""
         from careercrew_ai.embedding import create_embedding
         from careercrew_ai.llm import create_llm
-        from careercrew_ai.reranker.siliconflow_vl_reranker import SiliconFlowVLReranker
+        from careercrew_ai.reranker import create_reranker
         from careercrew_ai.vector_store import create_vector_store
         from careercrew_core.memory.injection import MemoryInjector
         from careercrew_core.memory.router import MemoryRouter
@@ -177,8 +179,8 @@ class HeavyInitMixin:
                 ) from e
             raise
 
-        llm = create_llm(settings, max_tokens=1024)
-        rr = SiliconFlowVLReranker(settings)
+        llm = create_llm(settings)
+        rr = create_reranker(settings)
 
         # M7：ColBERT late-interaction 精排（rag.retrieval.colbert_rerank 总开关）。
         # colbert_multivector=True → 服务端 MAX_SIM（text_colbert 命名向量）；
@@ -248,6 +250,38 @@ class HeavyInitMixin:
         self.multimodal_search = hs
         self.memory_router = memory_router
         self.memory_injector = memory_injector
+
+    def get_llm_for_user(self, user_id: str | None = None) -> BaseChatModel:
+        """获取指定用户的 ChatModel：优先使用用户个人配置的 DashScope API Key，未配置则回退系统默认 self.llm。"""
+        self._ensure_heavy()
+        if not user_id:
+            return self.llm
+        custom_key = ""
+        try:
+            from careercrew_api.auth.dependencies import get_auth_service
+
+            store = get_auth_service().store
+            settings_dict = store.get_user_settings(user_id)
+            custom_key = (
+                settings_dict.get("dashscope_api_key")
+                or settings_dict.get("api_key")
+                or ""
+            ).strip()
+        except Exception:
+            pass
+
+        if not custom_key:
+            return self.llm
+
+        with self._user_llms_lock:
+            cached = self._user_llms.get(user_id)
+            if cached and cached[0] == custom_key:
+                return cached[1]
+            from careercrew_ai.llm import create_llm
+
+            user_llm = create_llm(self.settings, api_key=custom_key)
+            self._user_llms[user_id] = (custom_key, user_llm)
+            return user_llm
 
     # ── 会话级 JobCycle（LRU 缓存）──
 

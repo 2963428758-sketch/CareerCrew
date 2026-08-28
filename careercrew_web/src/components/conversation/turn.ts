@@ -27,15 +27,16 @@ export function groupTurns<T extends { id: string; role: "user" | "assistant"; t
       turns.push({ id: m.id, user: m })
     } else {
       const last = turns[turns.length - 1]
-      if (last && !last.assistant) {
-        last.assistant = m
-        last.versions = [m]
-      } else if (last && m.turnId && last.assistant?.turnId === m.turnId) {
-        // 同 turn 的追加版本：归入该 turn 的版本列表，新增版本为最新
-        last.versions = [...(last.versions ?? [last.assistant]), m]
-        last.assistant = m
+      const matched = m.turnId
+        ? turns.find((t) => t.id === m.turnId || t.assistant?.turnId === m.turnId || t.user.turnId === m.turnId)
+        : last
+      if (matched && !matched.assistant) {
+        matched.assistant = m
+        matched.versions = [m]
+      } else if (matched) {
+        matched.versions = [...(matched.versions ?? [matched.assistant!]), m]
+        matched.assistant = m
       } else {
-        // 没有前置用户消息的 assistant：仅作为回答兜底展示（无 anchor marker）
         turns.push({ id: m.id, user: m, assistant: m, versions: [m] })
       }
     }

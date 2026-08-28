@@ -1,31 +1,30 @@
 # CareerCrew 主配置（结构对齐 DEV_SPEC §5.5）
 # ${VAR} 占位由 careercrew_core/state/settings.py 的 load_settings 做环境变量替换
 
-# ── LLM（硅基流动，OpenAI 兼容；init_chat_model 薄适配） ──
+# ── LLM（阿里云百炼平台，OpenAI 兼容；init_chat_model 薄适配） ──
 llm:
   provider: openai               # 走 init_chat_model 的 openai provider（OpenAI 兼容）
-  model: "deepseek-ai/DeepSeek-V3.2"   # 文本 agent 主力：工具调用稳、无思考型特殊标记
-                                       # （原 GLM-4.5V 是视觉定位模型，文本场景会输出 box token 且偶发空回复）
-  base_url: "https://api.siliconflow.cn/v1"
-  api_key: "${SILICONFLOW_API_KEY}"
+  model: "qwen-plus"             # 阿里云百炼主力模型：通义千问 Plus（兼具高性能、精准工具调用与极速响应）
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "${DASHSCOPE_API_KEY}"
   temperature: 0.3
-  max_tokens: 2048
+  max_tokens: 4096
 
 # ── Embedding（本地 BGE-M3 三合一：dense + sparse + colbert） ──
 embedding:
-  provider: bge_m3_local         # bge_m3_local | openai | siliconflow_dense
+  provider: bge_m3_local         # bge_m3_local | openai
   model: BAAI/bge-m3
   model_path: F:/AI_models/BAAI--bge-m3/snapshots/master
   use_fp16: false                # CPU 跑关闭 fp16；device=cuda 时建议改 true
   batch_size: 12
   device: cpu                    # cpu（默认，避免显存叠加 OOM）| cuda（有卡机型提速明显）
 
-# ── Rerank（硅基流动 rerank API） ──
+# ── Rerank（阿里云百炼 rerank API / 本地 BGE / 无） ──
 rerank:
-  backend: siliconflow           # none | siliconflow | local_bge
-  model: BAAI/bge-reranker-v2-m3
-  base_url: "https://api.siliconflow.cn/v1"
-  api_key: "${SILICONFLOW_API_KEY}"
+  backend: dashscope             # dashscope | local_bge | none
+  model: "gte-rerank-v2"         # 阿里云百炼最新多语言重排模型：gte-rerank-v2
+  base_url: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+  api_key: "${DASHSCOPE_API_KEY}"
   top_m: 30                      # 精排候选数
 
 # ── 向量库（Qdrant 唯一后端） ──
@@ -72,12 +71,12 @@ rag:
     table: true                  # 表格识别开关
     language: ch                 # 文档语言（API 参数）
 
-# ── VLM（硅基流动，多模态生成 + 精排） ──
+# ── VLM（阿里云百炼平台，多模态生成） ──
 vlm:
-  model: "Qwen/Qwen3-VL-32B-Instruct"   # 看图作答（Instruct 版输出干净，无思考标记）
-  rerank_model: Qwen/Qwen3-VL-Reranker-8B
-  base_url: "https://api.siliconflow.cn/v1"
-  api_key: "${SILICONFLOW_API_KEY}"
+  model: "qwen-vl-max"          # 阿里云百炼视觉大模型
+  rerank_model: ""
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "${DASHSCOPE_API_KEY}"
 
 # ── LangGraph supervisor ──
 supervisor:
@@ -108,15 +107,15 @@ memory:
 # ── 工具层 ──
 tools:
   search:
-    boss_cdp_url: "http://127.0.0.1:9222"   # Boss直聘 CDP 后端（N1）：Chrome --remote-debugging-port=9222
-                                 # 后填 http://127.0.0.1:9222 启用；空=仅猎聘 MCP 渠道
+    boss_cdp_url: "http://127.0.0.1:9222"   # Chrome CDP 调试端口（Boss直聘与猎聘双渠道）
+                                 # 运行 scripts/start_chrome_cdp.ps1 后填 http://127.0.0.1:9222 启用
     boss_city: ""                # 可选城市代码（如北京 101010100）；空=全国
   registry:
     # internal 须与 `_make_tools(kind)` 实际构造的工具集对齐：search_jobs(matcher) /
     # salary_query(planner+salary) / read_image(knowledge) 均真实落入 bound tools，
     # 必须登记在此，否则默认路径（未传 tools）会把它们从 bound 集合裁剪掉以致功能回归。
     internal: [rag_query, memory_search, memory_write, profile_update, search_jobs, salary_query, read_image, submit_application]
-    mcp: [mcp_jobs, google_mcp]
+    mcp: [google_mcp]
   hitl:
     requires_confirmation:
       - submit_application
@@ -152,7 +151,7 @@ oss:
 auth:
   environment: development   # 可用 CAREERCREW_ENV 覆盖为 production
   database_url: "${AUTH_DATABASE_URL}"
-  trusted_origins: ["http://localhost:5175", "http://127.0.0.1:5175", "http://localhost:8000", "http://127.0.0.1:8000"]
+  trusted_origins: ["http://localhost:5175", "http://127.0.0.1:5175", "http://localhost:5176", "http://127.0.0.1:5176", "http://localhost:8000", "http://127.0.0.1:8000"]
   login_max_failures: 5
   login_failure_window_minutes: 15
   login_lock_minutes: 15

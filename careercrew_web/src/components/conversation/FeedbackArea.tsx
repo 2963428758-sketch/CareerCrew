@@ -44,7 +44,16 @@ export function FeedbackArea({
       </div>
     )
   }
-  return <PersistedFeedbackArea messageId={messageId} threadId={threadId} content={content} completed={completed} onRegenerate={onRegenerate} onFeedback={onFeedback} />
+  return (
+    <PersistedFeedbackArea
+      messageId={messageId}
+      threadId={threadId}
+      content={content}
+      completed={completed}
+      onRegenerate={onRegenerate}
+      onFeedback={onFeedback}
+    />
+  )
 }
 
 function PersistedFeedbackArea({
@@ -68,13 +77,19 @@ function PersistedFeedbackArea({
   const anchorRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    void hydrateThreadFeedback(threadId).catch((error: unknown) => {
-      notifyError(error instanceof Error ? error.message : "加载反馈失败，请重试")
+    void hydrateThreadFeedback(threadId).catch(() => {
+      // 预加载历史反馈失败（如未落库新会话返回 404）时静默忽略，不弹全局 toast 干扰正常使用
     })
   }, [threadId, messageId])
 
   const publish = (saved: NonNullable<typeof feedback>) => {
-    onFeedback?.({ messageId: saved.messageId, rating: saved.rating, reason: saved.reason, comment: saved.comment, shareContext: saved.shareContext })
+    onFeedback?.({
+      messageId: saved.messageId,
+      rating: saved.rating,
+      reason: saved.reason,
+      comment: saved.comment,
+      shareContext: saved.shareContext,
+    })
   }
 
   const revoke = async () => {
@@ -123,8 +138,14 @@ function PersistedFeedbackArea({
     setDislikeOpen(true)
   }
 
-  const submitDislike = async (reason: NonNullable<MessageFeedback["reason"]>, comment: string, shareContext: boolean) => {
-    if (await save({ rating: "negative", reason, comment: comment || undefined, shareContext })) setDislikeOpen(false)
+  const submitDislike = async (
+    reason: NonNullable<MessageFeedback["reason"]>,
+    comment: string,
+    shareContext: boolean
+  ) => {
+    if (await save({ rating: "negative", reason, comment: comment || undefined, shareContext })) {
+      setDislikeOpen(false)
+    }
   }
 
   return (

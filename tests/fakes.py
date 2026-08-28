@@ -48,10 +48,13 @@ class FakeChatModel(BaseChatModel):
     def _stream(self, messages, stop=None, run_manager=None, **kwargs):
         resp = self._next()
         content = resp.content or ""
+        yielded = False
         if content:
             for ch in content:
+                yielded = True
                 yield ChatGenerationChunk(message=AIMessageChunk(content=ch))
         if resp.tool_calls:
+            yielded = True
             chunks = [
                 {
                     "name": tc["name"],
@@ -67,9 +70,12 @@ class FakeChatModel(BaseChatModel):
             )
         # 真实流式模型会在流末以 usage chunk 回传 token 计量（T1.4 观测依赖此字段）
         if getattr(resp, "usage_metadata", None):
+            yielded = True
             yield ChatGenerationChunk(
                 message=AIMessageChunk(content="", usage_metadata=resp.usage_metadata)
             )
+        if not yielded:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""))
 
     def _next(self) -> AIMessage:
         i = self._i

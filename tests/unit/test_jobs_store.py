@@ -384,3 +384,36 @@ def test_liepin_live_search_has_bounded_timeout(monkeypatch) -> None:
     out = json.loads(tool.invoke({"direction": "小学数学教师 广州", "top_k": 5}))
     assert out[0]["title"] == "小学数学教师"
     assert seen["timeout"] == sj._LIEPIN_TIMEOUT_SECONDS == 25.0
+
+
+def test_search_jobs_realtime_bypasses_cache(monkeypatch) -> None:
+    import importlib
+    sj = importlib.import_module("careercrew_core.tools.internal.search_jobs")
+    store = FakeJobsStore()
+    store.upsert([_job("Java 开发实习生 (旧缓存)", city="广州")], "Java 广州")
+
+    live_called = []
+    def fake_live(keyword, city="", top_k=10, timeout=180.0):
+        live_called.append(keyword)
+        return [_job("Java 大模型工程师 (最新实时)", city="广州")]
+
+    monkeypatch.setattr(sj, "search_jobs_mcp", fake_live)
+
+    # 1. 默认常规搜索：命中 7 天缓存，不调实时
+    tool = sj.make_search_jobs_tool(store)
+    out_cached = json.loads(tool.invoke({"direction": "Java 广州", "top_k": 5}))
+    assert len(live_called) == 0
+    assert out_cached[0]["retrieval_mode"] == "cache"
+    assert "旧缓存" in out_cached[0]["title"]
+
+    # 2. 传参 realtime=True：强制穿透缓存，调实时
+    out_realtime = json.loads(tool.invoke({"direction": "Java 广州", "top_k": 5, "realtime": True}))
+    assert len(live_called) == 1
+    assert out_realtime[0]["retrieval_mode"] == "live"
+    assert "最新实时" in out_realtime[0]["title"]
+
+    # 3. 意图关键词触发：包含“实时抓取”等，自动穿透缓存
+    out_keyword = json.loads(tool.invoke({"direction": "帮我实时抓取一下 广州 Java 岗位", "top_k": 5}))
+    assert len(live_called) == 2
+    assert out_keyword[0]["retrieval_mode"] == "live"
+

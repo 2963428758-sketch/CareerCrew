@@ -467,6 +467,8 @@ class StreamingMixin:
             seen.add(r.id)
             sources.append({
                 "doc": str(r.metadata.get("doc", "")),
+                "title": str(r.metadata.get("title") or r.metadata.get("doc_name") or ""),
+                "doc_name": str(r.metadata.get("doc_name") or r.metadata.get("title") or ""),
                 "source": str(r.metadata.get("source", "")),
                 "score": round(float(r.score), 3),
                 "text": r.text,
@@ -517,7 +519,7 @@ class StreamingMixin:
         capped = _cap_sources(
             sources,
             limit=3,
-            min_score=0.1,
+            min_score=0.0,
             keep_paths=_read_image_paths(agent.last_result),
         )
         try:

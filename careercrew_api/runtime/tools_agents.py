@@ -343,6 +343,10 @@ class ToolsAgentsMixin:
             return filtered
         return tools
 
+    def _resolve_llm(self, episodic=None):
+        uid = getattr(episodic, "user_id", None) if episodic else None
+        return self.get_llm_for_user(uid)
+
     def new_job_matcher(self, cb: Callable[[str], None] | None = None, episodic=None,
                         allowed: list[str] | None = None, hitl_requires: set[str] | None = None,
                         forced_doc_ids: list[str] | None = None):
@@ -350,7 +354,7 @@ class ToolsAgentsMixin:
         from careercrew_core.agents.job_matcher import JobMatcher
 
         return JobMatcher(
-            llm=self.llm, tools=self._make_tools("matcher", episodic=episodic, allowed=allowed,
+            llm=self._resolve_llm(episodic), tools=self._make_tools("matcher", episodic=episodic, allowed=allowed,
                                                   forced_doc_ids=forced_doc_ids),
             max_iterations=8, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
@@ -365,7 +369,7 @@ class ToolsAgentsMixin:
         from careercrew_core.agents.resume_advisor import ResumeAdvisor
 
         return ResumeAdvisor(
-            llm=self.llm, tools=self._make_tools("resume", episodic=episodic, allowed=allowed,
+            llm=self._resolve_llm(episodic), tools=self._make_tools("resume", episodic=episodic, allowed=allowed,
                                                   forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
@@ -381,7 +385,7 @@ class ToolsAgentsMixin:
         from careercrew_core.agents.interviewer import Interviewer
 
         return Interviewer(
-            llm=self.llm, tools=self._make_tools("interviewer", episodic=episodic, allowed=allowed,
+            llm=self._resolve_llm(episodic), tools=self._make_tools("interviewer", episodic=episodic, allowed=allowed,
                                                   forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, prompt_path=prompt_path,
             memory_injector=self.memory_injector,
@@ -407,7 +411,7 @@ class ToolsAgentsMixin:
                 "rag_query 只会检索该分类，回答以该分类内容为准。）"
             )
         return KnowledgeAdvisor(
-            llm=self.llm,
+            llm=self._resolve_llm(episodic),
             tools=self._make_tools(
                 "knowledge", episodic=episodic, rag_sink=rag_sink, rag_category=category,
                 knowledge_access_filters=knowledge_access_filters,
@@ -428,7 +432,7 @@ class ToolsAgentsMixin:
         from careercrew_core.agents.career_planner import CareerPlanner
 
         return CareerPlanner(
-            llm=self.llm, tools=self._make_tools("planner", episodic=episodic, allowed=allowed,
+            llm=self._resolve_llm(episodic), tools=self._make_tools("planner", episodic=episodic, allowed=allowed,
                                                   forced_doc_ids=forced_doc_ids),
             max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
             history_loader=self._history_loader,
@@ -445,7 +449,7 @@ class ToolsAgentsMixin:
             from careercrew_core.agents.salary_negotiator import SalaryNegotiator
 
             return SalaryNegotiator(
-                llm=self.llm, tools=self._make_tools("salary", episodic=episodic, allowed=allowed),
+                llm=self._resolve_llm(episodic), tools=self._make_tools("salary", episodic=episodic, allowed=allowed),
                 max_iterations=15, stream_callback=cb, memory_injector=self.memory_injector,
                 history_loader=self._history_loader,
                 compaction=self._compaction_kwargs() or None,

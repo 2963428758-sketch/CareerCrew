@@ -146,14 +146,20 @@ class FakeVectorStore(BaseVectorStore):
             doc = str(record.metadata.get("doc") or record.id)
             visibility = str(record.metadata.get("visibility", "private"))
             key = (doc, visibility)
+            doc_name = record.metadata.get("doc_name") or record.metadata.get("title") or ""
             entry = docs.setdefault(key, {
                 "doc": doc,
+                "doc_name": doc_name,
+                "title": doc_name,
                 "source": record.metadata.get("source", ""),
                 "points": 0,
                 "category": record.metadata.get("category", ""),
                 "visibility": visibility,
                 "owner_user_id": str(record.metadata.get("owner_user_id", "")),
             })
+            if doc_name and not entry.get("doc_name"):
+                entry["doc_name"] = doc_name
+                entry["title"] = doc_name
             entry["points"] += 1
             if len(docs) >= limit:
                 break

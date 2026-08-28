@@ -27,9 +27,12 @@ export function SourceList({ sources, onPreview }: { sources: KnowledgeSource[];
       </p>
       {sources.map((s, i) => {
         const expanded = open.has(i)
-        const name = s.doc || s.source.split(/[\\/]/).pop() || `来源 ${i + 1}`
-        // 原始相关度百分比（0-1 -> 0-100%），不做相对归一化，避免低分片段显示成 100%
-        const pct = Math.round(s.score * 100)
+        const rawFileName = s.source.split(/[\\/]/).pop() || ""
+        const name = s.title || s.doc_name || (rawFileName && !rawFileName.startsWith(s.doc) ? rawFileName : "") || s.doc || `来源 ${i + 1}`
+        // Cross-Encoder 重排分数 (0.01-0.35) 校准为符合人类直觉的百分比
+        const pct = s.score > 0.5
+          ? Math.min(99, Math.round(s.score * 100))
+          : Math.max(10, Math.min(98, Math.round((1 / (1 + Math.exp(-15 * (s.score - 0.08)))) * 100)))
         const imgPath = s.image_path
         const image = imgPath ? images[imgPath] : undefined
         return (

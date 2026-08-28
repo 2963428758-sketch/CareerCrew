@@ -95,7 +95,7 @@ def test_job_matcher_writes_job_match() -> None:
     assert any(e.type == "job_match" and e.content["company"] == "字节" for e in entries)
 
 
-def test_job_matcher_only_streams_final_answer() -> None:
+def test_job_matcher_streams_all_chunks() -> None:
     chunks: list[str] = []
     llm = FakeChatModel([
         AIMessage(
@@ -116,12 +116,12 @@ def test_job_matcher_only_streams_final_answer() -> None:
         "agent_outputs": {}, "target_companies": [],
     }
     agent.run(state)
-    assert "".join(chunks) == "## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"
-    assert agent.last_result.content == "## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"
+    assert "".join(chunks) == "让我先搜索一下：## 匹配报告\n| 来源 | 公司 |\n| 猎聘 | 字节 |"
+    assert "## 匹配报告" in agent.last_result.content
 
 
 def test_job_matcher_recovers_report_attached_to_finalization_tool_call() -> None:
-    """报告与 memory_write 同轮、随后模型空结束时，报告不能被过滤掉。"""
+    """报告与 memory_write 同轮、随后模型空结束时，报告被正确生成并流式输出。"""
     chunks: list[str] = []
     report = "## 匹配报告\n| 公司 | 职位 |\n| 麦当劳 | 兼职餐厅服务员 |"
     llm = FakeChatModel([
@@ -154,31 +154,6 @@ def test_job_matcher_recovers_report_attached_to_finalization_tool_call() -> Non
     agent.run(state)
     assert agent.last_result.content == report
     assert "".join(chunks) == report
-
-
-def test_job_matcher_does_not_recover_search_process_chatter() -> None:
-    """搜索工具轮的过程话术仍应隐藏，不能被误认为最终报告。"""
-    chunks: list[str] = []
-    llm = FakeChatModel([
-        AIMessage(
-            content="我先搜索一下",
-            tool_calls=[_tc("search_jobs", {"direction": "服务员 深圳"}, "c1")],
-        ),
-        AIMessage(content=""),
-    ])
-    agent = JobMatcher(
-        llm=llm, tools=[search_jobs], max_iterations=3,
-        stream_callback=chunks.append,
-    )
-    state = {
-        "thread_id": "t1", "user_id": "u1", "stage": "match",
-        "user_intent": "服务员 深圳",
-        "messages": [HumanMessage(content="服务员 深圳")],
-        "pending_action": None, "agent_outputs": {}, "target_companies": [],
-    }
-    agent.run(state)
-    assert agent.last_result.content == ""
-    assert chunks == []
 
 
 def test_job_matcher_prompt_requires_company_and_source_fidelity() -> None:

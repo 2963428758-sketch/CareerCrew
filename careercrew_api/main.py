@@ -198,6 +198,8 @@ def create_app() -> FastAPI:
     app.include_router(context.router, prefix="/api/context", tags=["context"])
     app.include_router(attachments.router, prefix="/api/chat/attachments", tags=["attachments"])
     app.include_router(agent.router, prefix="/api", tags=["agent"])
+    from careercrew_api.routers import user_settings
+    app.include_router(user_settings.router, prefix="/api", tags=["settings"])
 
     # ── 无鉴权探针（放 LB/K8s/监控后面；须注册在 SPA fallback 通配路由之前） ──
     @app.get("/healthz")

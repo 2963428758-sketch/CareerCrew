@@ -11,8 +11,8 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5175,
-    strictPort: true, // 端口被占用时报错，不静默顺延到 5176 等其他端口
+    port: 5176,
+    strictPort: true, // 端口被占用时报错，不静默顺延到其他端口
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

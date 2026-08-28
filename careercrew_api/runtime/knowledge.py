@@ -91,12 +91,18 @@ class KnowledgeDocsMixin:
             category = category_for_doc(doc_name or p.stem)
         if visibility not in ("private", "public"):
             raise ValueError(f"invalid visibility: {visibility}")
-        owner_metadata = {**(metadata or {}), "owner_user_id": user_id, "visibility": visibility}
+        owner_metadata = {
+            **(metadata or {}),
+            "owner_user_id": user_id,
+            "visibility": visibility,
+            "doc_name": doc_name or p.name,
+            "title": doc_name or p.name,
+        }
         n = self.ingest_pipeline.ingest_file(
             p, metadata=owner_metadata, progress_cb=progress_cb, category=category,
             output_dir=output_dir,
         )
-        return {"doc_id": p.stem, "points": n, "path": str(p)}
+        return {"doc_id": p.stem, "doc_name": doc_name or p.name, "points": n, "path": str(p)}
 
     def delete_document(self, user_id: str, doc_id: str, is_admin: bool = False) -> tuple[int, bool]:
         """删除知识文档向量点 + 磁盘残留（原件/解析产物）。返回 (deleted, public_blocked)。

@@ -66,3 +66,56 @@ def test_siliconflow_reranker_failure_logs_warning(monkeypatch, caplog) -> None:
     assert out == [a, b]  # 原序回退
     assert any("rerank failed" in r.message for r in caplog.records)
     assert any(r.exc_info for r in caplog.records)
+
+
+def test_dashscope_reranker_success_and_fallback(monkeypatch, caplog) -> None:
+    from types import SimpleNamespace
+
+    from careercrew_ai.reranker.dashscope_reranker import DashScopeReranker
+
+    settings = SimpleNamespace(rerank=SimpleNamespace(
+        model="gte-rerank",
+        base_url="https://dashscope.aliyuncs.com/api/v1/services/rerank",
+        api_key="test-key",
+        top_m=5,
+    ))
+
+    # 1. 成功重排测试
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "output": {
+                    "results": [
+                        {"index": 1, "relevance_score": 0.95},
+                        {"index": 0, "relevance_score": 0.20},
+                    ]
+                }
+            }
+
+    monkeypatch.setattr(
+        "careercrew_ai.reranker.dashscope_reranker.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    rr = DashScopeReranker(settings)
+    a = QueryResult(id="a", score=0.5, text="t-a", metadata={})
+    b = QueryResult(id="b", score=0.9, text="t-b", metadata={})
+    out = rr.rerank("q", [a, b], top_k=2)
+    assert [r.id for r in out] == ["b", "a"]
+    assert out[0].score == 0.95
+
+    # 2. 失败优雅降级测试
+    def fake_post_err(*args, **kwargs):
+        raise ConnectionError("dashscope down")
+
+    monkeypatch.setattr(
+        "careercrew_ai.reranker.dashscope_reranker.requests.post",
+        fake_post_err,
+    )
+    with caplog.at_level("WARNING", logger="careercrew_ai.reranker.dashscope_reranker"):
+        fallback_out = rr.rerank("q", [a, b], top_k=2)
+    assert fallback_out == [a, b]
+    assert any("DashScope rerank 失败" in r.message for r in caplog.records)

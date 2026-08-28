@@ -78,6 +78,8 @@ export interface InterviewQA {
 /** 知识库问答的来源片段（done 事件携带，前端可点击查看原文）。 */
 export interface KnowledgeSource {
   doc: string
+  title?: string
+  doc_name?: string
   source: string
   score: number
   text: string

@@ -15,8 +15,8 @@ def valid_config() -> dict:
     return {
         "llm": {
             "provider": "openai",
-            "model": "zai-org/GLM-4.5V",
-            "base_url": "https://api.siliconflow.cn/v1",
+            "model": "qwen-plus",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "api_key": "sk-test-literal",
             "temperature": 0.3,
             "max_tokens": 2048,
@@ -29,9 +29,9 @@ def valid_config() -> dict:
             "batch_size": 12,
         },
         "rerank": {
-            "backend": "siliconflow",
-            "model": "BAAI/bge-reranker-v2-m3",
-            "base_url": "https://api.siliconflow.cn/v1",
+            "backend": "dashscope",
+            "model": "gte-rerank-v2",
+            "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
             "api_key": "sk-test-literal",
             "top_m": 30,
         },
@@ -71,9 +71,9 @@ def valid_config() -> dict:
             },
         },
         "vlm": {
-            "model": "zai-org/GLM-4.5V",
-            "rerank_model": "Qwen/Qwen3-VL-Reranker-8B",
-            "base_url": "https://api.siliconflow.cn/v1",
+            "model": "qwen-vl-max",
+            "rerank_model": "",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "api_key": "sk-test-literal",
         },
         "supervisor": {

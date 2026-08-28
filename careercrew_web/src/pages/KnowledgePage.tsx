@@ -166,7 +166,13 @@ export default function KnowledgePage() {
     if (stream.status === "streaming") return
     const turn = groupTurns(messages).find((t) => t.id === turnId)
     if (!turn?.assistant || !turn.user.content) return
-    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
+    const targetTurnId = turn.assistant.turnId || turn.user.turnId || turn.id
+    const nextVerIndex = (turn.versions?.length ?? 1)
+    setVersionSelections((prev) => ({ ...prev, [turn.id]: nextVerIndex }))
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: "assistant", content: "", streaming: true, turnId: targetTurnId },
+    ])
     jumpToLatest()
     if (messageId) await regenerateStream(currentThreadId, messageId)
     else await startStream(currentThreadId, "/knowledge/ask", {
@@ -249,7 +255,7 @@ export default function KnowledgePage() {
                   const selectedVersion = Math.min(versionSelections[turn.id] ?? versions.length - 1, versions.length - 1)
                   const asst = versions[selectedVersion]
                   const isNewestVersion = selectedVersion === versions.length - 1
-                  const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isLast
+                  const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isNewestVersion
                   return (
                     <TurnSection
                       key={turn.id}

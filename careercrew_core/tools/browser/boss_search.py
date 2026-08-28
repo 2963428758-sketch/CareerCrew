@@ -8,14 +8,29 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote_plus
 
 from careercrew_core.tools.browser.cdp import open_boss_page
-from careercrew_core.tools.browser.patterns import BOSS_PATTERNS
+from careercrew_core.tools.browser.patterns import BOSS_CITY_CODES, BOSS_PATTERNS
 from careercrew_core.tools.browser.throttle import human_pause
 
 logger = logging.getLogger(__name__)
 _BOSS_DIGIT_START = 0xE031
 _BOSS_DIGIT_END = 0xE03A
+
+
+def _resolve_boss_city_code(city: str) -> str:
+    """根据城市名解析 Boss直聘 9 位城市编码。未识别/全国时返回空字符串。"""
+    c = (city or "").strip()
+    if not c or c in ("全国", "不限"):
+        return ""
+    if c.isdigit():
+        return c
+    for name, code in BOSS_CITY_CODES.items():
+        if name and name in c:
+            return code
+    return ""
+
 
 
 def _text(card: Any, selector: str) -> str:
@@ -98,19 +113,34 @@ def search_boss_jobs(
     pause: bool = True,
 ) -> list[dict]:
     """Boss直聘搜索岗位；渠道不可用（未配置/风控页/超时）抛异常由上层降级。"""
+    city_code = _resolve_boss_city_code(city)
     with open_boss_page(cdp_url) as page:
         url = BOSS_PATTERNS["search_url"].format(
-            query=direction.strip(), city=(city or "").strip()
+            query=quote_plus(direction.strip()), city=city_code
         )
+        logger.info("boss search navigating to %s", url)
         page.goto(url, timeout=30000, wait_until="domcontentloaded")
         if pause:
             human_pause()
-        page.wait_for_selector(BOSS_PATTERNS["wait_selector"], timeout=15000)
+        else:
+            try:
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+        if _looks_blocked(page):
+            raise RuntimeError("Boss直聘命中安全验证，请手动通过验证后重试")
+
+        try:
+            page.wait_for_selector(BOSS_PATTERNS["wait_selector"], timeout=15000)
+        except Exception:
+            logger.warning("boss wait_for_selector timed out on %s", url)
 
         if _looks_blocked(page):
             raise RuntimeError("Boss直聘命中安全验证，请手动通过验证后重试")
 
         cards = page.query_selector_all(BOSS_PATTERNS["job_card"])
-        jobs = parse_job_cards(list(cards)[:top_k])
-        logger.info("boss search %r -> %d jobs", direction, len(jobs))
+        raw_limit = max(top_k * 3, 30)
+        jobs = parse_job_cards(list(cards)[:raw_limit])
+        logger.info("boss search %r -> %d jobs (from %d cards)", direction, len(jobs), len(cards))
         return jobs

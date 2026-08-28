@@ -16,10 +16,10 @@ from typing import Any
 
 
 @contextlib.contextmanager
-def open_boss_page(cdp_url: str, timeout_ms: int = 20000) -> Iterator[Any]:
+def open_cdp_page(cdp_url: str, timeout_ms: int = 20000) -> Iterator[Any]:
     """连上 CDP 浏览器并开一个新页面；退出时关页面、断连接（浏览器进程不受影响）。"""
     if not (cdp_url or "").strip():
-        raise ValueError("boss CDP 未配置（tools.search.boss_cdp_url），渠道禁用")
+        raise ValueError("CDP 调试端口未配置（tools.search.boss_cdp_url），渠道禁用")
 
     from patchright.sync_api import sync_playwright
 
@@ -36,3 +36,8 @@ def open_boss_page(cdp_url: str, timeout_ms: int = 20000) -> Iterator[Any]:
         finally:
             with contextlib.suppress(Exception):
                 browser.close()
+
+
+# 向后兼容别名
+open_boss_page = open_cdp_page
+

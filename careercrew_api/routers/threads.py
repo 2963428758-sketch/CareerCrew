@@ -369,6 +369,7 @@ def regenerate_message(
                 message_id, user_id, cb, cancel_check=cancel.check
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
+            result["sources"] = getattr(res, "sources", [])
             result["turn"] = getattr(res, "turn", None)
 
         failed = False
@@ -390,6 +391,7 @@ def regenerate_message(
                 done_message_id = done_fields.get("message_id")
                 yield done_event(
                     result["content"] or "".join(content_parts),
+                    sources=result.get("sources", []),
                     **done_fields,
                 )
         except Exception as e:

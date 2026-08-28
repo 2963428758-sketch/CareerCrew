@@ -49,15 +49,22 @@ interface AppSidebarProps {
  */
 export function AppSidebar({ collapsed, onToggleCollapsed, overlay, overlayOpen, onOverlayClose, auth }: AppSidebarProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const compact = collapsed && !overlay
   /** 质检员是只读审查角色：业务功能（对话/会诊等）后端一律 403，界面整体隐藏 */
   const isReviewer = (auth?.role as string | undefined) === "quality_reviewer"
 
-  /** 新对话：跳回求职规划模块并开启新会话（与 ChatPage「新对话」同一逻辑）。 */
+  /** 新对话：在当前对话模块内开启新会话；若在非会话管理页面则导航至求职规划开启。 */
   const handleNewTask = () => {
-    useChatStore.getState().newConversation()
-    void useThreadStore.getState().registerThread("chat")
-    navigate("/")
+    const activeModule = moduleOfPath(location.pathname)
+    const targetModule: ThreadModule = activeModule ?? "chat"
+    if (targetModule === "chat") {
+      useChatStore.getState().newConversation()
+    }
+    void useThreadStore.getState().registerThread(targetModule)
+    if (!activeModule) {
+      navigate("/")
+    }
     onOverlayClose()
   }
 

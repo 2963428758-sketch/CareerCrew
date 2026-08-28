@@ -67,8 +67,8 @@ class LLMSettings(BaseModel):
     model: str
     base_url: str
     api_key: str
-    temperature: float = 0.3
-    max_tokens: int = 2048
+    temperature: float = 0.7
+    max_tokens: int = 4096
 
 
 class EmbeddingSettings(BaseModel):
@@ -81,7 +81,7 @@ class EmbeddingSettings(BaseModel):
 
 
 class RerankSettings(BaseModel):
-    backend: str  # none | siliconflow | local_bge
+    backend: str  # none | dashscope | local_bge
     model: str = ""
     base_url: str = ""
     api_key: str = ""
@@ -143,11 +143,11 @@ class RagSettings(BaseModel):
 
 
 class VLMSettings(BaseModel):
-    """多模态生成/精排（硅基流动 API）。"""
+    """多模态生成/精排（阿里云百炼平台）。"""
 
     model: str
     rerank_model: str
-    base_url: str = "https://api.siliconflow.cn/v1"
+    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     api_key: str = ""
 
 
@@ -250,7 +250,12 @@ class AuthSettings(BaseModel):
 
     environment: str = "development"
     database_url: str = ""   # Postgres DSN；空则回退 DATABASE_URL 环境变量
-    trusted_origins: list[str] = ["http://localhost:5175", "http://127.0.0.1:5175"]
+    trusted_origins: list[str] = [
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+    ]
     login_max_failures: int = 5
     login_failure_window_minutes: int = 15
     login_lock_minutes: int = 15
@@ -363,17 +368,17 @@ def validate_settings(settings: Settings) -> None:
 
     # LLM api_key：空或未解析的 ${VAR} 视为未设置
     if not settings.llm.api_key or "${" in settings.llm.api_key:
-        problems.append("llm.api_key 未设置（检查环境变量 SILICONFLOW_API_KEY）")
+        problems.append("llm.api_key 未设置（检查环境变量 DASHSCOPE_API_KEY）")
 
-    # Rerank api_key：仅 backend=siliconflow 时要求
-    if settings.rerank.backend == "siliconflow" and (
+    # Rerank api_key：backend=dashscope 时要求
+    if settings.rerank.backend == "dashscope" and (
         not settings.rerank.api_key or "${" in settings.rerank.api_key
     ):
-        problems.append("rerank.api_key 未设置（backend=siliconflow 时需 SILICONFLOW_API_KEY）")
+        problems.append(f"rerank.api_key 未设置（backend={settings.rerank.backend} 时需配置 API Key）")
 
     # VLM api_key（多模态生成/精排）
     if not settings.vlm.api_key or "${" in settings.vlm.api_key:
-        problems.append("vlm.api_key 未设置（需 SILICONFLOW_API_KEY）")
+        problems.append("vlm.api_key 未设置")
 
     # LangSmith api_key：enabled=true 时必须提供 LANGSMITH_API_KEY
     if settings.langsmith.enabled and (
@@ -447,7 +452,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
     override=True：项目根 .env 是本地配置的唯一权威来源，
     覆盖 Shell/系统遗留的同名环境变量（避免历史旧值串配置）。
     """
-    load_dotenv(override=True)  # 读取 .env（已 gitignore），注入 SILICONFLOW_API_KEY 等
+    load_dotenv(override=True)  # 读取 .env（已 gitignore），注入 DASHSCOPE_API_KEY 等
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
         raise SettingsError(f"配置文件不存在: {config_path}")

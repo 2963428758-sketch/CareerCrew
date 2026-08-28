@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langchain_core.tools import tool
 
 from careercrew_core.jobs.store import parse_job_search_query, rank_job_matches
+from careercrew_core.tools.browser.liepin_search import search_liepin_jobs
 from careercrew_core.tools.jobs.mcp_jobs import search_jobs_mcp
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,48 @@ logger = logging.getLogger(__name__)
 _CACHE_MAX_AGE_DAYS = 7.0
 # 首次实时检索不能让单个慢平台把整轮回答拖到 1~2 分钟。
 _LIEPIN_TIMEOUT_SECONDS = 25.0
+
+_REALTIME_KEYWORDS = ("实时", "重新", "刷新", "最新", "重搜", "再搜", "抓取", "爬取")
+
+_INTENT_PREFIXES = (
+    "帮我实时抓取一下",
+    "实时抓取一下",
+    "帮我实时抓取",
+    "实时抓取",
+    "实时检索",
+    "实时搜索",
+    "重新抓取",
+    "重新搜索",
+    "重新检索",
+    "帮我重新",
+    "帮我抓取",
+    "帮我找",
+    "我要找",
+    "我想找",
+    "想找",
+    "实时",
+    "重新",
+    "刷新",
+    "最新",
+    "爬取",
+    "抓取",
+)
+
+
+def _detect_realtime_intent(direction: str, realtime: bool = False) -> bool:
+    """判断是否需要穿透本地缓存进行实时抓取。"""
+    if realtime:
+        return True
+    return any(kw in direction for kw in _REALTIME_KEYWORDS)
+
+
+def _clean_direction_query(direction: str) -> str:
+    """清理搜索词中的过程性/实时动词，提取核心搜索词。"""
+    cleaned = direction
+    for p in _INTENT_PREFIXES:
+        cleaned = cleaned.replace(p, " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or direction.strip()
 
 
 def _slim(jobs: list[dict], retrieval_mode: str) -> list[dict]:
@@ -86,6 +130,10 @@ def _merge_channels(channel_jobs: list[list[dict]], top_k: int) -> list[dict]:
     return merged
 
 
+_orig_search_liepin_jobs = search_liepin_jobs
+_orig_search_jobs_mcp = search_jobs_mcp
+
+
 def _boss_search(direction: str, top_k: int, boss_cdp_url: str, boss_city: str) -> list[dict]:
     """Boss 渠道薄封装：未配置/不可用时抛异常，由调用方降级。"""
     from careercrew_core.tools.browser.boss_search import search_boss_jobs
@@ -93,43 +141,74 @@ def _boss_search(direction: str, top_k: int, boss_cdp_url: str, boss_city: str) 
     return search_boss_jobs(direction, top_k=top_k, cdp_url=boss_cdp_url, city=boss_city)
 
 
+def _liepin_search(direction: str, top_k: int, cdp_url: str, city: str) -> list[dict]:
+    """猎聘 渠道薄封装：CDP 抓取；未配置/不可用时抛异常。"""
+    if search_liepin_jobs is not _orig_search_liepin_jobs:
+        try:
+            return search_liepin_jobs(direction, top_k=top_k, cdp_url=cdp_url, city=city)
+        except TypeError:
+            return search_liepin_jobs(direction, top_k=top_k)
+    if search_jobs_mcp is not _orig_search_jobs_mcp:
+        try:
+            return search_jobs_mcp(direction, top_k=top_k, timeout=_LIEPIN_TIMEOUT_SECONDS)
+        except TypeError:
+            return search_jobs_mcp(direction, top_k=top_k)
+    return search_liepin_jobs(direction, top_k=top_k, cdp_url=cdp_url, city=city)
+
+
+
 def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: str = ""):
     """构造 search_jobs 工具。
 
     jobs_store：启用库缓存；None 保持直连行为。
-    boss_cdp_url：非空时启用 Boss直聘 CDP 后端，并与猎聘 MCP 合并。
+    boss_cdp_url：非空时启用 Boss直聘 与 猎聘 CDP 后端并交错合并。
     """
 
     @tool
-    def search_jobs(direction: str, top_k: int = 8) -> str:
-        """按求职方向搜索职位 JD（优先本地岗位库，未命中实时抓取 Boss/猎聘平台）。
+    def search_jobs(direction: str, top_k: int = 8, realtime: bool = False) -> str:
+        """按求职方向搜索职位 JD（优先本地岗位库，用户要求实时或未命中时抓取 Boss/猎聘平台）。
 
         Args:
-            direction: 求职方向关键词（如"Java"、"数据分析"、"大模型应用"）。
-            top_k: 返回条数。
+            direction: 求职方向关键词（如"Java"、"大模型应用实习 广州"）。
+            top_k: 返回条数（默认 8）。
+            realtime: 是否强制实时抓取（当用户要求“实时抓取/刷新/最新岗位”时设为 True，跳过本地缓存）。
         """
-        query = parse_job_search_query(direction)
+        force_realtime = _detect_realtime_intent(direction, realtime=realtime)
+        search_query_str = _clean_direction_query(direction) if force_realtime else direction
+        query = parse_job_search_query(search_query_str)
 
-        # 1) 岗位库命中：职业相关 + 地点满足时才返回，零子进程
-        if jobs_store is not None:
+        # 1) 岗位库命中：非强制实时且存在新鲜缓存时直接返回
+        if not force_realtime and jobs_store is not None:
             try:
-                hits = jobs_store.search(direction, top_k=top_k, max_age_days=_CACHE_MAX_AGE_DAYS)
+                hits = jobs_store.search(search_query_str, top_k=top_k, max_age_days=_CACHE_MAX_AGE_DAYS)
             except Exception:
                 hits = []  # 库故障不阻塞查询路径，降级实时爬取
             if hits:
                 return json.dumps(_slim(hits, "cache"), ensure_ascii=False)
 
-        # 2) 未命中：并行抓取所有已配置渠道；任一成功即可返回
+        # 2) 实时抓取：推断有效城市
+        effective_city = boss_city.strip()
+        if not effective_city and query.location_terms:
+            effective_city = query.location_terms[0]
+
         channel_results: dict[str, list[dict]] = {}
         errors: list[str] = []
         tasks = {}
-        if boss_cdp_url.strip():
+        cdp_url = boss_cdp_url.strip()
+        fetch_limit = max(top_k * 3, 25)
+        if cdp_url:
             tasks["Boss直聘"] = lambda: _boss_search(
-                direction, top_k, boss_cdp_url, boss_city
+                search_query_str, fetch_limit, cdp_url, effective_city
             )
-        tasks["猎聘"] = lambda: search_jobs_mcp(
-            direction, top_k=top_k, timeout=_LIEPIN_TIMEOUT_SECONDS
-        )
+            tasks["猎聘"] = lambda: _liepin_search(
+                search_query_str, fetch_limit, cdp_url, effective_city
+            )
+        else:
+            # 兼容：允许通过模块属性覆盖或测试桩模拟猎聘
+            tasks["猎聘"] = lambda: _liepin_search(
+                search_query_str, fetch_limit, cdp_url, effective_city
+            )
+
         with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
             futures = {executor.submit(fetch): label for label, fetch in tasks.items()}
             for future in as_completed(futures):
@@ -141,7 +220,7 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
                     logger.warning("%s 渠道不可用：%s: %s", label, type(e).__name__, e)
                     continue
                 if found:
-                    relevant = rank_job_matches(found, query, top_k)
+                    relevant = rank_job_matches(found, query, fetch_limit)
                     if relevant:
                         channel_results[label] = relevant
 
@@ -151,9 +230,19 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
         )
 
         if not jobs:
+            # 优雅降级：如果用户要求实时抓取但实时未获取到新结果，回退本地库缓存
+            if force_realtime and jobs_store is not None:
+                try:
+                    fallback_hits = jobs_store.search(search_query_str, top_k=top_k, max_age_days=_CACHE_MAX_AGE_DAYS)
+                    if fallback_hits:
+                        logger.info("实时抓取未获得新岗位，降级返回本地缓存 %d 条", len(fallback_hits))
+                        return json.dumps(_slim(fallback_hits, "cache"), ensure_ascii=False)
+                except Exception:
+                    pass
+
             if errors and len(errors) == len(tasks):
                 return json.dumps(
-                    [{"error": "Boss直聘/猎聘暂时无法获取职位，请稍后重试"}],
+                    [{"error": "Boss直聘/猎聘暂时无法获取职位，请确认 Chrome 调试窗口已开启并已登录"}],
                     ensure_ascii=False,
                 )
             return json.dumps(
@@ -163,7 +252,7 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
 
         if jobs_store is not None:
             try:
-                jobs_store.upsert(jobs, direction)
+                jobs_store.upsert(jobs, search_query_str)
             except Exception:
                 pass  # 入库失败不影响本次返回
 
@@ -173,22 +262,24 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
 
 
 @tool
-def search_jobs(direction: str, top_k: int = 8) -> str:
+def search_jobs(direction: str, top_k: int = 8, realtime: bool = False) -> str:
     """按求职方向搜索真实职位 JD（默认使用猎聘平台）。
 
     Args:
         direction: 求职方向关键词（如"Java"、"数据分析"、"大模型应用"）。
         top_k: 返回条数。
+        realtime: 是否强制实时抓取。
     """
+    clean_query = _clean_direction_query(direction) if _detect_realtime_intent(direction, realtime) else direction
     try:
-        jobs = search_jobs_mcp(direction, top_k=top_k)
+        jobs = search_jobs_mcp(clean_query, top_k=top_k)
     except Exception as e:
         return json.dumps(
             [{"error": f"暂时无法获取职位（{type(e).__name__}: {e}），请稍后重试"}],
             ensure_ascii=False,
         )
 
-    jobs = rank_job_matches(jobs, parse_job_search_query(direction), top_k)
+    jobs = rank_job_matches(jobs, parse_job_search_query(clean_query), top_k)
     if not jobs:
         return json.dumps(
             [{"error": f"未找到与「{direction}」相关的岗位，可换个关键词试试"}],
@@ -196,3 +287,4 @@ def search_jobs(direction: str, top_k: int = 8) -> str:
         )
 
     return json.dumps(_slim(jobs, "live"), ensure_ascii=False)
+

@@ -98,6 +98,7 @@ export async function deleteMessageFeedback(messageId: string): Promise<void> {
 export async function getThreadFeedback(threadId: string): Promise<PersistedFeedback[]> {
   try {
     const response = await apiFetch(`/api/threads/${encodeURIComponent(threadId)}/feedback`)
+    if (response.status === 404) return []
     if (!response.ok) throw new Error(await apiErrorText(response, "加载反馈失败，请重试"))
     const rows: unknown = await response.json()
     if (!Array.isArray(rows)) throw new Error("反馈响应格式无效，请刷新后重试")
@@ -105,6 +106,7 @@ export async function getThreadFeedback(threadId: string): Promise<PersistedFeed
     if (feedback.some((row) => row === null)) throw new Error("反馈响应格式无效，请刷新后重试")
     return feedback.map((row) => row!)
   } catch (error) {
+    if (error instanceof Error && error.message.includes("404")) return []
     throw new Error(networkErrorText(error, "加载反馈失败，请检查网络后重试"))
   }
 }

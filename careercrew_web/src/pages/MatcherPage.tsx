@@ -22,6 +22,7 @@ import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { AGENT_META, type MessageAttachment } from "@/types"
 import { restoreHistory } from "@/lib/historyRestore"
+import { CdpStatusBar } from "@/components/matcher/CdpStatusBar"
 
 interface MatcherMessage {
   id: string
@@ -168,7 +169,13 @@ export default function MatcherPage() {
     if (stream.status === "streaming") return
     const turn = groupTurns(messages).find((t) => t.id === turnId)
     if (!turn?.assistant || !turn.user.content) return
-    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
+    const targetTurnId = turn.assistant.turnId || turn.user.turnId || turn.id
+    const nextVerIndex = (turn.versions?.length ?? 1)
+    setVersionSelections((prev) => ({ ...prev, [turn.id]: nextVerIndex }))
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: "assistant", content: "", streaming: true, turnId: targetTurnId },
+    ])
     jumpToLatest()
     if (messageId) await regenerateStream(currentThreadId, messageId)
     else await startStream(currentThreadId, "/chat/match", { intent: turn.user.content, thread_id: currentThreadId })
@@ -205,6 +212,8 @@ export default function MatcherPage() {
         }
       />
 
+      {messages.length > 0 && <CdpStatusBar variant="banner" onToast={showToast} />}
+
       <div
         ref={workspaceRef}
         onMouseEnter={search.workspaceHoverHandlers.onMouseEnter}
@@ -224,19 +233,24 @@ export default function MatcherPage() {
         <div ref={scrollRef} className="h-full overflow-y-auto">
           <div className="relative mx-auto w-full max-w-[928px] px-4 pb-[200px] pt-7 sm:px-6 md:pl-12">
             {messages.length === 0 ? (
-              <EmptyState
-                title="告诉匹配官你的方向"
-                description={
-                  <>
-                    输入求职方向与背景后，
-                    <br />
-                    匹配官会综合检索 Boss直聘与猎聘岗位，
-                    <br />
-                    并在结果中标注来源。
-                  </>
-                }
-                accent={<AgentDots colors={["#0D9488", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
-              />
+              <div className="flex flex-col items-center gap-6">
+                <EmptyState
+                  title="告诉匹配官你的方向"
+                  description={
+                    <>
+                      输入求职方向与背景后，
+                      <br />
+                      匹配官会综合检索 Boss直聘与猎聘岗位，
+                      <br />
+                      并在结果中标注来源。
+                    </>
+                  }
+                  accent={<AgentDots colors={["#0D9488", "#D97706", "#BE185D", "#7C3AED", "#2563EB"]} />}
+                />
+                <div className="w-full max-w-[660px]">
+                  <CdpStatusBar variant="card" onToast={showToast} />
+                </div>
+              </div>
             ) : (
               <div className="flex flex-col gap-10">
                 {turns.map((turn, i) => {
@@ -245,7 +259,7 @@ export default function MatcherPage() {
                   const selectedVersion = Math.min(versionSelections[turn.id] ?? versions.length - 1, versions.length - 1)
                   const asst = versions[selectedVersion]
                   const isNewestVersion = selectedVersion === versions.length - 1
-                  const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isLast
+                  const asstStreaming = Boolean(asst?.streaming) && lastIsStreaming && isNewestVersion
                   const content = asstStreaming ? stream.streamingText : (asst?.content ?? "")
                   return (
                     <TurnSection

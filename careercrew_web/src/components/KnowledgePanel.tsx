@@ -13,6 +13,8 @@ import { apiErrorText, networkErrorText } from "@/lib/errors"
 
 interface KnowledgeDoc {
   doc: string
+  doc_name?: string
+  title?: string
   source: string
   points: number
   category?: string
@@ -337,12 +339,13 @@ function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
   onDelete: (doc: KnowledgeDoc) => void
   onTogglePublish: (doc: KnowledgeDoc) => void
 }) {
+  const displayName = doc.title || doc.doc_name || doc.source.split(/[\\/]/).pop() || doc.doc
   return (
     <div className="flex items-center gap-2 rounded-[8px] border border-[var(--border-soft)] bg-workspace px-3 py-2">
       <BookOpen className="h-4 w-4 shrink-0 text-primary" strokeWidth={1.7} />
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-1.5 truncate text-[13px] font-medium text-ink">
-          <span className="truncate">{doc.doc}</span>
+          <span className="truncate" title={displayName}>{displayName}</span>
           <span className={cn(
             "shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px] font-medium",
             doc.visibility === "public" ? "bg-amber-500/15 text-amber-600" : "bg-primary/10 text-primary"
@@ -356,7 +359,7 @@ function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
           )}
         </p>
         <p className="truncate text-[11px] text-ink-faint">
-          {doc.source.split(/[\\/]/).pop() || doc.source}
+          ID: {doc.doc} · {doc.points} 向量点
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-1">

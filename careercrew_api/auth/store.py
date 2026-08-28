@@ -124,6 +124,12 @@ class AccountStore(ABC):
     @abstractmethod
     def clear_login_failures(self, key: str) -> None: ...
 
+    def get_user_settings(self, user_id: str) -> dict[str, Any]:
+        return {}
+
+    def save_user_settings(self, user_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
     @staticmethod
     def _public(row: dict[str, Any]) -> dict[str, Any]:
         return {k: row[k] for k in ("id", "username", "role", "status",
@@ -218,6 +224,12 @@ class PostgresAccountStore(AccountStore):
                     "CREATE TABLE IF NOT EXISTS auth_login_attempts ("
                     "key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, "
                     "window_start TIMESTAMPTZ, locked_until TIMESTAMPTZ, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS user_settings ("
+                    "user_id TEXT PRIMARY KEY, "
+                    "settings JSONB NOT NULL DEFAULT '{}'::jsonb, "
                     "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
                 )
                 self._connected = True
@@ -470,6 +482,33 @@ class PostgresAccountStore(AccountStore):
     def clear_login_failures(self, key: str) -> None:
         with self._connect() as conn, conn.transaction():
             conn.execute("DELETE FROM auth_login_attempts WHERE key = %s", (key,))
+
+    def get_user_settings(self, user_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT settings FROM user_settings WHERE user_id = %s", (user_id,)
+            ).fetchone()
+            if not row or not row.get("settings"):
+                return {}
+            val = row["settings"]
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return {}
+            return dict(val) if isinstance(val, dict) else {}
+
+    def save_user_settings(self, user_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+        settings_json = json.dumps(settings, ensure_ascii=False)
+        with self._connect() as conn, conn.transaction():
+            conn.execute(
+                "INSERT INTO user_settings (user_id, settings, updated_at) "
+                "VALUES (%s, %s::jsonb, now()) "
+                "ON CONFLICT (user_id) DO UPDATE "
+                "SET settings = EXCLUDED.settings, updated_at = now()",
+                (user_id, settings_json),
+            )
+        return settings
 
 
 def create_account_store(settings: AuthSettings) -> AccountStore:

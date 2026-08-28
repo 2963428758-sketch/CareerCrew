@@ -21,19 +21,22 @@ def create_llm(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> BaseChatModel:
     """按 settings.llm 创建 ChatModel。
 
-    model_provider="openai" -> ChatOpenAI（OpenAI 兼容，base_url 切到硅基流动）。
-    temperature/max_tokens 可临时覆盖，否则取配置默认。
+    model_provider="openai" -> ChatOpenAI（OpenAI 兼容）。
+    api_key/model/temperature/max_tokens 可临时覆盖，否则取配置默认。
     timeout/max_retries 兜底：上游挂起时快速失败重试，而非干等到 SSE 层空闲超时。
     """
     cfg = settings.llm
+    key = api_key if (api_key is not None and api_key.strip()) else cfg.api_key
     return init_chat_model(
-        model=cfg.model,
+        model=model if model is not None else cfg.model,
         model_provider=cfg.provider,
         base_url=cfg.base_url,
-        api_key=cfg.api_key,
+        api_key=key,
         temperature=temperature if temperature is not None else cfg.temperature,
         max_tokens=max_tokens if max_tokens is not None else cfg.max_tokens,
         timeout=60,

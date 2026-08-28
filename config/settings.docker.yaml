@@ -6,11 +6,11 @@
 
 llm:
   provider: openai
-  model: "deepseek-ai/DeepSeek-V3.2"
-  base_url: "https://api.siliconflow.cn/v1"
-  api_key: "${SILICONFLOW_API_KEY}"
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "${DASHSCOPE_API_KEY}"
   temperature: 0.3
-  max_tokens: 2048
+  max_tokens: 4096
 
 embedding:
   provider: bge_m3_local
@@ -21,10 +21,10 @@ embedding:
   device: cpu                       # cpu（默认，避免显存叠加 OOM）| cuda（有卡机型提速明显）
 
 rerank:
-  backend: siliconflow
-  model: BAAI/bge-reranker-v2-m3
-  base_url: "https://api.siliconflow.cn/v1"
-  api_key: "${SILICONFLOW_API_KEY}"
+  backend: dashscope
+  model: "gte-rerank-v2"
+  base_url: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+  api_key: "${DASHSCOPE_API_KEY}"
   top_m: 30
 
 vector_store:
@@ -66,10 +66,10 @@ rag:
     language: ch
 
 vlm:
-  model: "Qwen/Qwen3-VL-32B-Instruct"
-  rerank_model: Qwen/Qwen3-VL-Reranker-8B
-  base_url: "https://api.siliconflow.cn/v1"
-  api_key: "${SILICONFLOW_API_KEY}"
+  model: "qwen-vl-max"
+  rerank_model: ""
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "${DASHSCOPE_API_KEY}"
 
 supervisor:
   checkpointer:
@@ -104,7 +104,7 @@ tools:
     boss_city: ""                 # 可选城市代码（如北京 101010100）；空=全国
   registry:
     internal: [rag_query, memory_search, memory_write, profile_update, search_jobs, salary_query, read_image, submit_application]
-    mcp: [mcp_jobs, google_mcp]
+    mcp: [google_mcp]
   hitl:
     requires_confirmation:
       - submit_application

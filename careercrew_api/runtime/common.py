@@ -133,7 +133,7 @@ def _read_image_paths(result) -> set[str]:
 def _cap_sources(
     sources: list[dict],
     limit: int = 3,
-    min_score: float = 0.1,
+    min_score: float = 0.0,
     keep_paths: set[str] | None = None,
 ) -> list[dict]:
     """知识库问答来源收敛：按分数降序取前 limit 条（默认 top-3）。

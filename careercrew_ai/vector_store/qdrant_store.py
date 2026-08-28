@@ -157,13 +157,11 @@ class QdrantStore(BaseVectorStore):
         # 因此：有其它 must 时把「public OR 本人 owner」作为嵌套 Filter（min_should=1）
         # 并入 must，保证它和 doc 白名单做 AND；仅有访问条件时保持原样走 should。
         if access_should:
-            if must:
-                must.append(Filter(
-                    should=access_should,
-                    min_should=MinShould(conditions=access_should, min_count=1),
-                ))
-            else:
-                return Filter(must=must, should=access_should)
+            from qdrant_client.models import MinShould
+            must.append(Filter(
+                should=access_should,
+                min_should=MinShould(conditions=access_should, min_count=1),
+            ))
         return Filter(must=must) if must else None
 
     @staticmethod
@@ -421,14 +419,20 @@ class QdrantStore(BaseVectorStore):
                 doc = payload.get("doc") or payload.get("_id", "")
                 visibility = str(payload.get("visibility", "private"))
                 key = (doc, visibility)
+                doc_name = payload.get("doc_name") or payload.get("title") or ""
                 entry = docs.setdefault(key, {
                     "doc": doc,
+                    "doc_name": doc_name,
+                    "title": doc_name,
                     "source": payload.get("source", ""),
                     "points": 0,
                     "category": payload.get("category", ""),
                     "visibility": visibility,
                     "owner_user_id": str(payload.get("owner_user_id", "")),
                 })
+                if doc_name and not entry.get("doc_name"):
+                    entry["doc_name"] = doc_name
+                    entry["title"] = doc_name
                 entry["points"] += 1
             if offset is None or len(docs) >= limit:
                 break

@@ -1,8 +1,18 @@
-# CareerCrew 后端镜像（多阶段：builder 把重依赖装进独立 venv，runtime 只携带产物）
+# CareerCrew 全栈镜像（多阶段：web-builder 构建前端，builder 装依赖进独立 venv，runtime 组装最小产物）
 # 构建上下文即仓库根：docker build -t careercrew .
 #
-# 分层策略：占位包 + pyproject 先装全部依赖——该层仅随 pyproject.toml 变化失效，
-# 业务代码改动不再触发 torch/FlagEmbedding 等重依赖的全量重装。
+# 分层策略：
+# 1. web-builder：Node 22 编译 React 前端，产物输出到 dist/
+# 2. builder：占位包 + pyproject 先装全部 Python 依赖（含 CPU 版 torch/FlagEmbedding）
+# 3. runtime：组装 Python venv 与前端 dist，单端口启动提供静态 SPA 与 API 服务
+
+# ── 阶段 0：前端构建 ──
+FROM node:22-alpine AS web-builder
+WORKDIR /web
+COPY careercrew_web/package*.json ./
+RUN npm ci --prefer-offline
+COPY careercrew_web/ ./
+RUN npm run build
 
 # ── 阶段一：依赖构建 ──
 FROM python:3.12-slim AS builder
@@ -55,6 +65,9 @@ COPY careercrew_core/ careercrew_core/
 COPY careercrew_ai/ careercrew_ai/
 COPY careercrew_api/ careercrew_api/
 COPY careercrew_mcp/ careercrew_mcp/
+
+# 拷贝阶段 0 构建的前端生产构建产物，供 FastAPI 单端口托管 + SPA fallback
+COPY --from=web-builder /web/dist /app/careercrew_web/dist
 
 # 非 root 运行；data/（上传与解析产物）以 volume 挂载时注意属主
 RUN useradd --create-home appuser \
