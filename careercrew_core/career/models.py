@@ -235,6 +235,37 @@ class RealInterview(RealInterviewInput):
     created_at: datetime
 
 
+# ── 联系人与内推 ──
+
+class ContactInput(CareerInput):
+    contact_name: str = Field(min_length=1, max_length=120)
+    company: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=120)
+    channel: str = Field(default="", max_length=100)
+    contact_value: str = Field(default="", max_length=300)
+    opportunity_id: str = Field(default="", max_length=100)
+    notes: str = Field(default="", max_length=2000)
+    next_contact_date: str = Field(default="", max_length=10)
+
+    @field_validator("contact_name")
+    @classmethod
+    def _name(cls, value):
+        if not value.strip():
+            raise ValueError("联系人姓名不能为空")
+        return value
+
+    @field_validator("next_contact_date")
+    @classmethod
+    def _date(cls, value):
+        return _optional_date(value)
+
+
+class Contact(ContactInput):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+
 # ── 求职画像（首次引导） ──
 
 class CareerProfileInput(CareerInput):

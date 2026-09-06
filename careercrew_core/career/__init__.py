@@ -6,6 +6,8 @@ from careercrew_core.career.models import (  # noqa: F401
     BoardStatusInput,
     CareerProfile,
     CareerProfileInput,
+    Contact,
+    ContactInput,
     HRFollowup,
     HRFollowupInput,
     HRReplyDraftInput,

@@ -134,6 +134,14 @@ class SqliteCareerPool(SqlitePreparationPool):
                 FOREIGN KEY (owner_id, opportunity_id)
                     REFERENCES preparation_opportunities (owner_id, id) ON DELETE CASCADE
             );
+            CREATE TABLE job_contacts (
+                id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+                company TEXT NOT NULL DEFAULT '', contact_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL DEFAULT '',
+                contact_value TEXT NOT NULL DEFAULT '', opportunity_id TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '', next_contact_date TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE career_profiles (
                 owner_id TEXT PRIMARY KEY, stage TEXT NOT NULL DEFAULT '',
                 city TEXT NOT NULL DEFAULT '', goal TEXT NOT NULL DEFAULT '',

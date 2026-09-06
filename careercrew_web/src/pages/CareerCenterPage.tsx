@@ -2,8 +2,9 @@ import { useEffect, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import {
   CalendarClock, ClipboardList, Compass, Download, FileSpreadsheet, ListTodo,
-  MessagesSquare, Mic, Plus, RefreshCw, Search, Trash2, TrendingUp,
+  MessagesSquare, Mic, Plus, RefreshCw, Search, Trash2, TrendingUp, Users,
 } from "lucide-react"
+import { BellRing } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,14 +16,17 @@ import { ToastBubble } from "@/components/conversation/ToastBubble"
 import { useToast } from "@/hooks/useToast"
 import { networkErrorText } from "@/lib/errors"
 import {
-  BOARD_STAGES, createFollowup, createMaterial, createOffer, createRealInterview,
-  createTask, deleteFollowup, deleteMaterial, deleteOffer, deleteRealInterview, deleteTask,
-  getStats, globalSearch, listBoard, listFollowups, listInterviewReports, listMaterials,
+  BOARD_STAGES, createContact, createFollowup, createMaterial, createOffer, createRealInterview,
+  createTask, deleteContact, deleteFollowup, deleteMaterial, deleteOffer, deleteRealInterview, deleteTask,
+  getStats, globalSearch, listBoard, listContacts, listFollowups, listInterviewReports, listMaterials,
+  listReminders,
   listOffers, listRealInterviews, listStageChanges, listTasks, patchTask, resolveFollowup,
-  setReplyDraft, updateBoard, updateMaterial, type ActionItem, type BoardRow,
-  type HRFollowup, type InterviewReport, type JobStats,
-  type Material, type Offer, type RealInterviewRecord, type SearchResult,
+  setReplyDraft, updateBoard, updateContact, updateMaterial, type ActionItem, type BoardRow,
+  type Contact, type HRFollowup, type InterviewReport, type JobStats,
+  type Material, type Offer, type RealInterviewRecord, type ReminderItem,
+  type SearchResult,
 } from "@/lib/career"
+import { downloadRemindersIcs } from "@/lib/career"
 import { cn } from "@/lib/utils"
 
 const TABS = [
@@ -30,6 +34,7 @@ const TABS = [
   { id: "tasks", label: "行动计划", icon: ListTodo },
   { id: "materials", label: "素材库", icon: ClipboardList },
   { id: "followups", label: "HR 跟进", icon: MessagesSquare },
+  { id: "contacts", label: "联系人", icon: Users },
   { id: "offers", label: "Offer 对比", icon: FileSpreadsheet },
   { id: "reviews", label: "面试复盘", icon: Mic },
   { id: "stats", label: "效果统计", icon: TrendingUp },
@@ -213,6 +218,7 @@ function TasksTab({ onToast, opportunities }: { onToast: (m: string) => void; op
 
   return (
     <div className="flex flex-col gap-3">
+      <RemindersPanel onToast={onToast} />
       <div className="flex flex-wrap items-center gap-2">
         <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="新任务，例如：准备三道面试题"
                className="h-[32px] w-[260px]" maxLength={300} />
@@ -306,6 +312,64 @@ function TasksTab({ onToast, opportunities }: { onToast: (m: string) => void; op
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// ── 提醒面板（任务/看板跟进/HR 待办聚合 + ICS 导出） ──
+
+function RemindersPanel({ onToast }: { onToast: (m: string) => void }) {
+  const [items, setItems] = useState<ReminderItem[] | null>(null)
+
+  useEffect(() => {
+    listReminders().then((d) => setItems(d.items || [])).catch(() => setItems([]))
+  }, [])
+
+  const downloadIcs = async () => {
+    try {
+      const blob = await downloadRemindersIcs()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = "careercrew.ics"
+      a.click()
+      URL.revokeObjectURL(url)
+      onToast("日历文件已导出，可导入到系统日历")
+    } catch (e) { onToast(networkErrorText(e, "导出失败，请稍后重试")) }
+  }
+
+  const kindLabel: Record<string, string> = {
+    task_overdue: "逾期", task_due: "将到期",
+    action_overdue: "跟进逾期", action_due: "待跟进", followup: "HR 待办",
+  }
+
+  return (
+    <div className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3" data-testid="reminders">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-[13px] font-[560] text-ink">
+          <BellRing className="h-4 w-4" /> 提醒
+        </h3>
+        <Button variant="outline" size="sm" className="h-[26px] text-[12px]" onClick={() => void downloadIcs()}>
+          <Download className="h-3.5 w-3.5" /> 导出 ICS 日历
+        </Button>
+      </div>
+      {!items ? (
+        <p className="mt-1.5 text-[12px] text-ink-faint">正在加载提醒…</p>
+      ) : items.length === 0 ? (
+        <p className="mt-1.5 text-[12px] text-ink-faint">最近 7 天没有到期任务或跟进。</p>
+      ) : (
+        <ul className="mt-1.5 flex flex-col gap-1">
+          {items.slice(0, 8).map((r, i) => (
+            <li key={`${r.kind}-${r.ref_id}-${i}`} className="flex flex-wrap items-center gap-2 text-[12.5px]">
+              <Badge variant={r.kind.includes("overdue") ? "destructive" : "secondary"} className="text-[10.5px]">
+                {kindLabel[r.kind] ?? r.kind}
+              </Badge>
+              <span className="min-w-0 flex-1 truncate text-ink-soft">{r.title}</span>
+              {r.date && <span className="text-[11px] text-ink-faint">{r.date}</span>}
             </li>
           ))}
         </ul>
@@ -805,6 +869,146 @@ function ReviewsTab({ onToast }: { onToast: (m: string) => void }) {
   )
 }
 
+// ── 联系人与内推 ──
+
+function ContactsTab({ onToast, opportunities }: { onToast: (m: string) => void; opportunities: BoardRow[] }) {
+  const [rows, setRows] = useState<Contact[]>([])
+  const [form, setForm] = useState({ contact_name: "", company: "", role: "", channel: "", contact_value: "", notes: "" })
+  const [oppId, setOppId] = useState("")
+  const [nextDate, setNextDate] = useState("")
+  const [error, setError] = useState("")
+  const [editingId, setEditingId] = useState<string | null>(null)
+
+  const reload = async () => {
+    try { setRows(await listContacts()) } catch (e) { setError(networkErrorText(e)) }
+  }
+  useEffect(() => { void reload() }, [])
+
+  const reset = () => {
+    setForm({ contact_name: "", company: "", role: "", channel: "", contact_value: "", notes: "" })
+    setOppId(""); setNextDate(""); setEditingId(null); setError("")
+  }
+
+  const startEdit = (r: Contact) => {
+    setEditingId(r.id)
+    setForm({
+      contact_name: r.contact_name, company: r.company, role: r.role,
+      channel: r.channel, contact_value: r.contact_value, notes: r.notes,
+    })
+    setOppId(r.opportunity_id || "")
+    setNextDate(r.next_contact_date || "")
+    setError("")
+  }
+
+  const submit = async () => {
+    if (!form.contact_name.trim()) { setError("联系人姓名不能为空"); return }
+    try {
+      if (editingId) {
+        const updated = await updateContact(editingId, {
+          ...form, opportunity_id: oppId || undefined, next_contact_date: nextDate || undefined,
+        })
+        setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)))
+        onToast("联系人已更新")
+      } else {
+        const created = await createContact({
+          ...form, opportunity_id: oppId || undefined, next_contact_date: nextDate || undefined,
+        })
+        setRows((prev) => [created, ...prev])
+        onToast("联系人已保存")
+      }
+      reset()
+    } catch (e) { setError(networkErrorText(e, "保存失败，请稍后重试")) }
+  }
+
+  const oppName = (id: string) => {
+    const o = opportunities.find((x) => x.opportunity_id === id)
+    return o ? `${o.company}·${o.title}` : ""
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3">
+        <p className="mb-2 text-[12px] text-ink-faint">记录招聘者、面试官、内推人，以及下次联系时间。</p>
+        <div className="grid gap-2.5 md:grid-cols-3">
+          <Input value={form.contact_name} onChange={(e) => setForm((s) => ({ ...s, contact_name: e.target.value }))}
+                 placeholder="姓名 *" maxLength={120} />
+          <Input value={form.company} onChange={(e) => setForm((s) => ({ ...s, company: e.target.value }))}
+                 placeholder="公司" maxLength={200} />
+          <Input value={form.role} onChange={(e) => setForm((s) => ({ ...s, role: e.target.value }))}
+                 placeholder="角色（招聘者/面试官/内推人）" maxLength={120} />
+          <Input value={form.channel} onChange={(e) => setForm((s) => ({ ...s, channel: e.target.value }))}
+                 placeholder="渠道（微信/邮件/Boss）" maxLength={100} />
+          <Input value={form.contact_value} onChange={(e) => setForm((s) => ({ ...s, contact_value: e.target.value }))}
+                 placeholder="联系方式" maxLength={300} />
+          <Input value={nextDate} onChange={(e) => setNextDate(e.target.value)}
+                 placeholder={DATE_HINT} maxLength={10} />
+        </div>
+        <div className="mt-2.5 grid gap-2.5 md:grid-cols-2">
+          <Input value={form.notes} onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
+                 placeholder="备注（怎么认识的、聊了什么）" maxLength={2000} />
+          <select
+            value={oppId}
+            onChange={(e) => setOppId(e.target.value)}
+            aria-label="关联岗位（可选）"
+            className="h-[32px] rounded-[7px] border border-[var(--border-soft)] bg-workspace px-2 text-[12.5px] text-ink"
+          >
+            <option value="">关联岗位（可选）</option>
+            {opportunities.map((o) => (
+              <option key={o.opportunity_id} value={o.opportunity_id}>{o.company} · {o.title}</option>
+            ))}
+          </select>
+        </div>
+        {error && <p className="mt-1.5 text-[12px] text-destructive">{error}</p>}
+        <div className="mt-2.5 flex gap-2">
+          <Button size="sm" className="h-[28px] text-[12.5px]" onClick={() => void submit()}>
+            {editingId ? "保存修改" : "保存联系人"}
+          </Button>
+          {editingId && (
+            <Button size="sm" variant="ghost" className="h-[28px] text-[12.5px]" onClick={reset}>取消</Button>
+          )}
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState title="还没有联系人" description="把 HR、面试官、内推人记下来，跟进不再靠记忆" />
+      ) : (
+        <ul className="grid gap-2.5 md:grid-cols-2">
+          {rows.map((r) => (
+            <li key={r.id} className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3 text-[12.5px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate font-[560] text-ink">
+                  {r.contact_name}
+                  {r.company ? ` · ${r.company}` : ""}
+                </span>
+                <span className="flex shrink-0 items-center gap-2 text-[11.5px]">
+                  <button type="button" className="text-ink-faint hover:text-ink" onClick={() => startEdit(r)}>
+                    编辑
+                  </button>
+                  <button type="button" aria-label="删除联系人" className="text-ink-faint hover:text-destructive"
+                          onClick={async () => {
+                            try { await deleteContact(r.id); setRows((p) => p.filter((x) => x.id !== r.id)) }
+                            catch (e) { onToast(networkErrorText(e, "删除失败")) } }}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              </div>
+              <p className="mt-1 flex flex-wrap gap-x-2 text-ink-soft">
+                {r.role && <span>{r.role}</span>}
+                {r.channel && <span>{r.channel}</span>}
+                {r.contact_value && <span>{r.contact_value}</span>}
+              </p>
+              {r.next_contact_date && <p className="mt-0.5 text-amber-600">下次联系：{r.next_contact_date}</p>}
+              {r.opportunity_id && oppName(r.opportunity_id) && (
+                <Badge variant="outline" className="mt-1 text-[10.5px]">{oppName(r.opportunity_id)}</Badge>
+              )}
+              {r.notes && <p className="mt-1 line-clamp-2 text-ink-faint">{r.notes}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // ── 效果统计 ──
 
 function StatsTab() {
@@ -840,6 +1044,23 @@ function StatsTab() {
           <li>面试率：{rateText(stats.interview_rate)}</li>
           <li>Offer 率：{rateText(stats.offer_rate)}</li>
         </ul>
+      </div>
+      <div className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3">
+        <p className="font-[560] text-ink">来源归因（哪个渠道带来了进展）</p>
+        {Object.keys(stats.by_source).length === 0 ? (
+          <p className="mt-1 text-[12px] text-ink-faint">暂无数据。</p>
+        ) : (
+          <ul className="mt-1.5 flex flex-col gap-1.5 text-ink-soft">
+            {Object.entries(stats.by_source).map(([src, bucket]) => (
+              <li key={src} className="text-[12.5px]">
+                {src}：共 {bucket.total} 个岗位，
+                已投递 {bucket.by_stage["已投递"] ?? 0}、面试中 {bucket.by_stage["面试中"] ?? 0}、
+                Offer {bucket.by_stage["收到Offer"] ?? 0}
+                <span className="ml-1 text-[11px] text-ink-faint">（样本 {bucket.total}，小样本仅作参考）</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3">
         <p className="font-[560] text-ink">各阶段岗位数</p>
@@ -984,6 +1205,7 @@ export default function CareerCenterPage() {
           {tab === "tasks" && <TasksTab onToast={showToast} opportunities={opportunities} />}
           {tab === "materials" && <MaterialsTab onToast={showToast} />}
           {tab === "followups" && <FollowupsTab onToast={showToast} opportunities={opportunities} />}
+          {tab === "contacts" && <ContactsTab onToast={showToast} opportunities={opportunities} />}
           {tab === "offers" && <OffersTab onToast={showToast} opportunities={opportunities} />}
           {tab === "reviews" && <ReviewsTab onToast={showToast} />}
           {tab === "stats" && <StatsTab />}

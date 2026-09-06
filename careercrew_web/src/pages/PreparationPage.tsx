@@ -23,6 +23,8 @@ import { OpportunityForm } from "@/components/preparation/OpportunityForm"
 import { ResumeWorkspace } from "@/components/preparation/ResumeWorkspace"
 import { GapAnalysisPanel } from "@/components/preparation/GapAnalysisPanel"
 import { OpportunityTimeline } from "@/components/preparation/OpportunityTimeline"
+import { JobToolsPanel } from "@/components/preparation/JobToolsPanel"
+import { CollectorBookmarklet } from "@/components/preparation/CollectorBookmarklet"
 
 /** 岗位准备工作台：收藏岗位 → 关联简历版本 → 一键带入简历定制 / 模拟面试。 */
 export default function PreparationPage() {
@@ -43,6 +45,23 @@ export default function PreparationPage() {
     () => opportunities.find((o) => o.id === selectedId) ?? null,
     [opportunities, selectedId],
   )
+  // 通用岗位采集器：书签脚本以 ?collect=1&url=&title=&jd= 打开本页，预填录入表单
+  const collectDraft = useMemo(() => {
+    if (searchParams.get("collect") !== "1") return null
+    return {
+      url: searchParams.get("url") || "",
+      title: searchParams.get("title") || "",
+      jd: searchParams.get("jd") || "",
+    }
+  }, [searchParams])
+  const [collectConsumed, setCollectConsumed] = useState(false)
+
+  useEffect(() => {
+    if (!collectDraft || collectConsumed || loading) return
+    setCollectConsumed(true)
+    select(null)
+    setFormMode("create")
+  }, [collectDraft, collectConsumed, loading])
 
   const reload = async () => {
     setLoading(true)
@@ -176,6 +195,14 @@ export default function PreparationPage() {
             placeholder="搜索公司 / 岗位 / 城市"
             className="h-[32px]"
           />
+          <details className="rounded-[8px] border border-[var(--border-soft)] bg-card px-2.5 py-1.5 text-[11.5px] text-ink-faint">
+            <summary className="cursor-pointer select-none">通用岗位采集器（任意招聘网站）</summary>
+            <p className="mt-1.5 leading-relaxed">
+              在招聘网站页面上选中 JD 文本，点击书签即可跳回本页预填录入。
+              把下面的代码新建为书签（网址栏粘贴整段）：
+            </p>
+            <CollectorBookmarklet />
+          </details>
           {loading ? (
             <p className="text-[12.5px] text-ink-faint">正在加载岗位…</p>
           ) : loadError ? (
@@ -214,6 +241,7 @@ export default function PreparationPage() {
             <div>
               <h2 className="mb-3 text-[13.5px] font-[560] text-ink">手动录入岗位</h2>
               <OpportunityForm
+                draft={collectDraft}
                 saving={formSaving}
                 error={formError}
                 onSubmit={handleCreate}
@@ -267,6 +295,9 @@ export default function PreparationPage() {
                 </p>
               </div>
               <ResumeWorkspace key={selected.id} opportunity={selected} onToast={showToast} />
+              <div className="border-t border-[var(--border-soft)] pt-3">
+                <JobToolsPanel opportunity={selected} onToast={showToast} />
+              </div>
               <div className="border-t border-[var(--border-soft)] pt-3">
                 <GapAnalysisPanel opportunityId={selected.id} onToast={showToast} />
               </div>

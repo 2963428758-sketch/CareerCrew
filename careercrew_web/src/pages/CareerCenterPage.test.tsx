@@ -20,6 +20,7 @@ beforeEach(() => {
       return {
         ok: true, status: 200, json: async () => ({
           by_stage: { 待准备: 2, 已投递: 1 },
+          by_source: { 内推: { total: 2, by_stage: { 已投递: 1 } } },
           applied: 1, replies: 0, interviewed: 0, offers: 0,
           reply_rate: { numerator: 0, denominator: 1, rate: 0 },
           interview_rate: { numerator: 0, denominator: 1, rate: 0 },

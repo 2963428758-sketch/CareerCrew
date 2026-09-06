@@ -115,6 +115,7 @@ export interface InterviewReport {
 
 export interface JobStats {
   by_stage: Record<string, number>
+  by_source: Record<string, { total: number; by_stage: Record<string, number> }>
   applied: number
   replies: number
   interviewed: number
@@ -358,3 +359,84 @@ export const exportPrivacyData = async (): Promise<Record<string, unknown>> => r
 
 export const purgePrivacyData = async (): Promise<{ ok: boolean; deleted: Record<string, number> }> =>
   readData(await apiFetch("/api/career/privacy/purge", req("POST")))
+
+// ── 提醒中心 / ICS ──
+
+export interface ReminderItem {
+  kind: "task_overdue" | "task_due" | "action_overdue" | "action_due" | "followup"
+  date: string
+  title: string
+  ref_id: string
+}
+
+export const listReminders = async (): Promise<{ items: ReminderItem[]; today: string }> => readData(
+  await apiFetch("/api/career/reminders"))
+
+export const downloadRemindersIcs = async (): Promise<Blob> => {
+  const resp = await apiFetch("/api/career/reminders/ics")
+  if (!resp.ok) throw new Error(await apiErrorText(resp))
+  return resp.blob()
+}
+
+// ── ATS 体检（规则） ──
+
+export interface AtsResult {
+  checks: Array<{ item: string; status: "pass" | "warn"; note: string }>
+  jd_coverage: { requirements: number; covered: number } | null
+  source: string
+}
+
+export const runAtsCheck = async (opportunityId: string, resumeVersionId: string): Promise<AtsResult> => readData(
+  await apiFetch(`/api/career/opportunities/${encodeURIComponent(opportunityId)}/ats-check`,
+    req("POST", { resume_version_id: resumeVersionId })))
+
+// ── 投递材料包 ──
+
+export interface ApplicationKit {
+  source: "llm" | "template"
+  sections: {
+    cover_letter: string
+    self_intro: string
+    greeting: string
+    followup: string
+    thank_you: string
+  }
+}
+
+export const createApplicationKit = async (
+  opportunityId: string,
+  resumeVersionId: string,
+): Promise<ApplicationKit> => readData(await apiFetch(
+  `/api/career/opportunities/${encodeURIComponent(opportunityId)}/application-kit`,
+  req("POST", { resume_version_id: resumeVersionId })))
+
+// ── 联系人与内推 ──
+
+export interface Contact {
+  id: string
+  contact_name: string
+  company: string
+  role: string
+  channel: string
+  contact_value: string
+  opportunity_id: string
+  notes: string
+  next_contact_date: string
+  created_at: string
+  updated_at: string
+}
+
+export const listContacts = async (): Promise<Contact[]> => {
+  const rows = await readData<Contact[]>(await apiFetch("/api/career/contacts"))
+  return Array.isArray(rows) ? rows : []
+}
+
+export const createContact = async (payload: Partial<Contact>): Promise<Contact> => readData(
+  await apiFetch("/api/career/contacts", req("POST", payload)))
+
+export const updateContact = async (id: string, payload: Partial<Contact>): Promise<Contact> => readData(
+  await apiFetch(`/api/career/contacts/${encodeURIComponent(id)}`, req("PUT", payload)))
+
+export const deleteContact = async (id: string): Promise<void> => {
+  await readData(await apiFetch(`/api/career/contacts/${encodeURIComponent(id)}`, req("DELETE")))
+}

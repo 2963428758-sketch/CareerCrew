@@ -65,6 +65,8 @@ export default function InterviewPage() {
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
   /** 当前作答对应的题目（用户回答前最近一条面试官消息），done 评分后入 qaList */
   const pendingRef = useRef<{ q: string; a: string } | null>(null)
+  /** 语音表达辅助：题目出现（可开始作答）的时间戳 */
+  const questionShownAtRef = useRef<number | null>(null)
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -119,6 +121,7 @@ export default function InterviewPage() {
       }])
     }
     setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)))
+    questionShownAtRef.current = Date.now()
   }, [stream.status, stream.doneContent, stream.doneIds, stream.doneScore, stream.doneFeedback])
 
   // 流失败：用错误信息填充空气泡
@@ -173,6 +176,13 @@ export default function InterviewPage() {
       content: trimmed,
       attachments: toMessageAttachments(turnAttachments),
     }])
+    // 语音表达辅助：报告本次作答用时与字数（帮助控制回答节奏，非评分依据）
+    const shownAt = questionShownAtRef.current
+    if (pendingRef.current && shownAt) {
+      const seconds = Math.max(1, Math.round((Date.now() - shownAt) / 1000))
+      showToast(`本次作答 ${trimmed.length} 字 · 用时 ${seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`}`)
+      questionShownAtRef.current = Date.now()
+    }
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     setInput("")
     jumpToLatest()

@@ -187,6 +187,114 @@ def test_opportunity_timeline_aggregates_all_events(career_api):
     client.app.dependency_overrides[get_current_user] = lambda: {"id": "u_001", "role": "admin"}
 
 
+def test_reminders_and_ics(career_api):
+    """提醒中心：任务逾期/到期、看板跟进、HR 待办聚合；ICS 导出为合法日历。"""
+    import time as time_mod
+
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    today = time_mod.strftime("%Y-%m-%d")
+    # 逾期任务 + 已完成任务（后者不提醒）
+    client.post("/api/career/tasks", json={"title": "过期任务", "due_date": "2026-08-01"})
+    client.post("/api/career/tasks", json={"title": "已完成任务", "due_date": "2026-08-01", })
+    task_rows = client.get("/api/career/tasks").json()
+    done_row = next(t for t in task_rows if t["title"] == "已完成任务")
+    client.patch(f"/api/career/tasks/{done_row['id']}", json={"done": True})
+    # 看板下一步动作
+    client.put(f"/api/career/board/{oid}", json={
+        "stage": "已投递", "next_action": "跟进 HR", "next_action_date": today})
+    # HR 待办
+    followup = client.post("/api/career/followups", json={
+        "company": "测试公司", "content": "沟通", "todo_note": "确认时间"}).json()
+
+    items = client.get("/api/career/reminders").json()["items"]
+    kinds = [i["kind"] for i in items]
+    assert "task_overdue" in kinds and "action_due" in kinds and "followup" in kinds
+    assert all("已完成任务" not in i["title"] for i in items)
+
+    ics = client.get("/api/career/reminders/ics")
+    assert ics.status_code == 200
+    assert ics.headers["content-type"].startswith("text/calendar")
+    body = ics.text
+    assert body.startswith("BEGIN:VCALENDAR") and "END:VCALENDAR" in body
+    assert "[任务] 过期任务" in body and "[跟进] 测试公司 跟进 HR" in body
+
+
+def test_ats_check_rule_only(career_api):
+    """ATS 体检：确定性规则，不调用 LLM；简历缺联系方式/章节给出 warn。"""
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    version = client.post(f"/api/preparation/opportunities/{oid}/versions",
+                          json={"label": "体检版本", "content": "只有一句话的简历"}).json()
+    resp = client.post(f"/api/career/opportunities/{oid}/ats-check",
+                       json={"resume_version_id": version["id"]})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source"] == "rules"
+    items = {c["item"]: c["status"] for c in body["checks"]}
+    assert items["联系方式：邮箱"] == "warn"
+    assert items["章节：教育"] == "warn"
+    assert body["jd_coverage"]["requirements"] >= 1
+
+
+def test_application_kit_llm_and_template(career_api, fake_runtime):
+    """材料包：LLM 输出可解析时用 LLM；否则模板兜底，五段齐全。"""
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    version = client.post(f"/api/preparation/opportunities/{oid}/versions",
+                          json={"label": "kit版本", "content": "技能：Python、RAG；问答准确率 +18%"}).json()
+
+    # LLM 路径
+    fake_runtime.orchestrator_override = lambda prompt, config=None: type(
+        "R", (), {"content": '{"cover_letter": "您好，看到岗位与我很匹配", "self_intro": "s",'
+                            ' "greeting": "g", "followup": "f", "thank_you": "t"}'})()
+    resp = client.post(f"/api/career/opportunities/{oid}/application-kit",
+                       json={"resume_version_id": version["id"]})
+    assert resp.status_code == 201
+    assert resp.json()["source"] == "llm"
+    assert "很匹配" in resp.json()["sections"]["cover_letter"]
+
+    # 模板兜底（LLM 输出不可解析）
+    fake_runtime.orchestrator_override = lambda prompt, config=None: type(
+        "R", (), {"content": "无法解析"})()
+    resp = client.post(f"/api/career/opportunities/{oid}/application-kit",
+                       json={"resume_version_id": version["id"]})
+    assert resp.json()["source"] == "template"
+    sections = resp.json()["sections"]
+    for key in ("cover_letter", "self_intro", "greeting", "followup", "thank_you"):
+        assert sections[key].strip()
+
+
+def test_stats_by_source_attribution(career_api):
+    """效果归因：按岗位来源细分阶段分布与样本量。"""
+    client, _, _ = career_api
+    oid = client.post("/api/preparation/opportunities", json={
+        "company": "测试公司", "title": "Java开发", "jd": "负责接口开发",
+        "source": "内推"}).json()["id"]
+    client.put(f"/api/career/board/{oid}", json={"stage": "已投递"})
+    stats = client.get("/api/career/stats").json()
+    assert "by_source" in stats
+    boss = stats["by_source"]["内推"]
+    assert boss["total"] == 1
+    assert boss["by_stage"]["已投递"] == 1
+
+
+def test_contacts_crud_scoped(career_api):
+    """联系人管理：创建/更新/删除，跨账号 404。"""
+    client, _, _ = career_api
+    resp = client.post("/api/career/contacts", json={
+        "contact_name": "王 HR", "company": "云帆科技", "role": "招聘者",
+        "channel": "微信", "contact_value": "wx_12345", "notes": "内推人介绍"})
+    assert resp.status_code == 201, resp.text
+    cid = resp.json()["id"]
+    assert client.put(f"/api/career/contacts/{cid}", json={
+        "contact_name": "王 HR", "next_contact_date": "2026-09-10"}).status_code == 200
+    assert client.put(f"/api/career/contacts/{cid}", json={"contact_name": " "}).status_code == 422
+    assert client.put("/api/career/contacts/missing", json={"contact_name": "x"}).status_code == 404
+    assert client.delete(f"/api/career/contacts/{cid}").status_code == 200
+    assert client.delete(f"/api/career/contacts/{cid}").status_code == 404
+
+
 def test_profile_endpoints(career_api):
     client, _, _ = career_api
     assert client.get("/api/career/profile").json() is None

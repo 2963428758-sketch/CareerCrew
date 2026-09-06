@@ -10,24 +10,27 @@ import type { Opportunity, OpportunityInput } from "@/lib/preparation"
  */
 export function OpportunityForm({
   initial,
+  draft,
   saving,
   error,
   onSubmit,
   onCancel,
 }: {
   initial?: Opportunity | null
+  /** 采集器预填（url/title/jd 等草稿字段，不带回显完整岗位） */
+  draft?: Partial<OpportunityInput> | null
   saving: boolean
   error?: string
   onSubmit: (input: OpportunityInput) => void
   onCancel: () => void
 }) {
-  const [company, setCompany] = useState(initial?.company ?? "")
-  const [title, setTitle] = useState(initial?.title ?? "")
-  const [jd, setJd] = useState(initial?.jd ?? "")
-  const [city, setCity] = useState(initial?.city ?? "")
-  const [salary, setSalary] = useState(initial?.salary ?? "")
-  const [source, setSource] = useState(initial?.source ?? "")
-  const [url, setUrl] = useState(initial?.url ?? "")
+  const [company, setCompany] = useState(draft?.company ?? initial?.company ?? "")
+  const [title, setTitle] = useState(draft?.title ?? initial?.title ?? "")
+  const [jd, setJd] = useState(draft?.jd ?? initial?.jd ?? "")
+  const [city, setCity] = useState(draft?.city ?? initial?.city ?? "")
+  const [salary, setSalary] = useState(draft?.salary ?? initial?.salary ?? "")
+  const [source, setSource] = useState(draft?.source ?? initial?.source ?? "")
+  const [url, setUrl] = useState(draft?.url ?? initial?.url ?? "")
   const [touched, setTouched] = useState(false)
 
   const companyOk = company.trim().length > 0

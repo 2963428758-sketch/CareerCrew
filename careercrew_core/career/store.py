@@ -12,6 +12,7 @@ from careercrew_core.career.models import (
     ActionItemInput,
     BoardStatusInput,
     CareerProfileInput,
+    ContactInput,
     HRFollowupInput,
     HRReplyDraftInput,
     MaterialInput,
@@ -322,6 +323,38 @@ class CareerStore:
             "WHERE owner_id=%s AND opportunity_id=%s ORDER BY created_at DESC, id DESC",
             (owner_id, opportunity_id))
 
+    # ── 联系人与内推 ──
+
+    def create_contact(self, owner_id: str, data: dict):
+        payload = ContactInput.model_validate(data)
+        return self._one(
+            """INSERT INTO job_contacts (id, owner_id, company, contact_name, role, channel,
+               contact_value, opportunity_id, notes, next_contact_date)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+            (str(uuid4()), owner_id, payload.company, payload.contact_name, payload.role,
+             payload.channel, payload.contact_value, payload.opportunity_id,
+             payload.notes, payload.next_contact_date))
+
+    def list_contacts(self, owner_id: str):
+        return self._all(
+            "SELECT * FROM job_contacts WHERE owner_id=%s ORDER BY updated_at DESC, id DESC",
+            (owner_id,))
+
+    def update_contact(self, owner_id: str, contact_id: str, data: dict):
+        payload = ContactInput.model_validate(data)
+        return self._one(
+            """UPDATE job_contacts SET company=%s, contact_name=%s, role=%s, channel=%s,
+               contact_value=%s, opportunity_id=%s, notes=%s, next_contact_date=%s,
+               updated_at=CURRENT_TIMESTAMP WHERE owner_id=%s AND id=%s RETURNING *""",
+            (payload.company, payload.contact_name, payload.role, payload.channel,
+             payload.contact_value, payload.opportunity_id, payload.notes,
+             payload.next_contact_date, owner_id, contact_id))
+
+    def delete_contact(self, owner_id: str, contact_id: str) -> bool:
+        return self._one(
+            "DELETE FROM job_contacts WHERE owner_id=%s AND id=%s RETURNING id",
+            (owner_id, contact_id)) is not None
+
     # ── 求职画像 ──
 
     def get_profile(self, owner_id: str):
@@ -353,9 +386,20 @@ class CareerStore:
             tasks = conn.execute(
                 "SELECT done, COUNT(*) AS n FROM action_items WHERE owner_id=%s "
                 "AND dismissed=FALSE GROUP BY done", (owner_id,)).fetchall()
+            # 效果归因：按岗位来源（渠道）细分阶段分布，供转化分析（显式样本量）
+            source_rows = conn.execute(
+                "SELECT COALESCE(NULLIF(source, ''), '未知来源') AS src, stage, COUNT(*) AS n "
+                "FROM preparation_opportunities WHERE owner_id=%s AND archived_at IS NULL "
+                "GROUP BY src, stage", (owner_id,)).fetchall()
         by_stage = {stage: 0 for stage in STAGES}
         for row in stage_rows:
             by_stage[str(row["stage"])] = int(row["n"])
+        by_source: dict[str, dict] = {}
+        for row in source_rows:
+            src_name = str(row["src"])
+            bucket = by_source.setdefault(src_name, {"total": 0, "by_stage": {s: 0 for s in STAGES}})
+            bucket["total"] += int(row["n"])
+            bucket["by_stage"][str(row["stage"])] = int(row["n"])
         applied = int(transitions.get("已投递", 0))
         interviewed = int(transitions.get("面试中", 0))
         offers = int(transitions.get("收到Offer", 0))
@@ -367,6 +411,7 @@ class CareerStore:
                     "rate": round(numerator / denominator, 4) if denominator else None}
         return {
             "by_stage": by_stage,
+            "by_source": by_source,
             "applied": applied,
             "replies": replies,
             "interviewed": interviewed,
@@ -422,6 +467,7 @@ class CareerStore:
                 "materials": fetch("SELECT * FROM project_materials WHERE owner_id=%s"),
                 "tasks": fetch("SELECT * FROM action_items WHERE owner_id=%s"),
                 "hr_followups": fetch("SELECT * FROM hr_followups WHERE owner_id=%s"),
+                "contacts": fetch("SELECT * FROM job_contacts WHERE owner_id=%s"),
                 "offers": fetch("SELECT * FROM offer_comparisons WHERE owner_id=%s"),
                 "real_interviews": fetch(
                     "SELECT * FROM real_interview_records WHERE owner_id=%s"),
@@ -433,7 +479,8 @@ class CareerStore:
         with self.pool.connection() as conn:
             counts: dict[str, int] = {}
             for table in ("real_interview_records", "offer_comparisons", "hr_followups",
-                          "action_items", "project_materials", "interview_reports"):
+                          "action_items", "project_materials", "interview_reports",
+                          "job_contacts"):
                 cur = conn.execute(f"DELETE FROM {table} WHERE owner_id=%s RETURNING id",
                                    (owner_id,))
                 counts[table] = len(cur.fetchall())

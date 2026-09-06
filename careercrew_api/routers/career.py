@@ -11,7 +11,7 @@ import os
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from careercrew_api.auth.dependencies import CurrentUser
@@ -20,6 +20,7 @@ from careercrew_api.routers.preparation import get_preparation_store
 from careercrew_core.career.models import (
     ActionItemInput,
     BoardStatusInput,
+    ContactInput,
     CareerProfileInput,
     HRFollowupInput,
     HRReplyDraftInput,
@@ -250,6 +251,31 @@ def resolve_followup(followup_id: str, user: CurrentUser, store: Store):
 @router.delete("/followups/{followup_id}")
 def delete_followup(followup_id: str, user: CurrentUser, store: Store):
     if not store.delete_followup(user["id"], followup_id):
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    return {"ok": True}
+
+
+# ── 联系人与内推 ──
+
+
+@router.get("/contacts")
+def list_contacts(user: CurrentUser, store: Store):
+    return store.list_contacts(user["id"])
+
+
+@router.post("/contacts", status_code=201)
+def create_contact(payload: ContactInput, user: CurrentUser, store: Store):
+    return store.create_contact(user["id"], payload.model_dump())
+
+
+@router.put("/contacts/{contact_id}")
+def update_contact(contact_id: str, payload: ContactInput, user: CurrentUser, store: Store):
+    return _found(store.update_contact(user["id"], contact_id, payload.model_dump()))
+
+
+@router.delete("/contacts/{contact_id}")
+def delete_contact(contact_id: str, user: CurrentUser, store: Store):
+    if not store.delete_contact(user["id"], contact_id):
         raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
     return {"ok": True}
 
@@ -509,6 +535,260 @@ def create_gap_analysis(opportunity_id: str, payload: GapAnalysisRequest,
 @router.get("/opportunities/{opportunity_id}/gap-analysis")
 def list_gap_analyses(opportunity_id: str, user: CurrentUser, store: Store):
     return store.list_gap_analyses(user["id"], opportunity_id)
+
+
+# ── 提醒中心 / ICS 日历 ──
+
+
+def _today() -> str:
+    from datetime import date
+
+    return date.today().isoformat()
+
+
+def _within_days(date_str: str, days: int) -> bool:
+    from datetime import date, timedelta
+
+    try:
+        target = date.fromisoformat(date_str)
+    except ValueError:
+        return False
+    return date.today() <= target <= date.today() + timedelta(days=days)
+
+
+@router.get("/reminders")
+def list_reminders(user: CurrentUser, store: Store):
+    """聚合待办提醒：任务到期/逾期、看板下一步动作到期、未处理 HR 待办。
+
+    提醒是派生数据（不落库）；关闭提醒 = 关闭对应任务提醒或处理完成。
+    """
+    today = _today()
+    items: list[dict] = []
+    for t in store.list_tasks(user["id"]):
+        if t.get("done") or t.get("dismissed") or not t.get("due_date"):
+            continue
+        due = str(t["due_date"])
+        if due < today:
+            items.append({"kind": "task_overdue", "date": due, "title": f"任务已过期：{t['title']}",
+                          "ref_id": str(t["id"])})
+        elif _within_days(due, 7):
+            items.append({"kind": "task_due", "date": due, "title": f"任务即将到期：{t['title']}",
+                          "ref_id": str(t["id"])})
+    for b in store.list_board(user["id"]):
+        action_date = str(b.get("next_action_date") or "")
+        action = str(b.get("next_action") or "")
+        if not action or not action_date:
+            continue
+        label = f"{b['company']} · {b['title']}：{action}"
+        if action_date < today:
+            items.append({"kind": "action_overdue", "date": action_date, "title": f"跟进已逾期：{label}",
+                          "ref_id": str(b["opportunity_id"])})
+        elif _within_days(action_date, 7):
+            items.append({"kind": "action_due", "date": action_date, "title": f"待跟进：{label}",
+                          "ref_id": str(b["opportunity_id"])})
+    for f in store.list_followups(user["id"]):
+        if f.get("resolved") or not f.get("todo_note"):
+            continue
+        items.append({"kind": "followup", "date": str(f.get("received_at") or "") or today,
+                      "title": f"HR 待办：{f['company']} — {f['todo_note']}",
+                      "ref_id": str(f["id"])})
+    items.sort(key=lambda x: (x["date"], x["kind"]))
+    return {"items": items, "today": today}
+
+
+@router.get("/reminders/ics")
+def reminders_ics(user: CurrentUser, store: Store):
+    """导出全部带日期事项为 ICS 日历（任务截止 + 看板下一步动作），全日期事件。"""
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+    def esc(text: str) -> str:
+        return (str(text).replace("\\", "\\\\").replace(";", "\\;")
+                .replace(",", "\\,").replace("\n", "\\n"))
+
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//CareerCrew//Reminders//CN", "CALSCALE:GREGORIAN"]
+    uid_seq = 0
+    for t in store.list_tasks(user["id"]):
+        if t.get("done") or t.get("dismissed") or not t.get("due_date"):
+            continue
+        uid_seq += 1
+        lines += ["BEGIN:VEVENT", f"UID:careercrew-task-{t['id']}@careercrew",
+                  f"DTSTAMP:{stamp}",
+                  f"DTSTART;VALUE=DATE:{str(t['due_date']).replace('-', '')}",
+                  f"SUMMARY:{esc('[任务] ' + str(t['title']))}",
+                  "END:VEVENT"]
+    for b in store.list_board(user["id"]):
+        action_date = str(b.get("next_action_date") or "")
+        action = str(b.get("next_action") or "")
+        if not action or not action_date:
+            continue
+        uid_seq += 1
+        lines += ["BEGIN:VEVENT", f"UID:careercrew-action-{b['opportunity_id']}@careercrew",
+                  f"DTSTAMP:{stamp}",
+                  f"DTSTART;VALUE=DATE:{action_date.replace('-', '')}",
+                  f"SUMMARY:{esc('[跟进] ' + str(b['company']) + ' ' + action)}",
+                  "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+
+    body = "\r\n".join(lines) + "\r\n"
+    return Response(
+        body, media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=careercrew.ics",
+                 "Cache-Control": "private, no-store"})
+
+
+# ── ATS 简历体检（确定性规则，非 AI） ──
+
+
+class AtsCheckRequest(BaseModel):
+    resume_version_id: str = ""
+    jd: str = ""
+
+
+def _ats_checks(resume: str, jd: str) -> dict:
+    import re
+
+    checks: list[dict] = []
+
+    def add(item: str, ok: bool, note: str) -> None:
+        checks.append({"item": item, "status": "pass" if ok else "warn", "note": note})
+
+    add("联系方式：邮箱", bool(re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", resume)),
+        "未找到邮箱，HR 无法联系你" if not re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", resume) else "")
+    add("联系方式：手机号", bool(re.search(r"1[3-9]\d{9}", resume)),
+        "" if re.search(r"1[3-9]\d{9}", resume) else "未找到 11 位手机号")
+    sections = {"教育": "教育", "工作经历": ("工作", "职业经历", "实习"), "项目经历": ("项目", "实践"),
+                "技能": ("技能", "技术栈", "专业技能")}
+    for name, keys in sections.items():
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        present = any(k in resume for k in keys)
+        add(f"章节：{name}", present, "" if present else f"建议补充「{name}」章节")
+    years = re.findall(r"(?:19|20)\d{2}", resume)
+    add("时间线：年份", len(years) >= 2,
+        "" if len(years) >= 2 else "几乎没有年份信息，经历时间线不清晰")
+    quantified = re.findall(r"\d+(?:\.\d+)?\s*[%％]|[+\-]?\d+(?:\.\d+)?\s*(?:万|w|k|K|QPS|倍|ms|秒)", resume)
+    add("量化成果", len(quantified) >= 2,
+        f"检测到 {len(quantified)} 处量化数据" + ("" if len(quantified) >= 2 else "，建议补充百分比/规模等量化成果"))
+    length = len(resume.strip())
+    add("篇幅", 300 <= length <= 6000,
+        f"{length} 字" + ("" if 300 <= length <= 6000 else "，过短或过长都会影响阅读"))
+
+    coverage = None
+    if jd.strip():
+        lines = [seg.strip(" -•*\t；;，,。") for seg in re.split(r"[。\n；;]", jd) if 4 <= len(seg.strip()) <= 120]
+        hit = sum(1 for seg in lines[:12] if any(token and token in resume for token in [seg[:6]]))
+        coverage = {"requirements": min(len(lines), 12), "covered": hit}
+    return {"checks": checks, "jd_coverage": coverage, "source": "rules"}
+
+
+@router.post("/opportunities/{opportunity_id}/ats-check")
+def ats_check(opportunity_id: str, payload: AtsCheckRequest,
+              user: CurrentUser, store: Store, prep: PrepStore):
+    """确定性 ATS 体检：只跑规则（联系方式/章节/时间线/量化/篇幅/JD 覆盖），
+    不调用 LLM；结果明确标注 source=rules。"""
+    opportunity = prep.get_opportunity(user["id"], opportunity_id)
+    if opportunity is None:
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    resume = ""
+    if payload.resume_version_id:
+        version = prep.get_version(user["id"], opportunity_id, payload.resume_version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+        resume = str(version.get("content") or "")
+    jd = payload.jd.strip() or str(opportunity.get("jd") or "")
+    return _ats_checks(resume, jd)
+
+
+# ── 岗位专属投递材料包 ──
+
+
+class ApplicationKitRequest(BaseModel):
+    resume_version_id: str = ""
+
+
+_KIT_TEMPLATE = (
+    "【求职信】\n"
+    "您好！我看到贵司「{title}」岗位与我的方向高度契合。我有 {highlight}，"
+    "与 JD 中的核心要求（{jd_head}）直接对应，希望有机会进一步沟通。\n\n"
+    "【自我介绍（30 秒）】\n"
+    "面试官您好，我叫我（自行替换姓名），主要做{highlight}。"
+    "看到这个岗位需要{jd_head}，这正是我过去一年的主线工作。\n\n"
+    "【Boss 招呼语】\n"
+    "您好，看到贵司「{title}」岗位。我有{highlight}，与 JD 匹配度较高，方便发一份完整简历给您看看吗？\n\n"
+    "【HR 跟进话术】\n"
+    "您好，想跟进一下「{title}」岗位的进展。我这边时间比较灵活，可以配合安排面试，谢谢！\n\n"
+    "【面试后感谢信】\n"
+    "感谢今天和您交流「{title}」岗位，聊到的{jd_head}让我很有共鸣，也更坚定了加入的意愿。"
+    "期待后续消息，祝工作顺利！"
+)
+
+
+def _template_kit(opportunity: dict, resume: str) -> dict:
+    """规则模板兜底：无 LLM 或调用失败时也能产出可用的初稿。"""
+    highlight = ""
+    import re
+
+    hits = re.findall(r"[^\n，。；]*(?:准确率|召回|QPS|延迟|日活|用户)[^\n，。；]*", resume)
+    if hits:
+        highlight = hits[0].strip()[:60]
+    if not highlight:
+        skills = re.search(r"技能[：:][^\n]+", resume)
+        highlight = skills.group(0)[3:].strip()[:60] if skills else "相关的后端与大模型应用经验"
+    jd_head = re.split(r"[。\n；;]", str(opportunity.get("jd") or ""))[0][:60]
+    body = _KIT_TEMPLATE.format(title=opportunity.get("title", ""), highlight=highlight, jd_head=jd_head)
+    markers = ["【求职信】", "【自我介绍（30 秒）】", "【Boss 招呼语】", "【HR 跟进话术】", "【面试后感谢信】"]
+    keys = ["cover_letter", "self_intro", "greeting", "followup", "thank_you"]
+    sections: dict[str, str] = {}
+    for i, marker in enumerate(markers):
+        begin = body.find(marker)
+        stop = body.find(markers[i + 1]) if i + 1 < len(markers) else len(body)
+        sections[keys[i]] = body[begin + len(marker):stop].strip() if begin != -1 and stop != -1 else ""
+    return {"source": "template", "sections": sections}
+
+
+@router.post("/opportunities/{opportunity_id}/application-kit", status_code=201)
+def create_application_kit(opportunity_id: str, payload: ApplicationKitRequest,
+                           user: CurrentUser, store: Store, rt: Runtime, prep: PrepStore):
+    """生成岗位专属投递材料包（求职信/自我介绍/招呼语/跟进话术/感谢信）。
+
+    LLM 可用时语义生成，失败回退规则模板；只产出草稿，发送始终由用户完成。
+    """
+    opportunity = prep.get_opportunity(user["id"], opportunity_id)
+    if opportunity is None:
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    resume = ""
+    if payload.resume_version_id:
+        version = prep.get_version(user["id"], opportunity_id, payload.resume_version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+        resume = str(version.get("content") or "")
+
+    llm = getattr(rt, "llm", None)
+    if llm is not None and resume:
+        prompt = (
+            "你是求职教练。基于岗位 JD 与候选人简历，输出 JSON（不要多余文字）：\n"
+            '{"cover_letter": "150字内求职信", "self_intro": "30秒自我介绍", '
+            '"greeting": "Boss直聘招呼语（80字内）", "followup": "HR 跟进话术（60字内）", '
+            '"thank_you": "面试后感谢信（100字内）"}\n'
+            "要求：引用简历中的真实量化成果，不编造经历。\n\n"
+            f"【JD】\n{str(opportunity.get('jd') or '')[:5000]}\n\n【简历】\n{resume[:5000]}")
+        try:
+            response = llm.invoke(prompt)
+            raw = getattr(response, "content", "")
+            if isinstance(raw, list):
+                raw = "".join(str(p.get("text") or "") for p in raw if isinstance(p, dict))
+            text = str(raw).strip()
+            start, end = text.find("{"), text.rfind("}")
+            if start != -1 and end > start:
+                parsed = json.loads(text[start:end + 1])
+                sections = {k: str(parsed.get(k) or "")[:2000] for k in
+                            ("cover_letter", "self_intro", "greeting", "followup", "thank_you")}
+                if any(sections.values()):
+                    return {"source": "llm", "sections": sections}
+        except Exception:  # noqa: BLE001 - LLM 失败回退模板
+            pass
+    return _template_kit(opportunity, resume)
 
 
 # ── 统计 / 搜索 / 画像 / 隐私 ──
