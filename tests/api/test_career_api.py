@@ -295,6 +295,85 @@ def test_contacts_crud_scoped(career_api):
     assert client.delete(f"/api/career/contacts/{cid}").status_code == 404
 
 
+def test_share_lifecycle(career_api):
+    """只读分享：创建整包/单版本链接 → 公开访问 → 脱敏 → 撤销后 404。"""
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    version = client.post(f"/api/preparation/opportunities/{oid}/versions",
+                          json={"label": "分享版本", "content": "联系我：13800001234 / me@x.com"}).json()
+
+    # 整包分享
+    resp = client.post("/api/career/shares", json={"kind": "opportunity", "ref_id": oid})
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["token"]
+    pub = client.get(f"/api/career/share/{token}")
+    assert pub.status_code == 200
+    assert pub.json()["company"] == "测试公司"
+    assert any(v["label"] == "分享版本" for v in pub.json()["versions"])
+
+    # 单版本分享 + 脱敏
+    resp = client.post("/api/career/shares", json={
+        "kind": "resume_version", "ref_id": version["id"], "mask_pii": True})
+    assert resp.status_code == 201
+    masked = client.get(f"/api/career/share/{resp.json()['token']}")
+    assert "13800001234" not in masked.json()["content"]
+    assert "[手机号已隐藏]" in masked.json()["content"]
+    assert "[邮箱已隐藏]" in masked.json()["content"]
+
+    # 撤销 → 公开访问 404
+    assert client.delete(f"/api/career/shares/{token}").status_code == 200
+    assert client.get(f"/api/career/share/{token}").status_code == 404
+    assert client.get("/api/career/share/no-such-token").status_code == 404
+    # 非法 kind / 越界有效期
+    assert client.post("/api/career/shares", json={"kind": "bad", "ref_id": oid}).status_code == 422
+    assert client.post("/api/career/shares", json={"kind": "opportunity", "ref_id": oid, "expires_days": 99}).status_code == 422
+
+
+def test_intel_brief_template_and_llm(career_api, fake_runtime):
+    """情报包：LLM 可用用语义生成，否则模板兜底；始终带「需自行核实」声明。"""
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    fake_runtime.orchestrator_override = lambda prompt, config=None: type(
+        "R", (), {"content": '{"company_research": "推断：该公司做企业知识库", '
+                            '"likely_questions": ["讲讲 RAG 项目"], '
+                            '"confirm_questions": ["团队多大？"], "evidence": ["+18%"]}'})()
+    resp = client.post(f"/api/career/opportunities/{oid}/intel-brief", json={})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["source"] == "llm"
+    assert "未经核实" in resp.json()["disclaimer"]
+
+    fake_runtime.orchestrator_override = lambda prompt, config=None: type(
+        "R", (), {"content": "无法解析"})()
+    resp = client.post(f"/api/career/opportunities/{oid}/intel-brief", json={})
+    assert resp.json()["source"] == "template"
+    assert resp.json()["confirm_questions"]
+
+
+def test_applied_version_attribution(career_api):
+    """版本归因：看板更新标记投递版本 → stats by_version 按版本细分。"""
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    version = client.post(f"/api/preparation/opportunities/{oid}/versions",
+                          json={"label": "归因版本", "content": "正文"}).json()
+    client.put(f"/api/career/board/{oid}", json={
+        "stage": "已投递", "applied_version_id": version["id"]})
+    stats = client.get("/api/career/stats").json()
+    assert stats["by_version"]["归因版本"]["by_stage"]["已投递"] == 1
+
+
+def test_contact_reminders_and_ics(career_api):
+    """联系人提醒联动：下次联系时间进入提醒与 ICS。"""
+    import time as time_mod
+
+    client, _, _ = career_api
+    client.post("/api/career/contacts", json={
+        "contact_name": "王内推", "company": "测试公司", "next_contact_date": "2026-08-01"})
+    items = client.get("/api/career/reminders").json()["items"]
+    assert any(i["kind"] == "contact_overdue" and "王内推" in i["title"] for i in items)
+    ics = client.get("/api/career/reminders/ics").text
+    assert "[联系] 测试公司 王内推" in ics
+
+
 def test_profile_endpoints(career_api):
     client, _, _ = career_api
     assert client.get("/api/career/profile").json() is None

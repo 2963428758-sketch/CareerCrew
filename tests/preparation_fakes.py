@@ -72,6 +72,8 @@ class SqliteCareerPool(SqlitePreparationPool):
             "ALTER TABLE preparation_opportunities ADD COLUMN stage_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
         self.db.execute(
             "ALTER TABLE preparation_opportunities ADD COLUMN archived_at TEXT")
+        self.db.execute(
+            "ALTER TABLE preparation_opportunities ADD COLUMN applied_version_id TEXT NOT NULL DEFAULT ''")
         self.db.executescript("""
             CREATE TABLE opportunity_stage_log (
                 id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, opportunity_id TEXT NOT NULL,
@@ -141,6 +143,13 @@ class SqliteCareerPool(SqlitePreparationPool):
                 contact_value TEXT NOT NULL DEFAULT '', opportunity_id TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL DEFAULT '', next_contact_date TEXT NOT NULL DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE career_share_tokens (
+                token TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+                kind TEXT NOT NULL, ref_id TEXT NOT NULL,
+                mask_pii INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL, revoked_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE career_profiles (
                 owner_id TEXT PRIMARY KEY, stage TEXT NOT NULL DEFAULT '',

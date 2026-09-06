@@ -1063,6 +1063,25 @@ function StatsTab() {
         )}
       </div>
       <div className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3">
+        <p className="font-[560] text-ink">简历版本归因（投递时标记的版本）</p>
+        {Object.keys(stats.by_version).length === 0 ? (
+          <p className="mt-1 text-[12px] text-ink-faint">
+            还没有标记。在岗位详情的「投递所用版本」中选择后，这里会按版本统计进展。
+          </p>
+        ) : (
+          <ul className="mt-1.5 flex flex-col gap-1.5 text-ink-soft">
+            {Object.entries(stats.by_version).map(([vname, bucket]) => (
+              <li key={vname} className="text-[12.5px]">
+                {vname}：已投递 {bucket.by_stage["已投递"] ?? 0}、
+                面试中 {bucket.by_stage["面试中"] ?? 0}、
+                Offer {bucket.by_stage["收到Offer"] ?? 0}
+                <span className="ml-1 text-[11px] text-ink-faint">（样本 {bucket.total}）</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="rounded-[10px] border border-[var(--border-soft)] bg-card p-3">
         <p className="font-[560] text-ink">各阶段岗位数</p>
         <div className="mt-1.5 flex flex-wrap gap-2">
           {Object.entries(stats.by_stage).map(([stage, n]) => (

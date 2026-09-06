@@ -20,8 +20,8 @@ from careercrew_api.routers.preparation import get_preparation_store
 from careercrew_core.career.models import (
     ActionItemInput,
     BoardStatusInput,
-    ContactInput,
     CareerProfileInput,
+    ContactInput,
     HRFollowupInput,
     HRReplyDraftInput,
     MaterialInput,
@@ -184,6 +184,31 @@ def delete_material(material_id: str, user: CurrentUser, store: Store):
 
 
 # ── 行动任务 ──
+
+
+class AppliedVersionRequest(BaseModel):
+    applied_version_id: str = ""
+
+
+@router.put("/opportunities/{opportunity_id}/applied-version")
+def set_applied_version(opportunity_id: str, payload: AppliedVersionRequest,
+                        user: CurrentUser, store: Store, prep: PrepStore):
+    """标记投递所用简历版本（版本归因）。传空串清除标记；不改变看板阶段。"""
+    if prep.get_opportunity(user["id"], opportunity_id) is None:
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    if payload.applied_version_id:
+        if prep.get_version_any(user["id"], payload.applied_version_id) is None:
+            raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    row = store.get_board_row(user["id"], opportunity_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    from careercrew_core.career.models import BoardStatusInput
+
+    store.update_board(user["id"], opportunity_id, BoardStatusInput(
+        stage=row["stage"], next_action=row["next_action"],
+        next_action_date=row["next_action_date"], note=row["note"],
+        applied_version_id=payload.applied_version_id).model_dump())
+    return _found(store.get_board_row(user["id"], opportunity_id))
 
 
 class TaskPatch(BaseModel):
@@ -592,6 +617,19 @@ def list_reminders(user: CurrentUser, store: Store):
         items.append({"kind": "followup", "date": str(f.get("received_at") or "") or today,
                       "title": f"HR 待办：{f['company']} — {f['todo_note']}",
                       "ref_id": str(f["id"])})
+    for c in store.list_contacts(user["id"]):
+        next_date = str(c.get("next_contact_date") or "")
+        if not next_date:
+            continue
+        name = str(c.get("contact_name") or "")
+        company = str(c.get("company") or "")
+        label = f"联系 {company} {name}".strip()
+        if next_date < today:
+            items.append({"kind": "contact_overdue", "date": next_date,
+                          "title": f"联系已逾期：{label}", "ref_id": str(c["id"])})
+        elif _within_days(next_date, 7):
+            items.append({"kind": "contact_due", "date": next_date,
+                          "title": f"待联系：{label}", "ref_id": str(c["id"])})
     items.sort(key=lambda x: (x["date"], x["kind"]))
     return {"items": items, "today": today}
 
@@ -628,6 +666,17 @@ def reminders_ics(user: CurrentUser, store: Store):
                   f"DTSTAMP:{stamp}",
                   f"DTSTART;VALUE=DATE:{action_date.replace('-', '')}",
                   f"SUMMARY:{esc('[跟进] ' + str(b['company']) + ' ' + action)}",
+                  "END:VEVENT"]
+    for c in store.list_contacts(user["id"]):
+        next_date = str(c.get("next_contact_date") or "")
+        if not next_date:
+            continue
+        uid_seq += 1
+        label = "[联系] " + " ".join(x for x in (c.get("company"), c.get("contact_name")) if x)
+        lines += ["BEGIN:VEVENT", f"UID:careercrew-contact-{c['id']}@careercrew",
+                  f"DTSTAMP:{stamp}",
+                  f"DTSTART;VALUE=DATE:{next_date.replace('-', '')}",
+                  f"SUMMARY:{esc(label)}",
                   "END:VEVENT"]
     lines.append("END:VCALENDAR")
 
@@ -789,6 +838,190 @@ def create_application_kit(opportunity_id: str, payload: ApplicationKitRequest,
         except Exception:  # noqa: BLE001 - LLM 失败回退模板
             pass
     return _template_kit(opportunity, resume)
+
+
+# ── 导师只读分享 ──
+
+
+class ShareCreateRequest(BaseModel):
+    kind: str
+    ref_id: str
+    expires_days: int = 7
+    mask_pii: bool = False
+
+
+def _mask_pii_text(text: str) -> str:
+    import re
+
+    text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "[邮箱已隐藏]", text)
+    text = re.sub(r"1[3-9]\d{9}", "[手机号已隐藏]", text)
+    return text
+
+
+def _share_payload(row: dict, prep) -> dict:
+    """构造公开只读载荷：仅必要字段；mask_pii 时对文本做 PII 脱敏。"""
+    prep = prep
+    owner = str(row["owner_id"])
+    mask = bool(row["mask_pii"])
+
+    def clean(text) -> str:
+        text = str(text or "")
+        return _mask_pii_text(text) if mask else text
+
+    if row["kind"] == "resume_version":
+        version = prep.get_version_any(owner, str(row["ref_id"]))
+        if version is None:
+            return {"kind": "resume_version", "missing": True}
+        return {"kind": "resume_version", "label": clean(version.get("label")),
+                "content": clean(version.get("content")),
+                "created_at": version.get("created_at")}
+    opportunity = prep.get_opportunity(owner, str(row["ref_id"]))
+    if opportunity is None:
+        return {"kind": "opportunity", "missing": True}
+    versions = list(prep.list_versions(owner, str(opportunity["id"])))
+    return {
+        "kind": "opportunity",
+        "company": clean(opportunity.get("company")),
+        "title": clean(opportunity.get("title")),
+        "jd": clean(opportunity.get("jd")),
+        "city": clean(opportunity.get("city")),
+        "salary": clean(opportunity.get("salary")),
+        "stage": clean(opportunity.get("stage")),
+        "versions": [{"label": clean(v.get("label")), "content": clean(v.get("content")),
+                      "created_at": v.get("created_at")} for v in versions],
+    }
+
+
+@router.post("/shares", status_code=201)
+def create_share(payload: ShareCreateRequest, user: CurrentUser, store: Store, prep: PrepStore):
+    """创建导师只读分享链接。kind=opportunity 分享整包；kind=resume_version 只分享单版本。"""
+    if payload.kind not in ("opportunity", "resume_version"):
+        raise HTTPException(status_code=422, detail="kind 必须为 opportunity 或 resume_version")
+    if not 1 <= payload.expires_days <= 30:
+        raise HTTPException(status_code=422, detail="有效期 1-30 天")
+    if payload.kind == "opportunity":
+        if prep.get_opportunity(user["id"], payload.ref_id) is None:
+            raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    else:
+        if prep.get_version_any(user["id"], payload.ref_id) is None:
+            raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    from datetime import timedelta
+
+    expires = (datetime_now_utc() + timedelta(days=payload.expires_days)).isoformat()
+    row = store.create_share(user["id"], payload.kind, payload.ref_id, expires, payload.mask_pii)
+    return {"token": row["token"], "kind": row["kind"], "ref_id": row["ref_id"],
+            "mask_pii": bool(row["mask_pii"]), "expires_at": row["expires_at"]}
+
+
+@router.get("/shares")
+def list_shares(user: CurrentUser, store: Store):
+    return store.list_shares(user["id"])
+
+
+@router.delete("/shares/{token}")
+def revoke_share(token: str, user: CurrentUser, store: Store):
+    if not store.revoke_share(user["id"], token):
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    return {"ok": True}
+
+
+@router.get("/share/{token}")
+def resolve_share(token: str, store: Store, prep: PrepStore):
+    """公开只读访问（无鉴权）：令牌过期/撤销/不存在一律 404。"""
+    row = store.resolve_share(token)
+    if row is None:
+        raise HTTPException(status_code=404, detail="分享不存在或已失效")
+    payload = _share_payload(row, prep)
+    if payload.get("missing"):
+        raise HTTPException(status_code=404, detail="分享内容不存在或已失效")
+    return {"mask_pii": bool(row["mask_pii"]), "expires_at": row["expires_at"], **payload}
+
+
+def datetime_now_utc():
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+# ── 公司与面试情报包 ──
+
+
+class IntelBriefRequest(BaseModel):
+    resume_version_id: str = ""
+
+
+def _template_brief(opportunity: dict, resume: str) -> dict:
+    import re
+
+    jd = str(opportunity.get("jd") or "")
+    lines = [seg.strip(" -•*\t；;，,") for seg in re.split(r"[。\n]", jd) if 6 <= len(seg.strip()) <= 120][:6]
+    quantified = re.findall(r"[^\n，。；]*(?:准确率|召回|QPS|延迟)[^\n，。；]*", resume)
+    likely = [f"请结合你的经历谈谈对该要求的理解：{seg[:60]}" for seg in lines[:3]]
+    if not likely:
+        likely = ["请自我介绍并重点讲与岗位最相关的一段经历"]
+    confirm = [
+        "团队规模与分工？这个岗位补的是哪块能力？",
+        "入职后前三个月的预期产出是什么？",
+        "技术栈与团队现有工作流的衔接方式？",
+    ]
+    return {
+        "source": "template",
+        "company_research": f"基于 JD 推断的业务方向：{jd[:80]}（未联网核实，请自行查证公司官网/新闻）",
+        "likely_questions": likely,
+        "confirm_questions": confirm,
+        "evidence": quantified[:2],
+        "disclaimer": "本情报包由 AI/规则生成，外部事实未经核实，使用前请自行验证。",
+    }
+
+
+@router.post("/opportunities/{opportunity_id}/intel-brief", status_code=201)
+def create_intel_brief(opportunity_id: str, payload: IntelBriefRequest,
+                       user: CurrentUser, store: Store, rt: Runtime, prep: PrepStore):
+    """公司与面试情报包：汇总岗位要点、可能问题与待向面试官确认的问题。
+
+    外部事实类内容为 AI 推断，明确标注需自行核实（不冒充已验证信息）。
+    """
+    opportunity = prep.get_opportunity(user["id"], opportunity_id)
+    if opportunity is None:
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+    resume = ""
+    if payload.resume_version_id:
+        version = prep.get_version(user["id"], opportunity_id, payload.resume_version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+        resume = str(version.get("content") or "")
+
+    llm = getattr(rt, "llm", None)
+    if llm is not None:
+        prompt = (
+            "你是求职教练。基于 JD 与简历生成面试前情报包 JSON（不要多余文字）：\n"
+            '{"company_research": "基于 JD 推断的公司业务与方向（100字内，注明这是推断）", '
+            '"likely_questions": ["面试官最可能问的 3 个问题"], '
+            '"confirm_questions": ["应向面试官确认的 3 个问题"], '
+            '"evidence": ["简历中可用的量化证据"]}\n\n'
+            "【JD】\n" + str(opportunity.get("jd") or "")[:5000] + "\n\n【简历】\n" + resume[:4000])
+        try:
+            response = llm.invoke(prompt)
+            raw = getattr(response, "content", "")
+            if isinstance(raw, list):
+                raw = "".join(str(p.get("text") or "") for p in raw if isinstance(p, dict))
+            text = str(raw).strip()
+            start, end = text.find("{"), text.rfind("}")
+            if start != -1 and end > start:
+                parsed = json.loads(text[start:end + 1])
+                brief = {
+                    "source": "llm",
+                    "company_research": str(parsed.get("company_research") or "")[:600],
+                    "likely_questions": [str(q)[:300] for q in (parsed.get("likely_questions") or [])][:4],
+                    "confirm_questions": [str(q)[:300] for q in (parsed.get("confirm_questions") or [])][:4],
+                    "evidence": [str(q)[:300] for q in (parsed.get("evidence") or [])][:4],
+                    "disclaimer": "AI 生成，外部事实未经核实，使用前请自行验证。",
+                }
+                if brief["likely_questions"]:
+                    return brief
+        except Exception:  # noqa: BLE001 - LLM 失败回退模板
+            pass
+    return _template_brief(opportunity, resume)
 
 
 # ── 统计 / 搜索 / 画像 / 隐私 ──

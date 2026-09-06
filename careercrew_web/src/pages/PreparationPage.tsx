@@ -25,6 +25,7 @@ import { GapAnalysisPanel } from "@/components/preparation/GapAnalysisPanel"
 import { OpportunityTimeline } from "@/components/preparation/OpportunityTimeline"
 import { JobToolsPanel } from "@/components/preparation/JobToolsPanel"
 import { CollectorBookmarklet } from "@/components/preparation/CollectorBookmarklet"
+import { SharePanel } from "@/components/preparation/SharePanel"
 
 /** 岗位准备工作台：收藏岗位 → 关联简历版本 → 一键带入简历定制 / 模拟面试。 */
 export default function PreparationPage() {
@@ -303,6 +304,9 @@ export default function PreparationPage() {
               </div>
               <div className="border-t border-[var(--border-soft)] pt-3">
                 <OpportunityTimeline opportunityId={selected.id} />
+              </div>
+              <div className="border-t border-[var(--border-soft)] pt-3">
+                <SharePanel opportunity={selected} onToast={showToast} />
               </div>
             </>
           )}

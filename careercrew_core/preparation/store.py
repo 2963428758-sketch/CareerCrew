@@ -90,6 +90,13 @@ class PreparationStore:
             "WHERE owner_id=%s AND opportunity_id=%s ORDER BY created_at DESC, id DESC",
             (owner_id, opportunity_id))
 
+    def get_version_any(self, owner_id: str, version_id: str):
+        """按版本 ID 直接取（分享令牌场景只知道版本 ID，不知道岗位）。"""
+        return self._one(
+            "SELECT id, opportunity_id, label, content, original_content, created_at "
+            "FROM preparation_resume_versions WHERE owner_id=%s AND id=%s",
+            (owner_id, version_id))
+
     def get_version(self, owner_id: str, opportunity_id: str, version_id: str):
         return self._one(
             f"SELECT {_VERSION_COLUMNS} FROM preparation_resume_versions "

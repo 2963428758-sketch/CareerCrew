@@ -13,6 +13,7 @@ import {
   createVersion,
   downloadVersion,
   listVersions,
+  setAppliedVersion,
   type Opportunity,
   type ResumeVersion,
 } from "@/lib/preparation"
@@ -56,6 +57,7 @@ export function ResumeWorkspace({ opportunity, onToast }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [libraryBusy, setLibraryBusy] = useState(false)
+  const [appliedVersionId, setAppliedVersionId] = useState("")
   const [confirmSwitch, setConfirmSwitch] = useState<(() => void) | null>(null)
   const [confirmSession, setConfirmSession] = useState<"resume" | "interview" | null>(null)
   const oppIdRef = useRef(opportunity.id)
@@ -357,6 +359,31 @@ export function ResumeWorkspace({ opportunity, onToast }: {
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-soft)] pt-3">
+        <label className="flex items-center gap-1.5 text-[12px] text-ink-soft">
+          投递所用版本
+          <select
+            value={appliedVersionId}
+            onChange={async (e) => {
+              const next = e.target.value
+              try {
+                await setAppliedVersion(opportunity.id, next)
+                setAppliedVersionId(next)
+                onToast(next ? "已标记投递所用版本，统计将按版本归因" : "已清除投递版本标记")
+              } catch (err) {
+                onToast(err instanceof Error ? err.message : "标记失败，请稍后重试")
+              }
+            }}
+            className="h-[28px] rounded-[7px] border border-[var(--border-soft)] bg-workspace px-2 text-[12px] text-ink"
+          >
+            <option value="">未标记</option>
+            {versions.map((v) => (
+              <option key={v.id} value={v.id}>{v.label}</option>
+            ))}
+          </select>
+        </label>
+        <span className="text-[11px] text-ink-faint">标记后求职中心统计会按版本归因</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="secondary"
           size="sm"

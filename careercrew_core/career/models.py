@@ -47,6 +47,8 @@ class BoardStatusInput(CareerInput):
     next_action: str = Field(default="", max_length=500)
     next_action_date: str = Field(default="", max_length=10)
     note: str = Field(default="", max_length=2000)
+    # 投递所用简历版本（版本归因用；空串 = 未标记）
+    applied_version_id: str = Field(default="", max_length=100)
 
     @field_validator("next_action_date")
     @classmethod

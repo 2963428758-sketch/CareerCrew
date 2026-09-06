@@ -185,3 +185,12 @@ export function isSafeHttpUrl(url: string | undefined): boolean {
     return false
   }
 }
+
+/** 标记投递所用简历版本（版本归因）；传空串清除。 */
+export async function setAppliedVersion(opportunityId: string, versionId: string): Promise<void> {
+  const resp = await apiFetch(
+    `/api/career/opportunities/${encodeURIComponent(opportunityId)}/applied-version`,
+    { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ applied_version_id: versionId }) })
+  if (!resp.ok) throw new Error(await apiErrorText(resp))
+}

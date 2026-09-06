@@ -116,6 +116,7 @@ export interface InterviewReport {
 export interface JobStats {
   by_stage: Record<string, number>
   by_source: Record<string, { total: number; by_stage: Record<string, number> }>
+  by_version: Record<string, { total: number; by_stage: Record<string, number> }>
   applied: number
   replies: number
   interviewed: number
@@ -440,3 +441,49 @@ export const updateContact = async (id: string, payload: Partial<Contact>): Prom
 export const deleteContact = async (id: string): Promise<void> => {
   await readData(await apiFetch(`/api/career/contacts/${encodeURIComponent(id)}`, req("DELETE")))
 }
+
+// ── 导师只读分享 ──
+
+export interface ShareInfo {
+  token: string
+  kind: "opportunity" | "resume_version"
+  ref_id: string
+  mask_pii: boolean
+  expires_at: string
+  revoked_at: string | null
+  created_at?: string
+}
+
+export const createShare = async (payload: {
+  kind: "opportunity" | "resume_version"
+  ref_id: string
+  expires_days?: number
+  mask_pii?: boolean
+}): Promise<ShareInfo> => readData(await apiFetch("/api/career/shares", req("POST", payload)))
+
+export const listShares = async (): Promise<ShareInfo[]> => {
+  const rows = await readData<ShareInfo[]>(await apiFetch("/api/career/shares"))
+  return Array.isArray(rows) ? rows : []
+}
+
+export const revokeShare = async (token: string): Promise<void> => {
+  await readData(await apiFetch(`/api/career/shares/${encodeURIComponent(token)}`, req("DELETE")))
+}
+
+// ── 面试情报包 ──
+
+export interface IntelBrief {
+  source: string
+  company_research: string
+  likely_questions: string[]
+  confirm_questions: string[]
+  evidence: string[]
+  disclaimer: string
+}
+
+export const createIntelBrief = async (
+  opportunityId: string,
+  resumeVersionId: string,
+): Promise<IntelBrief> => readData(await apiFetch(
+  `/api/career/opportunities/${encodeURIComponent(opportunityId)}/intel-brief`,
+  req("POST", { resume_version_id: resumeVersionId })))

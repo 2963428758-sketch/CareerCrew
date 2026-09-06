@@ -45,6 +45,16 @@ interface ChatMsg {
   attachments?: MessageAttachment[]
 }
 
+/** 单次作答的表达分析（启发式，非评分依据）。 */
+interface SpeechNote {
+  chars: number
+  seconds: number
+  cps: number
+  fillers: Array<{ word: string; count: number }>
+  totalFillers: number
+  star: string[]
+}
+
 export default function InterviewPage() {
   const [topic, setTopic] = useState("")
   const [messages, setMessages] = useState<ChatMsg[]>([])
@@ -67,6 +77,31 @@ export default function InterviewPage() {
   const pendingRef = useRef<{ q: string; a: string } | null>(null)
   /** 语音表达辅助：题目出现（可开始作答）的时间戳 */
   const questionShownAtRef = useRef<number | null>(null)
+  /** 语音表达分析：每次作答的即时反馈（语速/口头禅/STAR 完整度启发式） */
+  const [speechNotes, setSpeechNotes] = useState<SpeechNote[]>([])
+
+  function analyzeSpeech(answer: string, seconds: number): SpeechNote {
+    const fillers = ["然后", "就是", "那个", "其实", "就是说", "嗯嗯", "对吧"]
+    const fillerHits: Array<{ word: string; count: number }> = []
+    for (const word of fillers) {
+      const count = answer.split(word).length - 1
+      if (count > 0) fillerHits.push({ word, count })
+    }
+    const totalFillers = fillerHits.reduce((sum, f) => sum + f.count, 0)
+    const star: string[] = []
+    if (/项目|在.{2,12}(期间|时)|负责|公司/.test(answer)) star.push("S·背景")
+    if (/实现|做了|推动|优化|设计|搭建|引入|主导|完成/.test(answer)) star.push("T/A·行动")
+    if (/提升|下降|达到|减少|增长|\d+(\.\d+)?%|\d+\s*(万|k|K|QPS)/.test(answer)) star.push("R·结果")
+    const minutes = Math.max(seconds / 60, 1 / 60)
+    return {
+      chars: answer.length,
+      seconds,
+      cps: Math.round(answer.length / minutes),
+      fillers: fillerHits,
+      totalFillers,
+      star,
+    }
+  }
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -176,11 +211,11 @@ export default function InterviewPage() {
       content: trimmed,
       attachments: toMessageAttachments(turnAttachments),
     }])
-    // 语音表达辅助：报告本次作答用时与字数（帮助控制回答节奏，非评分依据）
+    // 语音表达辅助：即时分析语速/口头禅/STAR 完整度（启发式，非评分依据）
     const shownAt = questionShownAtRef.current
     if (pendingRef.current && shownAt) {
       const seconds = Math.max(1, Math.round((Date.now() - shownAt) / 1000))
-      showToast(`本次作答 ${trimmed.length} 字 · 用时 ${seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`}`)
+      setSpeechNotes((prev) => [...prev, analyzeSpeech(trimmed, seconds)])
       questionShownAtRef.current = Date.now()
     }
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
@@ -301,6 +336,29 @@ export default function InterviewPage() {
       />
 
       {prepSession && <PreparationBanner session={prepSession} />}
+
+      {speechNotes.length > 0 && (
+        <div className="border-b border-[var(--border-soft)] bg-muted/30 px-4 py-2 text-[11.5px] text-ink-soft md:px-6" data-testid="speech-feedback">
+          <span className="font-[560] text-ink">表达反馈</span>
+          <span className="ml-2">
+            第 {speechNotes.length} 答：{speechNotes[speechNotes.length - 1].chars} 字 ·
+            语速约 {speechNotes[speechNotes.length - 1].cps} 字/分
+            {speechNotes[speechNotes.length - 1].totalFillers > 0 &&
+              ` · 口头禅 ${speechNotes[speechNotes.length - 1].totalFillers} 处（` +
+              speechNotes[speechNotes.length - 1].fillers.map((f) => `${f.word}×${f.count}`).join("、") + "）"}
+            {speechNotes[speechNotes.length - 1].star.length > 0 &&
+              ` · 已覆盖 ${speechNotes[speechNotes.length - 1].star.join("/")}`}
+            {speechNotes[speechNotes.length - 1].star.length < 3 &&
+              ` · 建议补齐 ${["S·背景", "T/A·行动", "R·结果"].filter((p) => !speechNotes[speechNotes.length - 1].star.includes(p)).join("、")}`}
+          </span>
+          {speechNotes.length >= 2 && (
+            <span className="ml-2 text-ink-faint">
+              本场平均语速 {Math.round(speechNotes.reduce((s, n) => s + n.cps, 0) / speechNotes.length)} 字/分
+            </span>
+          )}
+          <span className="ml-2 text-ink-faint">（启发式提示，非评分）</span>
+        </div>
+      )}
 
       <div
         ref={workspaceRef}

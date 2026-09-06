@@ -84,10 +84,11 @@ class CareerStore:
             return None
         row = self._one(
             """UPDATE preparation_opportunities SET stage=%s, next_action=%s,
-               next_action_date=%s, note=%s, stage_updated_at=CURRENT_TIMESTAMP
+               next_action_date=%s, note=%s, applied_version_id=%s,
+               stage_updated_at=CURRENT_TIMESTAMP
                WHERE owner_id=%s AND id=%s AND archived_at IS NULL RETURNING id, stage""",
             (payload.stage, payload.next_action, payload.next_action_date,
-             payload.note, owner_id, opportunity_id))
+             payload.note, payload.applied_version_id, owner_id, opportunity_id))
         if row is None:
             return None
         return row
@@ -355,6 +356,44 @@ class CareerStore:
             "DELETE FROM job_contacts WHERE owner_id=%s AND id=%s RETURNING id",
             (owner_id, contact_id)) is not None
 
+    # ── 导师只读分享 ──
+
+    def create_share(self, owner_id: str, kind: str, ref_id: str,
+                     expires_at: str, mask_pii: bool) -> dict:
+        """创建只读分享令牌（token 由调用方生成的高熵随机串）。"""
+        return self._one(
+            """INSERT INTO career_share_tokens (token, owner_id, kind, ref_id, mask_pii, expires_at)
+               VALUES (%s,%s,%s,%s,%s,%s) RETURNING *""",
+            (str(uuid4()) + str(uuid4()), owner_id, kind, ref_id, mask_pii, expires_at))
+
+    def list_shares(self, owner_id: str):
+        return self._all(
+            "SELECT token, kind, ref_id, mask_pii, expires_at, revoked_at, created_at "
+            "FROM career_share_tokens WHERE owner_id=%s ORDER BY created_at DESC, token DESC",
+            (owner_id,))
+
+    def revoke_share(self, owner_id: str, token: str) -> bool:
+        return self._one(
+            "UPDATE career_share_tokens SET revoked_at=CURRENT_TIMESTAMP "
+            "WHERE owner_id=%s AND token=%s AND revoked_at IS NULL RETURNING token",
+            (owner_id, token)) is not None
+
+    def resolve_share(self, token: str) -> dict | None:
+        """解析令牌：过期或已撤销一律 None（对外统一 404，不泄露状态）。"""
+        row = self._one(
+            """SELECT token, owner_id, kind, ref_id, mask_pii, expires_at, revoked_at
+               FROM career_share_tokens WHERE token=%s""", (token,))
+        if row is None or row.get("revoked_at"):
+            return None
+        from datetime import datetime
+
+        try:
+            if datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")) < datetime.now().astimezone():
+                return None
+        except ValueError:
+            return None
+        return row
+
     # ── 求职画像 ──
 
     def get_profile(self, owner_id: str):
@@ -391,6 +430,14 @@ class CareerStore:
                 "SELECT COALESCE(NULLIF(source, ''), '未知来源') AS src, stage, COUNT(*) AS n "
                 "FROM preparation_opportunities WHERE owner_id=%s AND archived_at IS NULL "
                 "GROUP BY src, stage", (owner_id,)).fetchall()
+            # 版本归因：按「投递所用简历版本」细分阶段分布（未标记的投递不计入）
+            version_rows = conn.execute(
+                """SELECT v.label AS vlabel, o.stage, COUNT(*) AS n
+                   FROM preparation_opportunities o
+                   JOIN preparation_resume_versions v
+                     ON v.id = o.applied_version_id AND v.owner_id = o.owner_id
+                   WHERE o.owner_id=%s AND o.archived_at IS NULL AND o.applied_version_id <> ''
+                   GROUP BY v.label, o.stage""", (owner_id,)).fetchall()
         by_stage = {stage: 0 for stage in STAGES}
         for row in stage_rows:
             by_stage[str(row["stage"])] = int(row["n"])
@@ -398,6 +445,12 @@ class CareerStore:
         for row in source_rows:
             src_name = str(row["src"])
             bucket = by_source.setdefault(src_name, {"total": 0, "by_stage": {s: 0 for s in STAGES}})
+            bucket["total"] += int(row["n"])
+            bucket["by_stage"][str(row["stage"])] = int(row["n"])
+        by_version: dict[str, dict] = {}
+        for row in version_rows:
+            vname = str(row["vlabel"])
+            bucket = by_version.setdefault(vname, {"total": 0, "by_stage": {s: 0 for s in STAGES}})
             bucket["total"] += int(row["n"])
             bucket["by_stage"][str(row["stage"])] = int(row["n"])
         applied = int(transitions.get("已投递", 0))
@@ -412,6 +465,7 @@ class CareerStore:
         return {
             "by_stage": by_stage,
             "by_source": by_source,
+            "by_version": by_version,
             "applied": applied,
             "replies": replies,
             "interviewed": interviewed,
