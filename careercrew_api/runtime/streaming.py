@@ -12,6 +12,7 @@ from careercrew_api.runtime.common import (
     _rag_query_retrievals,
     _read_image_paths,
 )
+from careercrew_core.preparation.jobs_extract import extract_jobs_from_agent_result
 from careercrew_core.tracing.langsmith import (
     attach_run_metadata,
     traced_call,
@@ -151,15 +152,17 @@ class StreamingMixin:
             pass  # transcript 写入失败不阻塞主流程
         obs = _observability_from_result(lr)
         obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+        jobs = extract_jobs_from_agent_result(lr)
         self._finish_chat_turn(
             ctx, result, langsmith_run_id=ls_run_id,
+            metadata={"jobs": jobs} if jobs else None,
             input_tokens=obs["input_tokens"], output_tokens=obs["output_tokens"],
             total_tokens=obs["total_tokens"], retrievals=obs["retrievals"],
             tool_calls=obs["tool_calls"],
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=result, turn=ctx)
+        return StreamResult(content=result, jobs=jobs, turn=ctx)
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,

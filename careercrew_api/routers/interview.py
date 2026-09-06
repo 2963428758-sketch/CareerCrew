@@ -11,6 +11,11 @@ from fastapi.responses import StreamingResponse
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.limits import user_stream_slot
+from careercrew_api.preparation_context import (
+    is_prepared_thread,
+    load_prepared_or_404,
+    prepared_context_block,
+)
 from careercrew_api.request_helpers import (
     ndjson_response as _ndjson_response,
 )
@@ -196,6 +201,11 @@ def chat(
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
     effective = rt.compute_effective_tools("interview", req.tools, user_id=current_user["id"])
     hitl = rt._hitl_requires()
+    # i-prep- 准备会话：进入 gen 前 owner 校验（404 JSON），快照 JD/简历每轮注入。
+    prepared = (
+        load_prepared_or_404(current_user["id"], req.thread_id, "interview")
+        if is_prepared_thread(req.thread_id) else None
+    )
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None}
@@ -243,6 +253,13 @@ def chat(
                 if last_user
                 else (req.topic or "请开始模拟面试")
             )
+            if prepared is not None:
+                # 准备会话：固定岗位与简历上下文每轮注入，用户回答保持可读
+                current = (
+                    f"{prepared_context_block(prepared)}\n\n"
+                    + (f"面试主题：{req.topic}\n\n" if req.topic else "")
+                    + (f"用户：{last_user}" if last_user else "请开始针对该岗位的模拟面试")
+                )
             state = {
                 "thread_id": req.thread_id, "user_id": user_id, "stage": "questions",
                 "user_intent": "chat",

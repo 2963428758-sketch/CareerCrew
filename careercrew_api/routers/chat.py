@@ -26,15 +26,14 @@ from careercrew_api.request_helpers import (
 from careercrew_api.runtime import CareerCrewRuntime
 from careercrew_api.schemas import CancelStreamRequest, MatchRequest, ResumeRequest
 from careercrew_api.sse import (
-    CancellationEvent,
     cancel_registered_stream,
     done_event,
     error_event,
     friendly_error,
+    register_stream_cancellation,
     stage_event,
     stream_agent,
     turn_done_fields,
-    register_stream_cancellation,
     unregister_stream_cancellation,
 )
 
@@ -63,7 +62,7 @@ def match(
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
 
     def gen() -> Generator[str, None, None]:
-        result: dict = {"content": "", "turn": None}
+        result: dict = {"content": "", "turn": None, "jobs": []}
         cancel = register_stream_cancellation(current_user["id"], req.thread_id)
 
         def run_fn(cb):
@@ -77,6 +76,7 @@ def match(
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["turn"] = getattr(res, "turn", None)
+            result["jobs"] = getattr(res, "jobs", None) or []
 
         failed = False
         try:
@@ -94,6 +94,7 @@ def match(
             if not failed:
                 yield done_event(
                     result["content"] or "".join(content_parts),
+                    **({"jobs": result["jobs"]} if result["jobs"] else {}),
                     **turn_done_fields(result["turn"]),
                 )
         except Exception as e:

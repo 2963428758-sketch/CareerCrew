@@ -10,6 +10,7 @@ import { Tooltip } from "@/components/ui/tooltip"
 import { AuthLoading, AuthScreen } from "@/components/AuthScreen"
 import PasswordChangeScreen from "@/components/PasswordChangeScreen"
 import { ToastHost } from "@/components/ToastHost"
+import { OnboardingDialog } from "@/components/preparation/OnboardingDialog"
 import { getAuthSnapshot, restoreSession, subscribeAuth } from "@/lib/auth"
 
 // 路由懒加载：按页拆 chunk，消除首屏大 bundle（Chat/Consult/Knowledge 等重页面按需加载）
@@ -19,6 +20,8 @@ const InterviewPage = lazy(() => import("@/pages/InterviewPage"))
 const ResumePage = lazy(() => import("@/pages/ResumePage"))
 const KnowledgePage = lazy(() => import("@/pages/KnowledgePage"))
 const ConsultPage = lazy(() => import("@/pages/ConsultPage"))
+const PreparationPage = lazy(() => import("@/pages/PreparationPage"))
+const CareerCenterPage = lazy(() => import("@/pages/CareerCenterPage"))
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"))
 const AdminUsersPage = lazy(() => import("@/pages/AdminUsersPage"))
 const QualityDashboardPage = lazy(() => import("@/pages/QualityDashboardPage"))
@@ -33,6 +36,8 @@ const PAGES: Record<string, ComponentType> = {
   "/resume": ResumePage,
   "/knowledge": KnowledgePage,
   "/consult": ConsultPage,
+  "/preparation": PreparationPage,
+  "/career": CareerCenterPage,
   "/admin/users": AdminUsersPage,
   "/quality": QualityDashboardPage,
   "/quality/bad-cases": BadCasesPage,
@@ -166,6 +171,9 @@ export default function App() {
 
       {/* 全局错误/信息 toast（底部居中）：所有页面的静默失败点统一从这里提示 */}
       <ToastHost />
+
+      {/* 首次使用引导（仅登录用户；可跳过，求职中心可重做） */}
+      {auth.status === "authenticated" && <OnboardingDialog />}
     </div>
   )
 }

@@ -3,7 +3,7 @@ import {
 } from "react"
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import {
-  BookOpen, Copy, FileText, FlaskConical, Gauge, GraduationCap, Loader2, MessageSquare,
+  BookOpen, Briefcase, Compass, Copy, FileText, FlaskConical, Gauge, GraduationCap, Loader2, MessageSquare,
   MessageSquareWarning, MoreHorizontal, PanelLeftClose, Pencil, Pin, SquarePen,
   Sun, Moon, Target, Trash2, UserCog, Users,
 } from "lucide-react"
@@ -20,6 +20,8 @@ import type { AuthUser } from "@/lib/auth"
 const NAV: { to: string; label: string; icon: ComponentType<{ className?: string; strokeWidth?: number }>; end?: boolean; adminOnly?: boolean; reviewerOnly?: boolean }[] = [
   { to: "/", label: "求职规划", icon: MessageSquare, end: true },
   { to: "/matcher", label: "职位匹配", icon: Target },
+  { to: "/preparation", label: "岗位准备", icon: Briefcase },
+  { to: "/career", label: "求职中心", icon: Compass },
   { to: "/resume", label: "简历优化", icon: FileText },
   { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/consult", label: "会诊", icon: Users },

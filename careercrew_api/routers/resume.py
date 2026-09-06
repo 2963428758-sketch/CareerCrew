@@ -33,6 +33,11 @@ from careercrew_api import storage
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.limits import user_stream_slot
+from careercrew_api.preparation_context import (
+    is_prepared_thread,
+    load_prepared_or_404,
+    prepared_context_block,
+)
 from careercrew_api.request_helpers import (
     ndjson_response as _ndjson_response,
 )
@@ -417,6 +422,12 @@ def chat(
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
     effective = rt.compute_effective_tools("resume", req.tools, user_id=current_user["id"])
     hitl = rt._hitl_requires()
+    # r-prep- 准备会话：进入 gen 前完成 owner 校验（404 以 JSON 返回，而非流内错误）。
+    # 快照 JD/简历在每一轮注入，普通线程完全不受影响。
+    prepared = (
+        load_prepared_or_404(current_user["id"], req.thread_id, "resume")
+        if is_prepared_thread(req.thread_id) else None
+    )
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None, "lr": None}
@@ -436,19 +447,29 @@ def chat(
                 hitl_requires=hitl,
                 forced_doc_ids=rt._mention_knowledge_ids(mentions),
             )
-            if req.resume_text.strip():
-                _save_resume(user_id, req.thread_id, req.resume_text)
-            resume = req.resume_text.strip() or _load_resume(user_id, req.thread_id)
+            if prepared is not None:
+                # 准备会话使用不可变快照，不读写该线程的简历存储
+                resume = prepared["resume_content"]
+                jd = prepared["jd"]
+            else:
+                if req.resume_text.strip():
+                    _save_resume(user_id, req.thread_id, req.resume_text)
+                resume = req.resume_text.strip() or _load_resume(user_id, req.thread_id)
+                jd = req.jd
             try:
                 pending_id = rt.record_user_message(
                     user_id, req.thread_id, req.question, module="resume"
                 )
             except Exception:
                 pending_id = None
-            if resume:
+            if prepared is not None:
+                current = (
+                    f"{prepared_context_block(prepared)}\n\n用户问题：{req.question}"
+                )
+            elif resume:
                 current = (
                     f"我的简历：\n{resume}\n\n"
-                    f"目标 JD：\n{req.jd or '未指定'}\n\n"
+                    f"目标 JD：\n{jd or '未指定'}\n\n"
                     f"用户问题：{req.question}"
                 )
             else:

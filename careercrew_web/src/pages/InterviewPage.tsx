@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Flag, Check } from "lucide-react"
+import { Flag, Check, ClipboardCheck } from "lucide-react"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
 import { toMessageAttachments, type Attachment } from "@/lib/attachments"
@@ -22,6 +22,9 @@ import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
 import { restoreHistory } from "@/lib/historyRestore"
+import { usePreparationContext } from "@/hooks/usePreparationContext"
+import { PreparationBanner } from "@/components/preparation/PreparationBanner"
+import { VoiceButton } from "@/components/interview/VoiceButton"
 import type { InterviewQA, MessageAttachment } from "@/types"
 
 const INTERVIEWER = { label: "面试官", color: "#BE185D" }
@@ -71,6 +74,27 @@ export default function InterviewPage() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const search = useConversationSearch(messages, scrollRef, workspaceRef)
+  // i-prep- 准备会话：横幅展示岗位/版本；首轮主题预填，由用户点击发送触发
+  const { prepSession } = usePreparationContext("interview", currentThreadId)
+  const prepPrefilledRef = useRef<string>("")
+
+  useEffect(() => {
+    if (!prepSession || prepPrefilledRef.current === currentThreadId) return
+    if (messages.length > 0) return
+    prepPrefilledRef.current = currentThreadId
+    const text = `请针对岗位「${prepSession.company} · ${prepSession.title}」开始模拟面试`
+    setTopic(text)
+    setInput(text)
+  }, [prepSession, currentThreadId, messages.length])
+
+  // 薄弱点复练交接：求职中心「一键复练」放入的一次性训练主题
+  useEffect(() => {
+    const practice = sessionStorage.getItem("interview:practice")
+    if (!practice) return
+    sessionStorage.removeItem("interview:practice")
+    if (messages.length > 0 || input) return
+    setInput(`请针对以下薄弱点出题训练：${practice}`)
+  }, [messages.length, input])
 
   // 流结束：把最终内容写回最后一条 assistant 气泡；若带评分则计入 qaList
   useEffect(() => {
@@ -194,6 +218,25 @@ export default function InterviewPage() {
     }
   }
 
+  /** 生成整场复盘报告（按回答证据汇总优势与薄弱点，存入求职中心）。 */
+  const handleGenerateReview = async () => {
+    if (lastIsStreaming || !currentThreadId) return
+    try {
+      const resp = await apiFetch("/api/career/interview-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: currentThreadId }),
+      })
+      if (!resp.ok) {
+        showToast(await apiErrorText(resp, "生成复盘失败，请重试"))
+        return
+      }
+      showToast("复盘报告已生成，可在「求职中心 → 面试复盘」查看")
+    } catch (e) {
+      showToast(networkErrorText(e, "生成复盘失败，请检查网络后重试"))
+    }
+  }
+
   const handleEdit = (text: string) => {
     setInput(text)
     requestAnimationFrame(() => composerRef.current?.focus())
@@ -231,6 +274,11 @@ export default function InterviewPage() {
                 <Flag className="h-4 w-4" strokeWidth={1.7} />
               </HeaderIconAction>
             ) : undefined}
+            {messages.length > 0 && (
+              <HeaderIconAction label="生成整场复盘报告" onClick={() => void handleGenerateReview()} disabled={lastIsStreaming}>
+                <ClipboardCheck className="h-4 w-4" strokeWidth={1.7} />
+              </HeaderIconAction>
+            )}
             <ConversationMenu
               threadId={currentThreadId}
               title={threadTitle ?? "新对话"}
@@ -240,6 +288,8 @@ export default function InterviewPage() {
           </>
         }
       />
+
+      {prepSession && <PreparationBanner session={prepSession} />}
 
       <div
         ref={workspaceRef}
@@ -317,7 +367,9 @@ export default function InterviewPage() {
         <div className="composer-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[150px]" />
         <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} className="bottom-[110px]" />
         <div className="absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-3 sm:px-6 sm:pb-4">
-          <PromptComposer
+          <div className="flex w-full items-end gap-1.5">
+            <VoiceButton onText={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))} onError={showToast} />
+            <PromptComposer
             value={input}
             onChange={setInput}
             onSend={() => (messages.length === 0 ? startWithTopic(input) : send(input))}
@@ -336,6 +388,7 @@ export default function InterviewPage() {
             textareaRef={composerRef}
             className="w-full"
           />
+          </div>
         </div>
         <ToastBubble message={toast} />
       </div>

@@ -25,6 +25,7 @@ from careercrew_api.routers import (
     agent,
     attachments,
     auth,
+    career,
     chat,
     consult,
     context,
@@ -32,6 +33,7 @@ from careercrew_api.routers import (
     feedback,
     interview,
     knowledge,
+    preparation,
     quality,
     resume,
     threads,
@@ -193,6 +195,8 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
     app.include_router(interview.router, prefix="/api/interview", tags=["interview"])
     app.include_router(resume.router, prefix="/api/resume", tags=["resume"])
+    app.include_router(preparation.router, prefix="/api/preparation", tags=["preparation"])
+    app.include_router(career.router, prefix="/api/career", tags=["career"])
     app.include_router(consult.router, prefix="/api/consult", tags=["consult"])
     app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
     app.include_router(context.router, prefix="/api/context", tags=["context"])

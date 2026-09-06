@@ -48,6 +48,7 @@ class FakeRuntime:
         self.knowledge_sources_by_user: dict[str, list[dict]] = {}
         self.knowledge_asset_owners: dict[str, str] = {}
         self.match_chunks: list[str] = []
+        self.match_jobs: list[dict] = []
         self.resume_chunks: list[str] = []
         self.upload_content = "解析出的简历文本内容"
         self.upload_error: Exception | None = None
@@ -288,8 +289,9 @@ class FakeRuntime:
             if self.stream_preamble:
                 cb(self.stream_preamble)
             cb(self.match_output)
-        self._finish_chat_turn(ctx, self.match_output)
-        return StreamResult(content=self.match_output, turn=ctx)
+        self._finish_chat_turn(ctx, self.match_output,
+                               metadata={"jobs": self.match_jobs} if self.match_jobs else None)
+        return StreamResult(content=self.match_output, jobs=self.match_jobs, turn=ctx)
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,

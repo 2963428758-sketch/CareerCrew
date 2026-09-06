@@ -56,6 +56,9 @@ class ReactIteration:
     content: str  # 模型文本输出（thought）
     tool_calls: list[dict] = field(default_factory=list)  # 本轮 tool_calls（空=最终答案）
     tool_results: list[Any] = field(default_factory=list)  # 本轮工具执行结果（含错误回喂）
+    # 具名结果记录（按 tool_call_id 对应，含 content_and_artifact 工具的 artifact），
+    # 供结构化结果（如岗位卡片）安全提取；不改写 legacy tool_results。
+    tool_results_named: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -126,10 +129,12 @@ class MaxIterationsMiddleware(AgentMiddleware):
         head = text[:head_keep]
         tail = text[-200:] if len(text) > limit else ""
         notice = f"\n\n[工具结果过长已截断：原始 {len(text)} 字符]"
+        # artifact（content_and_artifact 工具的结构化载荷）不参与钳制，原样保留
         return ToolMessage(
             content=head + tail + notice,
             tool_call_id=msg.tool_call_id,
             name=msg.name,
+            artifact=getattr(msg, "artifact", None),
         )
 
 
@@ -631,6 +636,12 @@ def run_agent(
                             tool_calls_total += 1
                             if last_iter_idx >= 0:
                                 iterations[last_iter_idx].tool_results.append(m.content)
+                                iterations[last_iter_idx].tool_results_named.append({
+                                    "name": getattr(m, "name", "") or "",
+                                    "tool_call_id": getattr(m, "tool_call_id", "") or "",
+                                    "content": m.content if isinstance(m.content, str) else "",
+                                    "artifact": getattr(m, "artifact", None),
+                                })
     except Exception as e:  # noqa: BLE001 - 记录后上抛，由 API 生命周期标记 failed
         logger.exception("agent.stream 执行异常，交由上层标记失败：%s", e)
         raise

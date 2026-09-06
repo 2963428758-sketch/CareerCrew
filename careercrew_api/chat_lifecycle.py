@@ -24,10 +24,12 @@ _OBSERVABILITY_TEXT_LIMIT = 200
 
 @dataclass
 class StreamResult:
-    """知识库等返回额外结构化字段的流式结果（content + sources + turn ctx）。"""
+    """知识库等返回额外结构化字段的流式结果（content + sources + jobs + turn ctx）。"""
 
     content: str
     sources: list[dict] = field(default_factory=list)
+    # match 专属：成功 search_jobs 工具的结构化岗位结果（收藏/岗位卡片用）
+    jobs: list[dict] = field(default_factory=list)
     turn: TurnContext | None = None
 
 
