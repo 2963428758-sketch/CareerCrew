@@ -43,7 +43,12 @@ export function JobToolsPanel({ opportunity, onToast }: {
     }
   }, [opportunity.id])
 
-  useEffect(() => { void reloadVersions() }, [reloadVersions])
+  useEffect(() => {
+    void reloadVersions()
+    const onVersionsChanged = () => { void reloadVersions() }
+    window.addEventListener("preparation:versions-changed", onVersionsChanged)
+    return () => window.removeEventListener("preparation:versions-changed", onVersionsChanged)
+  }, [reloadVersions])
 
   const runAts = async () => {
     if (running) return

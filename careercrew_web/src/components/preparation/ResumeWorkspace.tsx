@@ -137,6 +137,7 @@ export function ResumeWorkspace({ opportunity, onToast }: {
         original_content: editor.originalContent,
       })
       setVersions((prev) => [saved, ...prev])
+      window.dispatchEvent(new Event("preparation:versions-changed"))
       setSelectedVersionId(saved.id)
       const next: EditorState = {
         label: saved.label,

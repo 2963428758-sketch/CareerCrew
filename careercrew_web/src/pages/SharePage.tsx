@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react"
-import { useParams } from "react-router-dom"
 import { Briefcase, ShieldCheck } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -22,7 +21,9 @@ interface SharedPayload {
 
 /** 导师只读分享页：凭令牌访问，无登录；只读，不含任何操作入口。 */
 export default function SharePage() {
-  const { token = "" } = useParams()
+  // 本页渲染在路由上下文之外（App 认证门旁路），useParams 不可用，
+  // 直接从地址栏解析令牌。
+  const token = window.location.pathname.split("/").pop() ?? ""
   const [data, setData] = useState<SharedPayload | null>(null)
   const [error, setError] = useState("")
 

@@ -83,12 +83,8 @@ export default function App() {
     useStreamStore.getState().resetAll()
   }, [userId])
 
-  if (auth.status === "loading") return <AuthLoading />
-  if (auth.status === "anonymous") return <AuthScreen />
-  // 新建/重置密码的账号：完成强制改密前只能看到改密页（后端业务 API 同步 403 兜底）
-  if (auth.user?.must_change_password) return <PasswordChangeScreen />
-
-  // 导师只读分享页：令牌即凭证，无需登录（公开访问，不渲染主应用壳）
+  // 导师只读分享页：令牌即凭证，无需登录（公开访问，不渲染主应用壳）。
+  // 必须放在所有登录态检查之前，否则未登录用户会被登录页拦截。
   if (location.pathname.startsWith("/share/")) {
     return (
       <Suspense fallback={<div className="flex h-screen items-center justify-center text-[13px] text-ink-soft">加载中…</div>}>
@@ -96,6 +92,11 @@ export default function App() {
       </Suspense>
     )
   }
+
+  if (auth.status === "loading") return <AuthLoading />
+  if (auth.status === "anonymous") return <AuthScreen />
+  // 新建/重置密码的账号：完成强制改密前只能看到改密页（后端业务 API 同步 403 兜底）
+  if (auth.user?.must_change_password) return <PasswordChangeScreen />
 
   // 设置页是独立页面：不渲染主侧边栏（页面自带设置导航侧边栏）
   const isSettings = location.pathname === "/settings"
