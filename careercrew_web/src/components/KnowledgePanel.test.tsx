@@ -35,7 +35,8 @@ describe("KnowledgePanel visibility", () => {
 
   it("shows public badge and admin publish controls", async () => {
     render(<KnowledgePanel />)
-    await waitFor(() => expect(screen.getByText("mine.pdf")).toBeTruthy())
+    // 725e5ee 起 DocRow 展示友好文件名（title/doc_name/源文件名），doc id 仅兜底
+    await waitFor(() => expect(screen.getByText("mine_file.pdf")).toBeTruthy())
     expect(screen.getByText("公共")).toBeTruthy()
     expect(screen.getByText("我的")).toBeTruthy()
     // 可见性开关默认「我的私有库」，点击切到「发布到公共库」后断言文案出现

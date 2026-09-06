@@ -151,7 +151,8 @@ export default function InterviewPage() {
       // 切回一个仍在流式回答的会话：补一个流式占位气泡
       const live = useStreamStore.getState().sessions[tid]
       setMessages(live && live.status === "streaming"
-        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true,
+            turnId: msgs[msgs.length - 1]?.role === "assistant" ? msgs[msgs.length - 1].turnId : undefined }]
         : msgs)
       jumpToLatest()
     })

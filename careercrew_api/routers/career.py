@@ -82,6 +82,74 @@ def board_log(opportunity_id: str, user: CurrentUser, store: Store):
     return store.list_stage_changes(user["id"], opportunity_id)
 
 
+@router.get("/opportunities/{opportunity_id}/timeline")
+def opportunity_timeline(opportunity_id: str, user: CurrentUser, store: Store, prep: PrepStore):
+    """岗位档案时间线：把该岗位下的收藏、版本、会话、阶段流转、任务、HR 沟通、
+    Offer 与面试复盘聚合成统一事件流（按时间倒序），让一个岗位的完整过程一页可见。"""
+    opportunity = prep.get_opportunity(user["id"], opportunity_id)
+    if opportunity is None:
+        raise HTTPException(status_code=404, detail="记录不存在或不属于当前账号")
+
+    events: list[dict] = []
+
+    def add(kind: str, at: str | None, title: str, detail: str = "") -> None:
+        events.append({"kind": kind, "at": at or "", "title": title, "detail": detail})
+
+    add("created", opportunity.get("created_at"),
+        f"收藏岗位：{opportunity.get('company', '')} · {opportunity.get('title', '')}")
+
+    versions = prep.list_versions(user["id"], opportunity_id)
+    for v in versions:
+        add("resume_version", v.get("created_at"),
+            f"简历版本「{v.get('label', '')}」",
+            f"原文 {len(str(v.get('original_content') or ''))} 字 / 当前稿 {len(str(v.get('content') or ''))} 字")
+
+    sessions = prep.list_sessions_for_opportunity(user["id"], opportunity_id)
+    thread_ids: set[str] = set()
+    module_label = {"resume": "简历定制", "interview": "模拟面试"}
+    for s in sessions:
+        thread_ids.add(str(s.get("thread_id") or ""))
+        add("session", s.get("created_at"),
+            f"发起{module_label.get(str(s.get('module')), '准备')}会话",
+            f"使用版本「{s.get('resume_label', '')}」")
+
+    for c in store.list_stage_changes(user["id"], opportunity_id):
+        add("stage", c.get("created_at"),
+            f"阶段流转：{c.get('from_stage', '')} → {c.get('to_stage', '')}",
+            str(c.get("note") or ""))
+
+    for t in store.list_tasks(user["id"], opportunity_id=opportunity_id):
+        state = "已完成" if t.get("done") else "进行中"
+        add("task", t.get("updated_at") or t.get("created_at"),
+            f"行动任务（{state}）：{t.get('title', '')}",
+            str(t.get("note") or ""))
+
+    for f in store.list_followups(user["id"]):
+        if str(f.get("opportunity_id") or "") != opportunity_id:
+            continue
+        add("followup", f.get("created_at"),
+            f"HR 沟通：{f.get('company', '')}" + (f"（{f.get('channel')}）" if f.get("channel") else ""),
+            str(f.get("content") or "")[:120])
+
+    for o in store.list_offers(user["id"]):
+        if str(o.get("opportunity_id") or "") != opportunity_id:
+            continue
+        add("offer", o.get("created_at"),
+            f"Offer：{o.get('company', '')}",
+            " / ".join(x for x in (o.get("base_salary"), o.get("bonus"), o.get("location")) if x))
+
+    for tid in thread_ids:
+        for r in store.list_interview_reports(user["id"], tid):
+            report = r.get("report") if isinstance(r.get("report"), dict) else {}
+            add("review", r.get("created_at"),
+                "整场面试复盘报告",
+                f"{report.get('scored_questions', 0)}/{report.get('total_questions', 0)} 题已评分"
+                + (f"，均分 {report.get('avg_score')}" if report.get("avg_score") is not None else ""))
+
+    events.sort(key=lambda e: str(e.get("at") or ""), reverse=True)
+    return {"opportunity_id": opportunity_id, "events": events}
+
+
 @router.post("/board/{opportunity_id}/archive")
 def archive_opportunity(opportunity_id: str, user: CurrentUser, store: Store):
     if not store.archive_opportunity(user["id"], opportunity_id):

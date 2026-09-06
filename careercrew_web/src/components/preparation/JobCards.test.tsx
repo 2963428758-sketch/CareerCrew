@@ -50,6 +50,13 @@ describe("JobCards", () => {
     expect(screen.queryByRole("link", { name: /来源链接/ })).toBeNull()
   })
 
+  it("无 JD 全文的岗位禁用收藏并提示手动录入（避免必然失败的请求）", () => {
+    renderCards([{ ...JOB, jd: "" }])
+    const btn = screen.getByRole("button", { name: /收藏岗位/ }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    expect(screen.getByText(/手动录入/)).toBeTruthy()
+  })
+
   it("收藏岗位：POST 保存成功后显示已收藏与去准备入口", async () => {
     apiFetch.mockImplementation(async () => ({
       ok: true,

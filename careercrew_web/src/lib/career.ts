@@ -174,6 +174,19 @@ export const listStageChanges = async (opportunityId: string): Promise<StageChan
   return Array.isArray(rows) ? rows : []
 }
 
+/** 岗位档案时间线事件（收藏/版本/会话/阶段/任务/HR/Offer/复盘 聚合）。 */
+export interface TimelineEvent {
+  kind: "created" | "resume_version" | "session" | "stage" | "task" | "followup" | "offer" | "review"
+  at: string
+  title: string
+  detail: string
+}
+
+export const getOpportunityTimeline = async (
+  opportunityId: string,
+): Promise<{ opportunity_id: string; events: TimelineEvent[] }> => readData(await apiFetch(
+  `/api/career/opportunities/${encodeURIComponent(opportunityId)}/timeline`))
+
 // ── 素材库 ──
 
 export const listMaterials = async (): Promise<Material[]> => {

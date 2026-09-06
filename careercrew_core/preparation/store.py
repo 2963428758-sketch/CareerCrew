@@ -114,6 +114,12 @@ class PreparationStore:
             f"SELECT {_SESSION_COLUMNS} FROM preparation_sessions WHERE owner_id=%s AND thread_id=%s",
             (owner_id, thread_id))
 
+    def list_sessions_for_opportunity(self, owner_id: str, opportunity_id: str):
+        return self._all(
+            f"SELECT {_SESSION_COLUMNS}, created_at FROM preparation_sessions "
+            "WHERE owner_id=%s AND opportunity_id=%s ORDER BY created_at DESC, thread_id DESC",
+            (owner_id, opportunity_id))
+
     def delete_all_for_user(self, owner_id: str) -> None:
         with self.pool.connection() as conn:
             conn.execute("DELETE FROM preparation_opportunities WHERE owner_id=%s", (owner_id,))

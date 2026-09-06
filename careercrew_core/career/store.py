@@ -155,7 +155,12 @@ class CareerStore:
             (str(uuid4()), owner_id, payload.title, payload.note,
              payload.due_date, payload.opportunity_id))
 
-    def list_tasks(self, owner_id: str):
+    def list_tasks(self, owner_id: str, opportunity_id: str | None = None):
+        if opportunity_id:
+            return self._all(
+                "SELECT * FROM action_items WHERE owner_id=%s AND opportunity_id=%s "
+                "ORDER BY done ASC, due_date ASC, updated_at DESC, id DESC",
+                (owner_id, opportunity_id))
         return self._all(
             "SELECT * FROM action_items WHERE owner_id=%s "
             "ORDER BY done ASC, due_date ASC, updated_at DESC, id DESC", (owner_id,))

@@ -73,7 +73,9 @@ function JobCard({ job }: { job: JobOpportunity }) {
           </button>
         </div>
       ) : (
-        <p className="mt-2 text-[12px] text-ink-faint">暂无 JD 全文，收藏后可在岗位准备中补充。</p>
+        <p className="mt-2 text-[12px] text-ink-faint">
+          暂无 JD 全文：请打开来源链接复制 JD，再通过「岗位准备 → 手动录入岗位」保存。
+        </p>
       )}
 
       <div className="mt-2.5 flex items-center gap-2">
@@ -91,7 +93,8 @@ function JobCard({ job }: { job: JobOpportunity }) {
             variant="outline"
             size="sm"
             className="h-[26px] text-[12px]"
-            disabled={saving}
+            disabled={saving || !job.jd}
+            title={!job.jd ? "缺少 JD 全文，请先手动录入" : undefined}
             onClick={handleCollect}
           >
             <BookmarkPlus className="h-3.5 w-3.5" /> {saving ? "收藏中…" : "收藏岗位"}

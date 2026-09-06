@@ -172,10 +172,11 @@ function BoardTab({ onToast }: { onToast: (m: string) => void }) {
 
 // ── 行动计划 ──
 
-function TasksTab({ onToast }: { onToast: (m: string) => void }) {
+function TasksTab({ onToast, opportunities }: { onToast: (m: string) => void; opportunities: BoardRow[] }) {
   const [tasks, setTasks] = useState<ActionItem[]>([])
   const [title, setTitle] = useState("")
   const [due, setDue] = useState("")
+  const [oppId, setOppId] = useState("")
   const [loading, setLoading] = useState(true)
   const [showDismissed, setShowDismissed] = useState(false)
 
@@ -189,10 +190,14 @@ function TasksTab({ onToast }: { onToast: (m: string) => void }) {
   const add = async () => {
     if (!title.trim()) return
     try {
-      const created = await createTask({ title: title.trim(), due_date: due.trim() })
+      const created = await createTask({
+        title: title.trim(), due_date: due.trim(),
+        opportunity_id: oppId || undefined,
+      })
       setTasks((prev) => [created, ...prev])
       setTitle("")
       setDue("")
+      setOppId("")
       onToast("任务已创建")
     } catch (e) {
       onToast(networkErrorText(e, "创建失败，请稍后重试"))
@@ -201,6 +206,10 @@ function TasksTab({ onToast }: { onToast: (m: string) => void }) {
 
   const visible = tasks.filter((t) => showDismissed || !t.dismissed)
   const overdue = visible.filter((t) => !t.done && !t.dismissed && isOverdue(t.due_date)).length
+  const oppName = (id: string) => {
+    const o = opportunities.find((x) => x.opportunity_id === id)
+    return o ? `${o.company}·${o.title}` : ""
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -209,6 +218,17 @@ function TasksTab({ onToast }: { onToast: (m: string) => void }) {
                className="h-[32px] w-[260px]" maxLength={300} />
         <Input value={due} onChange={(e) => setDue(e.target.value)} placeholder={DATE_HINT}
                className="h-[32px] w-[130px]" maxLength={10} />
+        <select
+          value={oppId}
+          onChange={(e) => setOppId(e.target.value)}
+          aria-label="关联岗位（可选）"
+          className="h-[32px] rounded-[7px] border border-[var(--border-soft)] bg-workspace px-2 text-[12.5px] text-ink"
+        >
+          <option value="">关联岗位（可选）</option>
+          {opportunities.map((o) => (
+            <option key={o.opportunity_id} value={o.opportunity_id}>{o.company} · {o.title}</option>
+          ))}
+        </select>
         <Button size="sm" className="h-[30px] text-[12.5px]" onClick={() => void add()} disabled={!title.trim()}>
           <Plus className="h-4 w-4" /> 添加
         </Button>
@@ -245,6 +265,9 @@ function TasksTab({ onToast }: { onToast: (m: string) => void }) {
                 <span className={cn("text-[11.5px]", !t.done && isOverdue(t.due_date) ? "text-destructive" : "text-ink-faint")}>
                   截止 {t.due_date}
                 </span>
+              )}
+              {t.opportunity_id && oppName(t.opportunity_id) && (
+                <Badge variant="outline" className="text-[10.5px]">{oppName(t.opportunity_id)}</Badge>
               )}
               {t.postponed_count > 0 && <Badge variant="outline" className="text-[10.5px]">已延期 {t.postponed_count}</Badge>}
               <button
@@ -409,9 +432,10 @@ function MaterialsTab({ onToast }: { onToast: (m: string) => void }) {
 
 // ── HR 跟进 ──
 
-function FollowupsTab({ onToast }: { onToast: (m: string) => void }) {
+function FollowupsTab({ onToast, opportunities }: { onToast: (m: string) => void; opportunities: BoardRow[] }) {
   const [rows, setRows] = useState<HRFollowup[]>([])
   const [form, setForm] = useState({ company: "", title: "", channel: "", content: "", todo_note: "" })
+  const [oppId, setOppId] = useState("")
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [error, setError] = useState("")
 
@@ -426,12 +450,19 @@ function FollowupsTab({ onToast }: { onToast: (m: string) => void }) {
       const created = await createFollowup({
         company: form.company.trim(), title: form.title, channel: form.channel,
         content: form.content, todo_note: form.todo_note,
+        opportunity_id: oppId || undefined,
       })
       setRows((prev) => [created, ...prev])
       setForm({ company: "", title: "", channel: "", content: "", todo_note: "" })
+      setOppId("")
       setError("")
       onToast("HR 沟通已记录")
     } catch (e) { setError(networkErrorText(e, "保存失败，请稍后重试")) }
+  }
+
+  const oppName = (id: string) => {
+    const o = opportunities.find((x) => x.opportunity_id === id)
+    return o ? `${o.company}·${o.title}` : ""
   }
 
   return (
@@ -445,8 +476,21 @@ function FollowupsTab({ onToast }: { onToast: (m: string) => void }) {
         </div>
         <Textarea value={form.content} onChange={(e) => setForm((s) => ({ ...s, content: e.target.value }))}
                   placeholder="HR 原话 / 沟通内容 *" className="mt-2.5 min-h-[64px]" />
-        <Input value={form.todo_note} onChange={(e) => setForm((s) => ({ ...s, todo_note: e.target.value }))}
-               placeholder="待办（例如：周三前回复时间）" className="mt-2.5 h-[32px]" />
+        <div className="mt-2.5 grid gap-2.5 md:grid-cols-2">
+          <Input value={form.todo_note} onChange={(e) => setForm((s) => ({ ...s, todo_note: e.target.value }))}
+                 placeholder="待办（例如：周三前回复时间）" className="h-[32px]" />
+          <select
+            value={oppId}
+            onChange={(e) => setOppId(e.target.value)}
+            aria-label="关联岗位（可选）"
+            className="h-[32px] rounded-[7px] border border-[var(--border-soft)] bg-workspace px-2 text-[12.5px] text-ink"
+          >
+            <option value="">关联岗位（可选）</option>
+            {opportunities.map((o) => (
+              <option key={o.opportunity_id} value={o.opportunity_id}>{o.company} · {o.title}</option>
+            ))}
+          </select>
+        </div>
         {error && <p className="mt-1.5 text-[12px] text-destructive">{error}</p>}
         <Button size="sm" className="mt-2.5 h-[28px] text-[12.5px]" onClick={() => void submit()}>保存记录</Button>
       </div>
@@ -458,6 +502,9 @@ function FollowupsTab({ onToast }: { onToast: (m: string) => void }) {
             <span className="flex items-center gap-2 text-[11.5px]">
               {r.channel && <Badge variant="outline" className="text-[10.5px]">{r.channel}</Badge>}
               {r.resolved ? "已处理" : "待处理"}
+              {r.opportunity_id && oppName(r.opportunity_id) && (
+                <Badge variant="outline" className="text-[10.5px]">{oppName(r.opportunity_id)}</Badge>
+              )}
               <button type="button" className="hover:text-ink" onClick={async () => {
                 try { const updated = await resolveFollowup(r.id); setRows((p) => p.map((x) => (x.id === updated.id ? updated : x))) }
                 catch (e) { onToast(networkErrorText(e)) } }}>
@@ -512,11 +559,12 @@ const OFFER_WEIGHTS = [
   { key: "growth", label: "成长" },
 ] as const
 
-function OffersTab({ onToast }: { onToast: (m: string) => void }) {
+function OffersTab({ onToast, opportunities }: { onToast: (m: string) => void; opportunities: BoardRow[] }) {
   const [offers, setOffers] = useState<Offer[]>([])
   const [weights, setWeights] = useState<Record<string, number>>({
     base_salary: 4, location: 3, work_mode: 2, growth: 3 })
   const [form, setForm] = useState({ company: "", title: "", base_salary: "", bonus: "", equity: "", location: "", work_mode: "", growth: "", notes: "" })
+  const [oppId, setOppId] = useState("")
   const [error, setError] = useState("")
 
   const reload = async () => {
@@ -527,9 +575,10 @@ function OffersTab({ onToast }: { onToast: (m: string) => void }) {
   const submit = async () => {
     if (!form.company.trim()) { setError("公司名称不能为空"); return }
     try {
-      const created = await createOffer(form)
+      const created = await createOffer({ ...form, opportunity_id: oppId || undefined })
       setOffers((prev) => [created, ...prev])
       setForm({ company: "", title: "", base_salary: "", bonus: "", equity: "", location: "", work_mode: "", growth: "", notes: "" })
+      setOppId("")
       setError("")
       onToast("Offer 已记录")
     } catch (e) { setError(networkErrorText(e, "保存失败，请稍后重试")) }
@@ -572,6 +621,17 @@ function OffersTab({ onToast }: { onToast: (m: string) => void }) {
           <Input value={form.growth} onChange={(e) => setForm((s) => ({ ...s, growth: e.target.value }))} placeholder="成长方向" />
         </div>
         <Textarea value={form.notes} onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))} placeholder="其他备注" className="mt-2.5 min-h-[48px]" />
+        <select
+          value={oppId}
+          onChange={(e) => setOppId(e.target.value)}
+          aria-label="关联岗位（可选）"
+          className="mt-2.5 h-[32px] rounded-[7px] border border-[var(--border-soft)] bg-workspace px-2 text-[12.5px] text-ink"
+        >
+          <option value="">关联岗位（可选）</option>
+          {opportunities.map((o) => (
+            <option key={o.opportunity_id} value={o.opportunity_id}>{o.company} · {o.title}</option>
+          ))}
+        </select>
         {error && <p className="mt-1.5 text-[12px] text-destructive">{error}</p>}
         <Button size="sm" className="mt-2.5 h-[28px] text-[12.5px]" onClick={() => void submit()}>添加 Offer</Button>
       </div>
@@ -882,6 +942,9 @@ function PrivacyTab({ onToast }: { onToast: (m: string) => void }) {
 export default function CareerCenterPage() {
   const [tab, setTab] = useState<TabId>("board")
   const { toast, showToast } = useToast()
+  // 页面级加载一次岗位列表：任务/HR/Offer 创建时可关联岗位，形成完整岗位档案
+  const [opportunities, setOpportunities] = useState<BoardRow[]>([])
+  useEffect(() => { listBoard().then(setOpportunities).catch(() => undefined) }, [])
 
   return (
     <div className="flex h-full flex-col">
@@ -918,10 +981,10 @@ export default function CareerCenterPage() {
       <div className="flex-1 overflow-y-auto p-4 md:p-6">
         <div className="mx-auto w-full max-w-[1100px]">
           {tab === "board" && <BoardTab onToast={showToast} />}
-          {tab === "tasks" && <TasksTab onToast={showToast} />}
+          {tab === "tasks" && <TasksTab onToast={showToast} opportunities={opportunities} />}
           {tab === "materials" && <MaterialsTab onToast={showToast} />}
-          {tab === "followups" && <FollowupsTab onToast={showToast} />}
-          {tab === "offers" && <OffersTab onToast={showToast} />}
+          {tab === "followups" && <FollowupsTab onToast={showToast} opportunities={opportunities} />}
+          {tab === "offers" && <OffersTab onToast={showToast} opportunities={opportunities} />}
           {tab === "reviews" && <ReviewsTab onToast={showToast} />}
           {tab === "stats" && <StatsTab />}
           {tab === "privacy" && <PrivacyTab onToast={showToast} />}

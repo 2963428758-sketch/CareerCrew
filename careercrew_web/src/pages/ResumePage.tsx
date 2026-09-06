@@ -139,7 +139,8 @@ export default function ResumePage() {
       // 切回一个仍在流式回答的会话：补一个流式占位气泡
       const live = useStreamStore.getState().sessions[tid]
       setMessages(live && live.status === "streaming"
-        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true,
+            turnId: msgs[msgs.length - 1]?.role === "assistant" ? msgs[msgs.length - 1].turnId : undefined }]
         : msgs)
       jumpToLatest()
     })
@@ -233,7 +234,9 @@ export default function ResumePage() {
     if (stream.status === "streaming") return
     const turn = groupTurns(messages).find((t) => t.id === turnId)
     if (!turn?.assistant || !turn.user.content) return
-    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
+    const targetTurnId = turn.assistant.turnId || turn.user.turnId || turn.id
+    // 占位符带 turnId：新回答按 §19 归入原 turn 版本链，而不是孤儿 turn
+    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true, turnId: targetTurnId }])
     jumpToLatest()
     if (messageId) await regenerateStream(currentThreadId, messageId)
     else await startStream(currentThreadId, "/resume/chat", {

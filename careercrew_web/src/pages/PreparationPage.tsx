@@ -22,6 +22,7 @@ import { OpportunityCard } from "@/components/preparation/OpportunityCard"
 import { OpportunityForm } from "@/components/preparation/OpportunityForm"
 import { ResumeWorkspace } from "@/components/preparation/ResumeWorkspace"
 import { GapAnalysisPanel } from "@/components/preparation/GapAnalysisPanel"
+import { OpportunityTimeline } from "@/components/preparation/OpportunityTimeline"
 
 /** 岗位准备工作台：收藏岗位 → 关联简历版本 → 一键带入简历定制 / 模拟面试。 */
 export default function PreparationPage() {
@@ -268,6 +269,9 @@ export default function PreparationPage() {
               <ResumeWorkspace key={selected.id} opportunity={selected} onToast={showToast} />
               <div className="border-t border-[var(--border-soft)] pt-3">
                 <GapAnalysisPanel opportunityId={selected.id} onToast={showToast} />
+              </div>
+              <div className="border-t border-[var(--border-soft)] pt-3">
+                <OpportunityTimeline opportunityId={selected.id} />
               </div>
             </>
           )}

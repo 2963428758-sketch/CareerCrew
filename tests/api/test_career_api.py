@@ -159,6 +159,34 @@ def test_interview_review_from_thread_history(career_api, fake_runtime):
     assert reports and reports[0]["thread_id"] == tid
 
 
+def test_opportunity_timeline_aggregates_all_events(career_api):
+    """岗位档案时间线：收藏/版本/会话/阶段流转/任务聚合为倒序事件流。"""
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    version = client.post(f"/api/preparation/opportunities/{oid}/versions",
+                          json={"label": "时间线版本", "content": "简历正文"}).json()
+    client.post(f"/api/preparation/opportunities/{oid}/sessions",
+                json={"module": "interview", "resume_version_id": version["id"]})
+    client.put(f"/api/career/board/{oid}", json={"stage": "已投递"})
+    client.post("/api/career/tasks", json={"title": "跟进投递", "opportunity_id": oid})
+
+    resp = client.get(f"/api/career/opportunities/{oid}/timeline")
+    assert resp.status_code == 200, resp.text
+    events = resp.json()["events"]
+    kinds = [e["kind"] for e in events]
+    assert "created" in kinds and "resume_version" in kinds
+    assert "session" in kinds and "stage" in kinds and "task" in kinds
+    # 倒序
+    ats = [e["at"] for e in events if e["at"]]
+    assert ats == sorted(ats, reverse=True)
+    # 跨账号 404
+    from careercrew_api.auth.dependencies import get_current_user
+
+    client.app.dependency_overrides[get_current_user] = lambda: {"id": "bob", "role": "user"}
+    assert client.get(f"/api/career/opportunities/{oid}/timeline").status_code == 404
+    client.app.dependency_overrides[get_current_user] = lambda: {"id": "u_001", "role": "admin"}
+
+
 def test_profile_endpoints(career_api):
     client, _, _ = career_api
     assert client.get("/api/career/profile").json() is None

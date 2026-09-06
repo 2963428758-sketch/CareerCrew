@@ -9,7 +9,7 @@
 | Docker Desktop 启动 | ✅ 已启动，postgres:16 / qdrant 容器自动恢复（沿用 `pgdata` 卷，既有数据完好） |
 | 数据库迁移 | ✅ `alembic upgrade head`：0002 → **0005_job_lifecycle (head)**，12 张新表全部创建 |
 | 迁移修复 | ⚠️ **0003_user_settings 迁移存在既有 bug**（`bind.execute(裸字符串)` 在 SQLAlchemy 2.x 抛 `ObjectNotExecutableError`，导致该库此前一直卡在 0002）。已改为 `text()` 包装后迁移链打通。该修复影响的是既有迁移文件，不是本轮新增迁移。 |
-| 测试账号 | ✅ 新建 `qa_tester / QaTester#2026`（管理员）；另建 `qa_other` 用于跨账号隔离抽查 |
+| 测试账号 | ✅ 新建临时管理员 `qa_tester` 与隔离抽查账号 `qa_other`（明文密码不落文档；验收后均已删除） |
 | 后端 | ✅ `uvicorn careercrew_api.main:app --port 8000`，`/` 200，登录接口 200，DASHSCOPE key 已配置（真实 LLM 可用） |
 | 前端 | ✅ `npm run dev`（vite，端口 5176，代理 `/api` → 8000） |
 
@@ -80,7 +80,7 @@
 
 ## 五、遗留与说明
 
-1. 测试账号 `qa_tester`、`qa_other` 及其测试数据（岗位、版本、会话、素材、Offer 等）保留在开发库中供复查；如需清理可用「数据与隐私 → 删除全部求职数据」或 `DELETE` 接口。
+1. 测试账号 `qa_tester`、`qa_other` 及其全部测试数据已在验收完成后删除，开发库不留测试凭据。
 2. 浏览器实测中职位匹配页的实时岗位检索未跑（需 Chrome CDP 登录 Boss直聘/猎聘，属外部依赖）；岗位卡片链路已由 API 级测试（jobs 透传）+ 收藏交互测试覆盖。
 3. 前后端当前仍在后台运行：前端 http://localhost:5176 ，后端 :8000。手动重启命令见 README「启动项目」。
 4. 代码仍未提交，全部改动在工作区 `codex/job-preparation-phase1` 分支上。
