@@ -20,7 +20,7 @@ services:
       retries: 12
 
   qdrant:
-    image: qdrant/qdrant:latest        # 生产建议固定到具体版本 tag
+    image: qdrant/qdrant:v1.19.0@sha256:057ee3a8da769fe7310dd3537b4dc7583bf87a95ce8ac43c0af5a46bc580d1fc
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:

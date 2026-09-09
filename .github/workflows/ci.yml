@@ -207,10 +207,9 @@ jobs:
 
   security-audit:
     # 已知依赖集的 CVE 扫描（重 ML 栈 torch/FlagEmbedding 不装，覆盖面以轻量清单为准）。
-    # 先行观察期不阻塞合入；稳定后移除 continue-on-error 升级为门禁。
+    # 高危依赖漏洞必须阻断合入；例外需通过依赖升级或显式安全评审处理。
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
