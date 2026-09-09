@@ -91,6 +91,68 @@ def test_verify_backup_rejects_changed_artifact(tmp_path: Path) -> None:
         backup_restore.verify_backup(backup_dir, check_pg_restore=False)
 
 
+def test_verify_backup_rejects_undeclared_qdrant_manifest_artifact(tmp_path: Path) -> None:
+    backup_dir = _create_backup(tmp_path)
+    manifest_path = backup_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["qdrant"][0]["path"] = "qdrant/unhashed.snapshot"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(backup_restore.BackupValidationError, match="Qdrant.*artifact"):
+        backup_restore.verify_backup(backup_dir, check_pg_restore=False)
+
+
+def test_restore_drill_attempts_database_cleanup_when_restore_fails(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path, collections=[])
+    admin_calls: list[str] = []
+
+    def fake_admin(database_url: str, sql: str) -> None:
+        del database_url
+        admin_calls.append(sql)
+
+    def fail_restore(*args, **kwargs) -> None:
+        raise backup_restore.BackupValidationError("synthetic restore failure")
+
+    monkeypatch.setattr(backup_restore, "_execute_admin", fake_admin)
+    monkeypatch.setattr(backup_restore, "restore_postgres_dump", fail_restore)
+
+    with pytest.raises(backup_restore.BackupValidationError, match="synthetic restore failure"):
+        backup_restore.restore_drill(
+            backup_dir,
+            database_url="postgresql://backup_user:secret@db.example:5433/careercrew",
+            now=datetime(2026, 9, 9, 3, 0, 0, tzinfo=UTC),
+        )
+
+    assert any(sql.startswith('DROP DATABASE IF EXISTS "careercrew_restore_') for sql in admin_calls)
+
+
+def test_restore_drill_surfaces_database_cleanup_failure(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path, collections=[])
+    calls = 0
+
+    def fake_admin(database_url: str, sql: str) -> None:
+        nonlocal calls
+        del database_url
+        calls += 1
+        if sql.startswith("DROP DATABASE"):
+            raise backup_restore.BackupValidationError("synthetic cleanup failure")
+
+    def fail_restore(*args, **kwargs) -> None:
+        raise backup_restore.BackupValidationError("synthetic restore failure")
+
+    monkeypatch.setattr(backup_restore, "_execute_admin", fake_admin)
+    monkeypatch.setattr(backup_restore, "restore_postgres_dump", fail_restore)
+
+    with pytest.raises(backup_restore.BackupValidationError, match="cleanup failure"):
+        backup_restore.restore_drill(
+            backup_dir,
+            database_url="postgresql://backup_user:secret@db.example:5433/careercrew",
+            now=datetime(2026, 9, 9, 3, 0, 1, tzinfo=UTC),
+        )
+
+    assert calls == 2
+
+
 def test_prune_backups_only_removes_old_exact_backup_children(tmp_path: Path) -> None:
     root = tmp_path / "backups"
     root.mkdir()
@@ -131,4 +193,3 @@ def test_validate_restore_target_accepts_generated_temporary_name() -> None:
         "careercrew_restore_20260909120000",
         "careercrew",
     )
-

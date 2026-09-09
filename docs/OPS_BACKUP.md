@@ -52,9 +52,9 @@ python scripts/backup_restore.py verify data/backups/careercrew-20260909-020000
 恢复演练只使用自动生成的临时目标，不覆盖源库、源向量集合或源文件：
 
 ```powershell
+# 先把 DATABASE_URL 放入仓库根目录 .env 或任务运行环境，不作为命令行参数传入
 python scripts/backup_restore.py restore-drill `
   data/backups/careercrew-20260909-020000 `
-  --database-url "postgresql://<user>:<password>@<host>:5432/careercrew" `
   --qdrant-container qdrant
 ```
 

@@ -449,13 +449,21 @@ def verify_backup(
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         raise BackupValidationError("backup manifest has no artifacts")
+    qdrant_entries = manifest.get("qdrant", [])
+    if not isinstance(qdrant_entries, list):
+        raise BackupValidationError("backup Qdrant manifest is invalid")
     seen: set[str] = set()
+    qdrant_artifact_paths: set[str] = set()
     files_artifact: Path | None = None
     postgres_artifact: Path | None = None
+    files_artifact_count = 0
+    postgres_artifact_count = 0
     for item in artifacts:
         if not isinstance(item, dict):
             raise BackupValidationError("backup artifact entry is invalid")
         relative = item.get("path")
+        if not isinstance(relative, str):
+            raise BackupValidationError("backup artifact path must be text")
         if relative in seen:
             raise BackupValidationError("backup manifest contains duplicate artifact paths")
         seen.add(relative)
@@ -473,10 +481,41 @@ def verify_backup(
             raise BackupValidationError(f"backup artifact sha256 mismatch: {relative}")
         if item.get("kind") == "files":
             files_artifact = path
+            files_artifact_count += 1
         elif item.get("kind") == "postgres":
             postgres_artifact = path
-    if files_artifact is None or postgres_artifact is None:
+            postgres_artifact_count += 1
+        elif item.get("kind") == "qdrant_snapshot":
+            qdrant_artifact_paths.add(relative)
+    if (
+        files_artifact is None
+        or postgres_artifact is None
+        or files_artifact_count != 1
+        or postgres_artifact_count != 1
+    ):
         raise BackupValidationError("backup must contain postgres and files artifacts")
+    qdrant_manifest_paths: set[str] = set()
+    for entry in qdrant_entries:
+        if not isinstance(entry, dict):
+            raise BackupValidationError("backup Qdrant entry is invalid")
+        collection = entry.get("collection")
+        relative = entry.get("path")
+        snapshot = entry.get("snapshot")
+        if not isinstance(collection, str) or not COLLECTION_RE.fullmatch(collection):
+            raise BackupValidationError("backup Qdrant collection name is invalid")
+        if not isinstance(relative, str) or relative in qdrant_manifest_paths:
+            raise BackupValidationError("backup Qdrant artifact path is invalid or duplicated")
+        if relative not in qdrant_artifact_paths:
+            raise BackupValidationError("backup Qdrant entry has no hashed artifact")
+        if not isinstance(snapshot, str) or not snapshot:
+            raise BackupValidationError("backup Qdrant snapshot name is invalid")
+        point_count = entry.get("point_count")
+        if point_count is not None and (not isinstance(point_count, int) or point_count < 0):
+            raise BackupValidationError("backup Qdrant point count is invalid")
+        qdrant_manifest_paths.add(relative)
+        _safe_backup_artifact(backup_dir, relative)
+    if qdrant_manifest_paths != qdrant_artifact_paths:
+        raise BackupValidationError("Qdrant manifest and hashed artifact sets differ")
     _validate_zip_members(files_artifact)
     if check_pg_restore:
         pg_restore = shutil.which("pg_restore")
@@ -735,19 +774,13 @@ def restore_drill(
                 qdrant_container,
                 timestamp.strftime("%Y%m%d%H%M%S"),
             )
-    except BaseException:
+        return target_database
+    finally:
         if created:
             try:
                 _execute_admin(admin_url, f'DROP DATABASE IF EXISTS "{target_database}" WITH (FORCE)')
-            except BackupValidationError:
-                # Preserve the original drill failure; the cleanup attempt has
-                # still been made and the operator can inspect the database.
-                pass
-        raise
-    else:
-        if created:
-            _execute_admin(admin_url, f'DROP DATABASE IF EXISTS "{target_database}" WITH (FORCE)')
-        return target_database
+            except BackupValidationError as exc:
+                raise BackupValidationError("restore drill cleanup failure") from exc
 
 
 def _load_environment() -> None:

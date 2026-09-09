@@ -164,6 +164,37 @@ def test_validate_schema_invariants_rejects_missing_live_invariant() -> None:
         validate_schema_invariants(_FakeConnection(rows))
 
 
+@pytest.mark.parametrize(
+    "marker, expected_message",
+    [
+        ("head", "alembic_version mismatch"),
+        ("table", "missing tables"),
+        ("column", "missing career_share_tokens columns"),
+        ("extension", "pg_trgm"),
+        ("index", "missing pg_trgm indexes"),
+        ("legacy", "legacy career_share_tokens.token"),
+    ],
+)
+def test_validate_schema_invariants_covers_each_required_negative_case(
+    marker: str, expected_message: str
+) -> None:
+    rows = _valid_schema_rows()
+    if marker == "head":
+        rows["alembic_version"] = [("0007_version_attribution_shares",)]
+    elif marker == "table":
+        rows["information_schema.tables"] = rows["information_schema.tables"][1:]
+    elif marker == "column":
+        rows["information_schema.columns"] = rows["information_schema.columns"][1:]
+    elif marker == "extension":
+        rows["pg_extension"] = []
+    elif marker == "index":
+        rows["pg_indexes"] = rows["pg_indexes"][1:]
+    else:
+        rows["information_schema.columns"].append(("career_share_tokens", "token"))
+
+    with pytest.raises(MigrationValidationError, match=expected_message):
+        validate_schema_invariants(_FakeConnection(rows))
+
+
 def test_validate_schema_invariants_accepts_complete_schema() -> None:
     validate_schema_invariants(_FakeConnection(_valid_schema_rows()))
-
