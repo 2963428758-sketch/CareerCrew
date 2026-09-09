@@ -191,7 +191,7 @@ jobs:
         run: docker compose config -q
       - name: Build app image (multi-stage)
         run: docker build -t careercrew:ci .
-      - name: Smoke: alembic upgrade head with dialect DSN
+      - name: "Smoke: alembic upgrade head with dialect DSN"
         run: |
           docker network create ccnet
           docker run -d --name pg --network ccnet \
