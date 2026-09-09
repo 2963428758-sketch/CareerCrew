@@ -201,7 +201,7 @@ def build_checksum_manifest(versions_dir: Path = VERSIONS_DIR) -> dict[str, str]
     """Build the deterministic filename-to-SHA256 migration manifest."""
 
     return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        path.name: hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         for path in _migration_paths(versions_dir)
     }
 

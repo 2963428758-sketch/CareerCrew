@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,17 @@ def test_validate_checksum_manifest_rejects_mismatch_and_extra_file(tmp_path: Pa
 
     with pytest.raises(MigrationValidationError, match="checksum mismatch|extra file"):
         validate_checksum_manifest(versions, manifest_path)
+
+
+def test_build_checksum_manifest_is_stable_across_crlf_and_lf(tmp_path: Path) -> None:
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    content = b'revision = "0001"\r\ndown_revision = None\r\n'
+    (versions / "0001.py").write_bytes(content)
+
+    manifest = build_checksum_manifest(versions)
+
+    assert manifest["0001.py"] == hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
 
 
 class _FakeCursor:
