@@ -157,11 +157,13 @@ class QdrantStore(BaseVectorStore):
         # 因此：有其它 must 时把「public OR 本人 owner」作为嵌套 Filter（min_should=1）
         # 并入 must，保证它和 doc 白名单做 AND；仅有访问条件时保持原样走 should。
         if access_should:
-            from qdrant_client.models import MinShould
-            must.append(Filter(
-                should=access_should,
-                min_should=MinShould(conditions=access_should, min_count=1),
-            ))
+            if must:
+                must.append(Filter(
+                    should=access_should,
+                    min_should=MinShould(conditions=access_should, min_count=1),
+                ))
+            else:
+                return Filter(should=access_should)
         return Filter(must=must) if must else None
 
     @staticmethod

@@ -337,7 +337,7 @@ class RegenerateMixin:
             lr = agent.last_result
             content = (getattr(lr, "content", "") or "").strip()
             capped = _cap_sources(
-                sources, limit=3, min_score=0.0,
+                sources, limit=3, min_score=0.1,
                 keep_paths=_read_image_paths(lr),
             )
             # 观测检索行（与首次路径一致）

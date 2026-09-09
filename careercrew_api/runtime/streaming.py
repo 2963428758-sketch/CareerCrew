@@ -522,7 +522,7 @@ class StreamingMixin:
         capped = _cap_sources(
             sources,
             limit=3,
-            min_score=0.0,
+            min_score=0.1,
             keep_paths=_read_image_paths(agent.last_result),
         )
         try:
