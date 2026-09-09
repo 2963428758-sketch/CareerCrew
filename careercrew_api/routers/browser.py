@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -16,8 +17,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_core.state.settings import load_settings
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,23 @@ _DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PS1_SCRIPT = _PROJECT_ROOT / "scripts" / "start_chrome_cdp.ps1"
 _BAT_SCRIPT = _PROJECT_ROOT / "scripts" / "start_chrome_cdp.bat"
+
+
+def require_local_request(request: Request) -> None:
+    """仅允许本机请求触发或读取宿主机 Chrome CDP 控制能力。"""
+    client = request.client
+    try:
+        address = ipaddress.ip_address(client.host) if client else None
+    except ValueError:
+        address = None
+
+    is_mapped_loopback = (
+        isinstance(address, ipaddress.IPv6Address)
+        and address.ipv4_mapped is not None
+        and address.ipv4_mapped.is_loopback
+    )
+    if address is None or not (address.is_loopback or is_mapped_loopback):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅支持本机访问")
 
 
 def _get_cdp_base_url() -> str:
@@ -69,7 +88,10 @@ def _check_cdp_alive(base_url: str, timeout: float = 1.2) -> tuple[bool, list[di
 
 
 @router.get("/browser/cdp-status")
-async def get_cdp_status() -> dict[str, Any]:
+async def get_cdp_status(
+    _current_user: CurrentUser,
+    _local_request: None = Depends(require_local_request),
+) -> dict[str, Any]:
     """检查本地 Chrome CDP 调试服务状态。"""
     base_url = _get_cdp_base_url()
     alive, tabs = _check_cdp_alive(base_url)
@@ -96,7 +118,10 @@ async def get_cdp_status() -> dict[str, Any]:
 
 
 @router.post("/browser/launch-cdp")
-async def launch_cdp() -> dict[str, Any]:
+async def launch_cdp(
+    _current_user: CurrentUser,
+    _local_request: None = Depends(require_local_request),
+) -> dict[str, Any]:
     """一键在宿主机启动带调试端口的 Chrome 浏览器。"""
     base_url = _get_cdp_base_url()
     alive, _ = _check_cdp_alive(base_url, timeout=0.8)
@@ -142,3 +167,15 @@ async def launch_cdp() -> dict[str, Any]:
             "cdp_url": base_url,
             "message": f"启动 Chrome 失败：{e}。请手动运行 scripts/start_chrome_cdp.ps1",
         }
+
+
+@router.get("/browser/cdp-command")
+async def get_cdp_command(
+    _current_user: CurrentUser,
+    _local_request: None = Depends(require_local_request),
+) -> dict[str, str]:
+    """返回本机手动启动 Chrome CDP 的命令与批处理脚本路径。"""
+    return {
+        "command": "powershell -ExecutionPolicy Bypass -File scripts/start_chrome_cdp.ps1",
+        "bat_path": str(_BAT_SCRIPT.relative_to(_PROJECT_ROOT)) if _BAT_SCRIPT.exists() else "scripts/start_chrome_cdp.bat",
+    }

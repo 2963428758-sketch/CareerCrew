@@ -25,6 +25,7 @@ from careercrew_api.routers import (
     agent,
     attachments,
     auth,
+    browser,
     career,
     chat,
     consult,
@@ -184,6 +185,7 @@ def create_app() -> FastAPI:
 
     # /api 路由
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+    app.include_router(browser.router, prefix="/api", tags=["browser"])
     # threads（conversation Source of Truth）先于 data 注册，故 POST/PATCH/DELETE
     # /api/threads 及 /api/threads/{id}/messages|clear|export、/api/messages/{id}/regenerate
     # 均由 threads.py 接管；data.py 仍定义 GET /api/threads（memory 列表）与其
