@@ -180,7 +180,7 @@ def test_qdrant_restore_registers_target_before_recovery_failure(tmp_path: Path,
     )
     monkeypatch.setattr(
         backup_restore.requests,
-        "post",
+        "put",
         lambda *args, **kwargs: _FakeQdrantResponse(error=requests.HTTPError("recover failed")),
     )
     monkeypatch.setattr(
@@ -201,6 +201,48 @@ def test_qdrant_restore_registers_target_before_recovery_failure(tmp_path: Path,
     assert any("__restore__" in url for url in deleted)
 
 
+def test_qdrant_restore_creates_snapshot_directory_before_copy(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path)
+    manifest = backup_restore.verify_backup(backup_dir, check_pg_restore=False)
+    calls: list[list[str]] = []
+    recovery_calls: list[tuple[str, dict]] = []
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "put",
+        lambda url, json, **kwargs: recovery_calls.append((url, json))
+        or _FakeQdrantResponse(payload={"result": {}}),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "get",
+        lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {"points_count": 2}}),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "delete",
+        lambda *args, **kwargs: _FakeQdrantResponse(status_code=204),
+    )
+
+    backup_restore.restore_qdrant_snapshots(
+        backup_dir,
+        manifest,
+        "http://qdrant.example:6333",
+        "qdrant",
+        "20260909120000",
+    )
+
+    assert calls[0] == ["docker", "exec", "qdrant", "mkdir", "-p", "/qdrant/snapshots"]
+    assert calls[1][0:2] == ["docker", "cp"]
+    assert recovery_calls[0][1]["location"].startswith("file:///qdrant/snapshots/")
+
+
 def test_qdrant_restore_surfaces_cleanup_http_failure(tmp_path: Path, monkeypatch) -> None:
     backup_dir = _create_backup(tmp_path)
     manifest = backup_restore.verify_backup(backup_dir, check_pg_restore=False)
@@ -211,7 +253,7 @@ def test_qdrant_restore_surfaces_cleanup_http_failure(tmp_path: Path, monkeypatc
     )
     monkeypatch.setattr(
         backup_restore.requests,
-        "post",
+        "put",
         lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {}}),
     )
     monkeypatch.setattr(
@@ -242,6 +284,8 @@ def test_qdrant_restore_continues_after_cleanup_subprocess_error(tmp_path: Path,
 
     def fake_run(args, **kwargs):
         del kwargs
+        if args[1] == "exec" and args[3] == "mkdir":
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
         if args[1] == "cp":
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         cleanup_calls.append(args)
@@ -252,7 +296,7 @@ def test_qdrant_restore_continues_after_cleanup_subprocess_error(tmp_path: Path,
     monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
     monkeypatch.setattr(
         backup_restore.requests,
-        "post",
+        "put",
         lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {}}),
     )
     monkeypatch.setattr(

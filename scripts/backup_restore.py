@@ -670,10 +670,24 @@ def restore_qdrant_snapshots(
     if not isinstance(qdrant_entries, list):
         raise BackupValidationError("backup Qdrant manifest is invalid")
     base_url = qdrant_url.rstrip("/")
+    snapshot_directory = "/qdrant/snapshots"
     temporary: list[tuple[str, str]] = []
     copied_remote_names: list[str] = []
     cleanup_errors: list[str] = []
     try:
+        if qdrant_entries:
+            try:
+                prepare_process = subprocess.run(  # noqa: S603 -- container/name are explicit operator inputs
+                    ["docker", "exec", qdrant_container, "mkdir", "-p", snapshot_directory],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise BackupValidationError("Qdrant snapshot directory preparation failed") from exc
+            if prepare_process.returncode != 0:
+                raise BackupValidationError("Qdrant snapshot directory preparation failed")
         for entry in qdrant_entries:
             if not isinstance(entry, dict):
                 raise BackupValidationError("backup Qdrant entry is invalid")
@@ -686,7 +700,7 @@ def restore_qdrant_snapshots(
             target_collection = _safe_filename(f"{collection}__restore__{restore_stamp}", "restore")[:200]
             copied_remote_names.append(remote_name)
             copy_process = subprocess.run(  # noqa: S603 -- container/name are explicit operator inputs
-                ["docker", "cp", str(snapshot_path), f"{qdrant_container}:/qdrant/storage/snapshots/{remote_name}"],
+                ["docker", "cp", str(snapshot_path), f"{qdrant_container}:{snapshot_directory}/{remote_name}"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -698,9 +712,9 @@ def restore_qdrant_snapshots(
             # Register before recovery: a timeout or non-2xx response can
             # happen after Qdrant has already created the target collection.
             temporary.append((target_collection, remote_name))
-            response = requests.post(
+            response = requests.put(
                 f"{base_url}/collections/{encoded}/snapshots/recover",
-                json={"location": f"/qdrant/storage/snapshots/{remote_name}"},
+                json={"location": f"file://{snapshot_directory}/{remote_name}"},
                 timeout=60,
             )
             _qdrant_json(response, f"snapshot recovery {collection}")
@@ -731,7 +745,7 @@ def restore_qdrant_snapshots(
                         qdrant_container,
                         "rm",
                         "-f",
-                        f"/qdrant/storage/snapshots/{remote_name}",
+                        f"{snapshot_directory}/{remote_name}",
                     ],
                     cwd=ROOT,
                     capture_output=True,
