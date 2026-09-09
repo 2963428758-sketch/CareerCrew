@@ -13,9 +13,10 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = ROOT / "migrations" / "versions"
