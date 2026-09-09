@@ -97,6 +97,9 @@ def test_build_checksum_manifest_is_stable_across_crlf_and_lf(tmp_path: Path) ->
 
     assert manifest["0001.py"] == hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
 
+    (versions / "0001.py").write_bytes(content.replace(b"\r\n", b"\n"))
+    assert build_checksum_manifest(versions) == manifest
+
 
 class _FakeCursor:
     def __init__(self, rows_by_marker: dict[str, list[tuple]]) -> None:
@@ -141,22 +144,29 @@ def _valid_schema_rows() -> dict[str, list[tuple]]:
         ("career_share_tokens", "last_accessed_at"),
     ]
     indexes = [
-        (name, f"CREATE INDEX {name} ON public.example USING gin (value gin_trgm_ops)")
-        for name in (
-            "ix_p5_preparation_opportunities_company",
-            "ix_p5_preparation_opportunities_title",
-            "ix_p5_preparation_opportunities_jd",
-            "ix_p5_project_materials_name",
-            "ix_p5_project_materials_background",
-            "ix_p5_project_materials_results",
-            "ix_p5_real_interview_records_company",
-            "ix_p5_real_interview_records_title",
-            "ix_p5_real_interview_records_overall_reflection",
-            "ix_p5_offer_comparisons_company",
-            "ix_p5_offer_comparisons_title",
-            "ix_p5_offer_comparisons_notes",
-            "ix_p5_action_items_title",
-            "ix_p5_action_items_note",
+        (
+            name,
+            f"CREATE INDEX {name} ON public.{table} USING gin ({column} gin_trgm_ops)",
+        )
+        for name, table, column in (
+            ("ix_p5_preparation_opportunities_company", "preparation_opportunities", "company"),
+            ("ix_p5_preparation_opportunities_title", "preparation_opportunities", "title"),
+            ("ix_p5_preparation_opportunities_jd", "preparation_opportunities", "jd"),
+            ("ix_p5_project_materials_name", "project_materials", "name"),
+            ("ix_p5_project_materials_background", "project_materials", "background"),
+            ("ix_p5_project_materials_results", "project_materials", "results"),
+            ("ix_p5_real_interview_records_company", "real_interview_records", "company"),
+            ("ix_p5_real_interview_records_title", "real_interview_records", "title"),
+            (
+                "ix_p5_real_interview_records_overall_reflection",
+                "real_interview_records",
+                "overall_reflection",
+            ),
+            ("ix_p5_offer_comparisons_company", "offer_comparisons", "company"),
+            ("ix_p5_offer_comparisons_title", "offer_comparisons", "title"),
+            ("ix_p5_offer_comparisons_notes", "offer_comparisons", "notes"),
+            ("ix_p5_action_items_title", "action_items", "title"),
+            ("ix_p5_action_items_note", "action_items", "note"),
         )
     ]
     return {
@@ -186,6 +196,7 @@ def test_validate_schema_invariants_rejects_missing_live_invariant() -> None:
         ("index", "missing pg_trgm indexes"),
         ("legacy", "legacy career_share_tokens.token"),
         ("index_definition", "invalid pg_trgm indexes"),
+        ("index_target", "invalid pg_trgm indexes"),
     ],
 )
 def test_validate_schema_invariants_covers_each_required_negative_case(
@@ -205,6 +216,9 @@ def test_validate_schema_invariants_covers_each_required_negative_case(
     elif marker == "index_definition":
         name, _definition = rows["pg_indexes"][0]
         rows["pg_indexes"][0] = (name, f"CREATE INDEX {name} ON public.example USING btree (value)")
+    elif marker == "index_target":
+        name, _definition = rows["pg_indexes"][0]
+        rows["pg_indexes"][0] = f"{name}", f"CREATE INDEX {name} ON public.action_items USING gin (note gin_trgm_ops)"
     else:
         rows["information_schema.columns"].append(("career_share_tokens", "token"))
 

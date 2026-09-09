@@ -34,24 +34,26 @@ EXPECTED_TABLES = frozenset(
 EXPECTED_SHARE_COLUMNS = frozenset(
     {"token_hash", "access_count", "last_accessed_at"}
 )
-EXPECTED_INDEXES = frozenset(
-    {
-        "ix_p5_preparation_opportunities_company",
-        "ix_p5_preparation_opportunities_title",
-        "ix_p5_preparation_opportunities_jd",
-        "ix_p5_project_materials_name",
-        "ix_p5_project_materials_background",
-        "ix_p5_project_materials_results",
-        "ix_p5_real_interview_records_company",
-        "ix_p5_real_interview_records_title",
-        "ix_p5_real_interview_records_overall_reflection",
-        "ix_p5_offer_comparisons_company",
-        "ix_p5_offer_comparisons_title",
-        "ix_p5_offer_comparisons_notes",
-        "ix_p5_action_items_title",
-        "ix_p5_action_items_note",
-    }
-)
+EXPECTED_INDEX_TARGETS: Mapping[str, tuple[str, str]] = {
+    "ix_p5_preparation_opportunities_company": ("preparation_opportunities", "company"),
+    "ix_p5_preparation_opportunities_title": ("preparation_opportunities", "title"),
+    "ix_p5_preparation_opportunities_jd": ("preparation_opportunities", "jd"),
+    "ix_p5_project_materials_name": ("project_materials", "name"),
+    "ix_p5_project_materials_background": ("project_materials", "background"),
+    "ix_p5_project_materials_results": ("project_materials", "results"),
+    "ix_p5_real_interview_records_company": ("real_interview_records", "company"),
+    "ix_p5_real_interview_records_title": ("real_interview_records", "title"),
+    "ix_p5_real_interview_records_overall_reflection": (
+        "real_interview_records",
+        "overall_reflection",
+    ),
+    "ix_p5_offer_comparisons_company": ("offer_comparisons", "company"),
+    "ix_p5_offer_comparisons_title": ("offer_comparisons", "title"),
+    "ix_p5_offer_comparisons_notes": ("offer_comparisons", "notes"),
+    "ix_p5_action_items_title": ("action_items", "title"),
+    "ix_p5_action_items_note": ("action_items", "note"),
+}
+EXPECTED_INDEXES = frozenset(EXPECTED_INDEX_TARGETS)
 
 
 class MigrationValidationError(ValueError):
@@ -258,6 +260,16 @@ def _index_definition(row: Any) -> Any:
     return row[1]
 
 
+def _index_definition_matches_target(index_name: Any, index_definition: Any) -> bool:
+    target = EXPECTED_INDEX_TARGETS.get(index_name)
+    if target is None or not isinstance(index_definition, str):
+        return False
+    table, column = target
+    normalized = " ".join(index_definition.lower().split())
+    expected_target = rf"\bon\s+public\.{re.escape(table)}\s+using\s+gin\s*\(\s*{re.escape(column)}\s+gin_trgm_ops\s*\)"
+    return re.search(expected_target, normalized) is not None
+
+
 def _fetchall(cursor: Any, query: str) -> list[Any]:
     cursor.execute(query)
     return list(cursor.fetchall())
@@ -346,11 +358,7 @@ def validate_schema_invariants(
             _row_value(row, 0)
             for row in index_rows
             if _row_value(row, 0) in EXPECTED_INDEXES
-            and (
-                not isinstance(_index_definition(row), str)
-                or "using gin" not in " ".join(_index_definition(row).lower().split())
-                or "gin_trgm_ops" not in _index_definition(row).lower()
-            )
+            and not _index_definition_matches_target(_row_value(row, 0), _index_definition(row))
         )
         if invalid_indexes:
             raise MigrationValidationError(

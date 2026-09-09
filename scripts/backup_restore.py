@@ -684,6 +684,7 @@ def restore_qdrant_snapshots(
             snapshot_path = _safe_backup_artifact(backup_dir, relative)
             remote_name = _safe_filename(f"careercrew_restore_{restore_stamp}_{snapshot_path.name}", "restore.snapshot")
             target_collection = _safe_filename(f"{collection}__restore__{restore_stamp}", "restore")[:200]
+            copied_remote_names.append(remote_name)
             copy_process = subprocess.run(  # noqa: S603 -- container/name are explicit operator inputs
                 ["docker", "cp", str(snapshot_path), f"{qdrant_container}:/qdrant/storage/snapshots/{remote_name}"],
                 cwd=ROOT,
@@ -693,7 +694,6 @@ def restore_qdrant_snapshots(
             )
             if copy_process.returncode != 0:
                 raise BackupValidationError("Qdrant snapshot copy to container failed")
-            copied_remote_names.append(remote_name)
             encoded = quote(target_collection, safe="")
             # Register before recovery: a timeout or non-2xx response can
             # happen after Qdrant has already created the target collection.
@@ -723,15 +723,28 @@ def restore_qdrant_snapshots(
             except requests.RequestException:
                 cleanup_errors.append(f"collection {collection}")
         for remote_name in copied_remote_names:
-            cleanup_process = subprocess.run(  # noqa: S603 -- cleanup uses the same validated operator inputs
-                ["docker", "exec", qdrant_container, "rm", "-f", f"/qdrant/storage/snapshots/{remote_name}"],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            try:
+                cleanup_process = subprocess.run(  # noqa: S603 -- cleanup uses the same validated operator inputs
+                    [
+                        "docker",
+                        "exec",
+                        qdrant_container,
+                        "rm",
+                        "-f",
+                        f"/qdrant/storage/snapshots/{remote_name}",
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                cleanup_errors.append(f"snapshot file {remote_name}: {_compact_error(str(exc))}")
+                continue
             if cleanup_process.returncode != 0:
-                cleanup_errors.append(f"snapshot file {remote_name}")
+                detail = _compact_error(cleanup_process.stderr or cleanup_process.stdout or "")
+                suffix = f": {detail}" if detail else ""
+                cleanup_errors.append(f"snapshot file {remote_name}{suffix}")
         if cleanup_errors:
             raise BackupValidationError(
                 "Qdrant restore cleanup failure: " + ", ".join(cleanup_errors)

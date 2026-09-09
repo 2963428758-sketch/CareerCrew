@@ -235,6 +235,49 @@ def test_qdrant_restore_surfaces_cleanup_http_failure(tmp_path: Path, monkeypatc
         )
 
 
+def test_qdrant_restore_continues_after_cleanup_subprocess_error(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path, collections=["careercrew_mm", "careercrew_episodic_v2"])
+    manifest = backup_restore.verify_backup(backup_dir, check_pg_restore=False)
+    cleanup_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        if args[1] == "cp":
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        cleanup_calls.append(args)
+        if len(cleanup_calls) == 1:
+            raise OSError("docker unavailable")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "post",
+        lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {}}),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "get",
+        lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {"points_count": 2}}),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "delete",
+        lambda *args, **kwargs: _FakeQdrantResponse(status_code=204),
+    )
+
+    with pytest.raises(backup_restore.BackupValidationError, match="snapshot file"):
+        backup_restore.restore_qdrant_snapshots(
+            backup_dir,
+            manifest,
+            "http://qdrant.example:6333",
+            "qdrant",
+            "20260909120000",
+        )
+
+    assert len(cleanup_calls) == 2
+
+
 def test_schedule_installer_is_non_destructive_by_default() -> None:
     script = (backup_restore.ROOT / "scripts" / "install_backup_schedule.ps1").read_text(encoding="utf-8")
 
