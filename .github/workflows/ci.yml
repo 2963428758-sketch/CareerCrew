@@ -39,6 +39,9 @@ jobs:
             "psycopg[binary]>=3.1.0" "psycopg-pool>=3.2" "mcp>=1.20,<2" "pymupdf>=1.24.0" "requests>=2.31.0" \
             fastapi "PyJWT>=2.10" "argon2-cffi>=23.1"
           pip install -e . --no-deps
+      - name: Validate migration graph and checksums
+        run: python scripts/validate_migrations.py --static
+
       - name: Unit tests (full offline suite)
         env:
           SILICONFLOW_API_KEY: "sk-test-ci-dummy"
@@ -198,6 +201,9 @@ jobs:
           docker run --rm --network ccnet \
             -e DATABASE_URL="postgresql+psycopg://careercrew:careercrew@pg:5432/careercrew" \
             careercrew:ci alembic upgrade head
+          docker run --rm --network ccnet \
+            -e DATABASE_URL="postgresql+psycopg://careercrew:careercrew@pg:5432/careercrew" \
+            careercrew:ci sh -c 'python scripts/validate_migrations.py --database-url "$DATABASE_URL"'
 
   security-audit:
     # 已知依赖集的 CVE 扫描（重 ML 栈 torch/FlagEmbedding 不装，覆盖面以轻量清单为准）。
