@@ -45,7 +45,7 @@ python scripts/backup_restore.py verify data/backups/careercrew-20260909-020000
   -RepositoryRoot "F:\agent_develop\CareerCrew"
 ```
 
-也可以显式指定 `-TaskName`、`-DailyTime HH:mm` 和 `-RetentionDays`。任务动作只包含 Python 路径、脚本路径和保留天数；连接串仍从任务运行环境的 `.env`/环境变量读取。
+也可以显式指定 `-TaskName`、`-DailyTime HH:mm` 和 `-RetentionDays`。任务动作只包含 Python 路径、脚本路径和保留天数；连接串仍从任务运行环境的 `.env`/环境变量读取。脚本默认不会覆盖同名计划任务；确认需要替换时才追加 `-AllowOverwrite`。
 
 ## 恢复演练
 

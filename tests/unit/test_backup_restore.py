@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import requests
 
 from scripts import backup_restore
 
@@ -151,6 +153,94 @@ def test_restore_drill_surfaces_database_cleanup_failure(tmp_path: Path, monkeyp
         )
 
     assert calls == 2
+
+
+class _FakeQdrantResponse:
+    def __init__(self, payload=None, error: Exception | None = None, status_code: int = 200) -> None:
+        self.payload = payload
+        self.error = error
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+    def json(self):
+        return self.payload
+
+
+def test_qdrant_restore_registers_target_before_recovery_failure(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path)
+    manifest = backup_restore.verify_backup(backup_dir, check_pg_restore=False)
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        backup_restore.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stderr="", stdout=""),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "post",
+        lambda *args, **kwargs: _FakeQdrantResponse(error=requests.HTTPError("recover failed")),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "delete",
+        lambda url, **kwargs: deleted.append(url) or _FakeQdrantResponse(status_code=204),
+    )
+
+    with pytest.raises(backup_restore.BackupValidationError, match="Qdrant snapshot recovery"):
+        backup_restore.restore_qdrant_snapshots(
+            backup_dir,
+            manifest,
+            "http://qdrant.example:6333",
+            "qdrant",
+            "20260909120000",
+        )
+
+    assert any("__restore__" in url for url in deleted)
+
+
+def test_qdrant_restore_surfaces_cleanup_http_failure(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path)
+    manifest = backup_restore.verify_backup(backup_dir, check_pg_restore=False)
+    monkeypatch.setattr(
+        backup_restore.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stderr="", stdout=""),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "post",
+        lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {}}),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "get",
+        lambda *args, **kwargs: _FakeQdrantResponse(payload={"result": {"points_count": 2}}),
+    )
+    monkeypatch.setattr(
+        backup_restore.requests,
+        "delete",
+        lambda *args, **kwargs: _FakeQdrantResponse(error=requests.HTTPError("delete failed")),
+    )
+
+    with pytest.raises(backup_restore.BackupValidationError, match="Qdrant restore cleanup"):
+        backup_restore.restore_qdrant_snapshots(
+            backup_dir,
+            manifest,
+            "http://qdrant.example:6333",
+            "qdrant",
+            "20260909120000",
+        )
+
+
+def test_schedule_installer_is_non_destructive_by_default() -> None:
+    script = (backup_restore.ROOT / "scripts" / "install_backup_schedule.ps1").read_text(encoding="utf-8")
+
+    assert "[switch]$AllowOverwrite" in script
+    assert "Get-ScheduledTask" in script
+    assert "if ($AllowOverwrite)" in script
 
 
 def test_prune_backups_only_removes_old_exact_backup_children(tmp_path: Path) -> None:

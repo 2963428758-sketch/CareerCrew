@@ -252,6 +252,12 @@ def _row_value(row: Any, index: int) -> Any:
     return row[index]
 
 
+def _index_definition(row: Any) -> Any:
+    if isinstance(row, Mapping):
+        return row.get("indexdef")
+    return row[1]
+
+
 def _fetchall(cursor: Any, query: str) -> list[Any]:
     cursor.execute(query)
     return list(cursor.fetchall())
@@ -326,7 +332,7 @@ def validate_schema_invariants(
         index_rows = _fetchall(
             cursor,
             """
-            SELECT indexname FROM pg_indexes
+            SELECT indexname, indexdef FROM pg_indexes
             WHERE schemaname = 'public' AND indexname LIKE 'ix_p5_%'
             """,
         )
@@ -335,6 +341,20 @@ def validate_schema_invariants(
         if missing_indexes:
             raise MigrationValidationError(
                 "missing pg_trgm indexes: " + ", ".join(missing_indexes)
+            )
+        invalid_indexes = sorted(
+            _row_value(row, 0)
+            for row in index_rows
+            if _row_value(row, 0) in EXPECTED_INDEXES
+            and (
+                not isinstance(_index_definition(row), str)
+                or "using gin" not in " ".join(_index_definition(row).lower().split())
+                or "gin_trgm_ops" not in _index_definition(row).lower()
+            )
+        )
+        if invalid_indexes:
+            raise MigrationValidationError(
+                "invalid pg_trgm indexes: " + ", ".join(invalid_indexes)
             )
     finally:
         close = getattr(cursor, "close", None)

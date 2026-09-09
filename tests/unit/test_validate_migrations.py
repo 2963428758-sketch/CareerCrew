@@ -1,8 +1,8 @@
 """Migration graph, checksum, and live-schema guard tests."""
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -141,7 +141,7 @@ def _valid_schema_rows() -> dict[str, list[tuple]]:
         ("career_share_tokens", "last_accessed_at"),
     ]
     indexes = [
-        (name,)
+        (name, f"CREATE INDEX {name} ON public.example USING gin (value gin_trgm_ops)")
         for name in (
             "ix_p5_preparation_opportunities_company",
             "ix_p5_preparation_opportunities_title",
@@ -185,6 +185,7 @@ def test_validate_schema_invariants_rejects_missing_live_invariant() -> None:
         ("extension", "pg_trgm"),
         ("index", "missing pg_trgm indexes"),
         ("legacy", "legacy career_share_tokens.token"),
+        ("index_definition", "invalid pg_trgm indexes"),
     ],
 )
 def test_validate_schema_invariants_covers_each_required_negative_case(
@@ -201,6 +202,9 @@ def test_validate_schema_invariants_covers_each_required_negative_case(
         rows["pg_extension"] = []
     elif marker == "index":
         rows["pg_indexes"] = rows["pg_indexes"][1:]
+    elif marker == "index_definition":
+        name, _definition = rows["pg_indexes"][0]
+        rows["pg_indexes"][0] = (name, f"CREATE INDEX {name} ON public.example USING btree (value)")
     else:
         rows["information_schema.columns"].append(("career_share_tokens", "token"))
 

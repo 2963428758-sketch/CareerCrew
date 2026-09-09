@@ -6,7 +6,8 @@ param(
     [ValidatePattern("^([01][0-9]|2[0-3]):[0-5][0-9]$")]
     [string]$DailyTime = "02:00",
     [ValidateRange(1, 3650)]
-    [int]$RetentionDays = 30
+    [int]$RetentionDays = 30,
+    [switch]$AllowOverwrite
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,11 +40,20 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $resolvedRoot
 $trigger = New-ScheduledTaskTrigger -Daily -At $at
 
-Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $action `
-    -Trigger $trigger `
-    -Description "CareerCrew PostgreSQL/Qdrant/upload backup" `
-    -Force | Out-Null
+$existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existingTask -and -not $AllowOverwrite) {
+    throw "Scheduled task already exists: $TaskName. Re-run with -AllowOverwrite only when replacement is intended."
+}
+
+$registerArguments = @{
+    TaskName    = $TaskName
+    Action      = $action
+    Trigger     = $trigger
+    Description = "CareerCrew PostgreSQL/Qdrant/upload backup"
+}
+if ($AllowOverwrite) {
+    $registerArguments["Force"] = $true
+}
+Register-ScheduledTask @registerArguments | Out-Null
 
 Write-Output "Registered $TaskName at $DailyTime daily; retention ${RetentionDays} days."
