@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+import migrate_accounts_postgres as account_migration  # noqa: E402
 from migrate_accounts_postgres import build_plan  # noqa: E402
 
 PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$abc$def"
@@ -55,3 +57,42 @@ def test_sqlite_accounts_defaults_missing_columns(tmp_path):
     assert rows[0]["status"] == "active"
     assert rows[0]["token_version"] == 0
     assert rows[0]["password_hash"] == PASSWORD_HASH
+
+
+def test_postgres_account_migration_normalizes_driver_dsn(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def transaction(self):
+            return self
+
+        def execute(self, *args, **kwargs):
+            del args, kwargs
+            return SimpleNamespace(fetchall=lambda: [])
+
+    def connect(dsn: str, **kwargs):
+        calls.append((dsn, kwargs))
+        return FakeConnection()
+
+    fake_psycopg = ModuleType("psycopg")
+    fake_rows = ModuleType("psycopg.rows")
+    fake_rows.dict_row = object()
+    fake_psycopg.connect = connect
+    fake_psycopg.rows = fake_rows
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+    monkeypatch.setitem(sys.modules, "psycopg.rows", fake_rows)
+
+    dsn = "postgresql+psycopg://backup_user:secret@db.example:5433/careercrew"
+    assert account_migration.apply_migration(dsn, [ADMIN]) == 1
+    assert account_migration._pg_accounts(dsn) == []
+
+    assert [item[0] for item in calls] == [
+        "postgresql://backup_user:secret@db.example:5433/careercrew",
+        "postgresql://backup_user:secret@db.example:5433/careercrew",
+    ]

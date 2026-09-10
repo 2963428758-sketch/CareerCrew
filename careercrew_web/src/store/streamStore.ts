@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import type { ChatMessage, ConsultCall, ConsultInputRequest, KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
+import type { ChatMessage, ConsultCall, ConsultInputRequest, JobOpportunity, KnowledgeSource, StreamEvent, StreamStatus } from "@/types"
 import { useThreadStore } from "@/store/threadStore"
 import { useChatStore } from "@/store/chatStore"
 import { apiFetch } from "@/lib/auth"
@@ -21,6 +21,8 @@ export interface StreamSession {
   stage: string
   doneContent: string
   doneSources: KnowledgeSource[]
+  /** match done 事件携带的结构化岗位结果（新 run 开始时清空）。 */
+  doneJobs: JobOpportunity[]
   doneScore?: number
   doneFeedback?: string
   opinions: Record<string, string>
@@ -49,6 +51,7 @@ export const IDLE_SESSION: StreamSession = {
   stage: "",
   doneContent: "",
   doneSources: [],
+  doneJobs: [],
   doneScore: undefined,
   doneFeedback: undefined,
   opinions: {},
@@ -221,6 +224,7 @@ export const useStreamStore = create<StreamStoreState>((set, get) => ({
               if (evt.opinions) p.opinions = evt.opinions
               if (evt.calls) p.calls = evt.calls
               if (evt.sources) p.doneSources = evt.sources
+              if (evt.jobs) p.doneJobs = evt.jobs
               if (evt.score !== undefined) p.doneScore = evt.score
               if (evt.feedback !== undefined) p.doneFeedback = evt.feedback
               // §9 稳定 ID：message_id/turn_id/run_id（done 事件）+ thread_id（UUID）+ legacy_thread_id

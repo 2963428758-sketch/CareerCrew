@@ -28,6 +28,8 @@ import { pollResumeUpload, type ActiveResume } from "@/lib/resumeUpload"
 import { restoreHistory } from "@/lib/historyRestore"
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
+import { usePreparationContext } from "@/hooks/usePreparationContext"
+import { PreparationBanner } from "@/components/preparation/PreparationBanner"
 
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
@@ -79,6 +81,16 @@ export default function ResumePage() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const search = useConversationSearch(messages, scrollRef, workspaceRef)
+  // r-prep- 准备会话：横幅展示岗位/版本；首轮输入预填，由用户点击发送触发
+  const { prepSession } = usePreparationContext("resume", currentThreadId)
+  const prepPrefilledRef = useRef<string>("")
+
+  useEffect(() => {
+    if (!prepSession || prepPrefilledRef.current === currentThreadId) return
+    if (messages.length > 0) return
+    prepPrefilledRef.current = currentThreadId
+    setInput(`请结合岗位「${prepSession.company} · ${prepSession.title}」的 JD，帮我优化这份简历`)
+  }, [prepSession, currentThreadId, messages.length])
 
   // 流结束：把最终内容写回最后一条 assistant 气泡
   useEffect(() => {
@@ -127,7 +139,8 @@ export default function ResumePage() {
       // 切回一个仍在流式回答的会话：补一个流式占位气泡
       const live = useStreamStore.getState().sessions[tid]
       setMessages(live && live.status === "streaming"
-        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true,
+            turnId: msgs[msgs.length - 1]?.role === "assistant" ? msgs[msgs.length - 1].turnId : undefined }]
         : msgs)
       jumpToLatest()
     })
@@ -221,7 +234,9 @@ export default function ResumePage() {
     if (stream.status === "streaming") return
     const turn = groupTurns(messages).find((t) => t.id === turnId)
     if (!turn?.assistant || !turn.user.content) return
-    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
+    const targetTurnId = turn.assistant.turnId || turn.user.turnId || turn.id
+    // 占位符带 turnId：新回答按 §19 归入原 turn 版本链，而不是孤儿 turn
+    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true, turnId: targetTurnId }])
     jumpToLatest()
     if (messageId) await regenerateStream(currentThreadId, messageId)
     else await startStream(currentThreadId, "/resume/chat", {
@@ -267,6 +282,8 @@ extra={
           </>
         }
       />
+
+      {prepSession && <PreparationBanner session={prepSession} />}
 
       <div
         ref={workspaceRef}

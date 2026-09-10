@@ -85,6 +85,40 @@ def test_match_done_uses_final_answer_not_streamed_preamble(client, fake_runtime
 
 
 @pytest.mark.web
+def test_match_done_carries_structured_jobs_and_history_metadata(client, fake_runtime):
+    """岗位卡片：成功 search_jobs 的结构化结果随 done 事件透出，并持久化到历史。"""
+    fake_runtime.match_output = "找到 1 个匹配岗位"
+    fake_runtime.match_jobs = [{
+        "company": "测试公司", "title": "Java开发", "city": "深圳",
+        "salary": "20-30K", "source": "boss", "source_label": "Boss直聘",
+        "url": "https://example.com/j/1", "jd": "负责接口开发",
+    }]
+    resp = client.post("/api/chat/match", json={"intent": "找 Java 工作", "thread_id": "mjobs"})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["jobs"] == fake_runtime.match_jobs
+
+    # 历史恢复：assistant 消息 metadata 携带同一份 jobs
+    thread_id = events[-1]["thread_id"]
+    hist = client.get(f"/api/threads/{thread_id}/messages")
+    assert hist.status_code == 200
+    assistant = [m for m in hist.json() if m["role"] == "assistant"]
+    assert assistant and (assistant[-1].get("metadata") or {}).get("jobs") == fake_runtime.match_jobs
+
+
+@pytest.mark.web
+def test_match_done_without_jobs_has_no_jobs_key(client, fake_runtime):
+    """无结构化结果时 done 不带 jobs 键，老客户端不受影响。"""
+    fake_runtime.match_jobs = []
+    resp = client.post("/api/chat/match", json={"intent": "找工作", "thread_id": "mnojobs"})
+    assert resp.status_code == 200
+    events = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
+    assert events[-1]["type"] == "done"
+    assert "jobs" not in events[-1]
+
+
+@pytest.mark.web
 def test_plan_stream(client, fake_runtime):
     """求职对话：职业规划师主理，stage=planning + chunk + done。"""
     fake_runtime.planner_output = "规划完成：冲刺字节/阿里，匹配美团/腾讯"

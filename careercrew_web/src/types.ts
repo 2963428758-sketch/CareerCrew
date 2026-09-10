@@ -10,6 +10,8 @@ export type StreamEvent =
   | {
       type: "done"; content: string; opinions?: Record<string, string>; calls?: ConsultCall[];
       sources?: KnowledgeSource[]; score?: number; feedback?: string;
+      /** match 专属：成功 search_jobs 工具的结构化岗位结果（岗位卡片用）。 */
+      jobs?: JobOpportunity[];
       /** §9 稳定 ID：thread_id/turn_id/message_id/run_id/model/prompt_version/agent_version/status */
       thread_id?: string; turn_id?: string; message_id?: string; run_id?: string;
       model?: string; prompt_version?: string; agent_version?: string; status?: string;
@@ -73,6 +75,22 @@ export interface InterviewQA {
   answer: string
   score?: number
   feedback?: string
+}
+
+/** search_jobs 结构化岗位结果（done 事件 / 历史消息 metadata.jobs；服务端已校验字段）。 */
+export interface JobOpportunity {
+  company: string
+  title: string
+  city?: string
+  salary?: string
+  experience?: string
+  source?: string
+  source_label?: string
+  retrieval_mode?: string
+  retrieval_mode_label?: string
+  matched_core_terms?: string[]
+  url?: string
+  jd?: string
 }
 
 /** 知识库问答的来源片段（done 事件携带，前端可点击查看原文）。 */

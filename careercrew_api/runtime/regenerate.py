@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from careercrew_api.preparation_context import is_prepared_thread, load_prepared_session
 from careercrew_api.runtime.common import (
     RegenerateConflictError,
     ResourceNotFoundError,
@@ -14,6 +15,7 @@ from careercrew_api.runtime.common import (
     _rag_query_retrievals,
     _read_image_paths,
 )
+from careercrew_core.preparation.jobs_extract import extract_jobs_from_agent_result
 from careercrew_core.tracing.langsmith import (
     attach_run_metadata,
     traced_call,
@@ -86,9 +88,10 @@ class RegenerateMixin:
         # ── 6. 按 module 分派 agent 重跑 ──
         content = ""
         sources: list[dict] = []
+        jobs_out: dict = {}
         try:
             content, sources, obs = self._dispatch_regenerate(
-                module, thread_id, user_id, user_msg, cb, cancel_check
+                module, thread_id, user_id, user_msg, cb, cancel_check, jobs_out
             )
         except Exception as e:
             self._fail_chat_turn(ctx, e)
@@ -96,7 +99,13 @@ class RegenerateMixin:
         if cancel_check:
             cancel_check()
 
-        metadata = {"sources": sources} if sources else None
+        jobs = jobs_out.get("jobs") or []
+        if sources:
+            metadata = {"sources": sources}
+        elif jobs:
+            metadata = {"jobs": jobs}
+        else:
+            metadata = None
         self._finish_chat_turn(
             ctx, content, metadata=metadata,
             langsmith_run_id=ls_run_id,
@@ -106,7 +115,7 @@ class RegenerateMixin:
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=content, sources=sources, turn=ctx)
+        return StreamResult(content=content, sources=sources, jobs=jobs, turn=ctx)
 
     def validate_regenerate(self, message_id: str, user_id: str):
         """regenerate 前置校验（供路由同步 404/409 映射与 run 复用）。
@@ -194,8 +203,12 @@ class RegenerateMixin:
         return (msg or {}).get("created_at") or ""
 
     def _dispatch_regenerate(self, module: str, thread_id: str, user_id: str,
-                             user_msg: dict, cb, cancel_check):
-        """按 module 重跑 agent，返回 (content, sources, obs)。"""
+                             user_msg: dict, cb, cancel_check, jobs_out: dict | None = None):
+        """按 module 重跑 agent，返回 (content, sources, obs)。
+
+        jobs_out（可选可变 dict）：matcher 分支把重跑命中的结构化岗位写入
+        ``jobs_out["jobs"]``，与首次路径一样随 done/metadata 透出。
+        """
         question = user_msg["content"]
         meta = user_msg.get("metadata") or {}
         ep = self._get_episodic(thread_id, user_id)
@@ -208,13 +221,20 @@ class RegenerateMixin:
             content = (getattr(lr, "content", "") or "").strip()
             obs = _observability_from_result(lr)
             obs["retrievals"] = _rag_query_retrievals(lr.tool_call_details if lr else [])
+            if jobs_out is not None:
+                jobs_out["jobs"] = extract_jobs_from_agent_result(lr)
             return content, [], obs
 
         if module == "resume":
             # 绑定决策：resume 重跑依赖 metadata 里的完整 jd_text 保真重建输入。
             # conversational /chat 路径（legacy 行）没有 jd_text → 无法忠实重跑，
-            # 409 拒绝（而非静默退化为截断摘要/提问原文）。
+            # 409 拒绝（而非静默退化为截断摘要/提问原文）；r-prep- 准备会话例外：
+            # 用快照 JD 忠实重跑。
             jd_text = meta.get("jd_text")
+            if not jd_text and is_prepared_thread(thread_id):
+                session = load_prepared_session(user_id, thread_id)
+                if session is not None and session.get("module") == "resume":
+                    jd_text = session.get("jd") or ""
             if not jd_text:
                 raise RegenerateConflictError(
                     "该消息缺少原始 JD 元数据（jd_text），无法忠实重建输入，请重新发起简历定制"
@@ -317,7 +337,7 @@ class RegenerateMixin:
             lr = agent.last_result
             content = (getattr(lr, "content", "") or "").strip()
             capped = _cap_sources(
-                sources, limit=3, min_score=0.0,
+                sources, limit=3, min_score=0.1,
                 keep_paths=_read_image_paths(lr),
             )
             # 观测检索行（与首次路径一致）

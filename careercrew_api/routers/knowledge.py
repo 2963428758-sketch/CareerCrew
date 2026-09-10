@@ -23,17 +23,17 @@ from careercrew_api.request_helpers import (
 from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import KnowledgeAskRequest
 from careercrew_api.sse import (
-    CancellationEvent,
     done_event,
     error_event,
     friendly_error,
+    register_stream_cancellation,
     stage_event,
     stream_agent,
     turn_done_fields,
-    register_stream_cancellation,
     unregister_stream_cancellation,
 )
 from careercrew_api.upload_io import read_bounded
+from careercrew_core.upload_tasks import get_upload_task_store, maintain_upload_lease
 
 router = APIRouter()
 
@@ -68,6 +68,19 @@ def _new_job(filename: str, user_id: str) -> str:
         overflow = len(_jobs) - _MAX_JOBS
         for jid, _ in finished[: max(overflow, 0)]:
             del _jobs[jid]
+    # 状态持久化（尽力而为）：重启不丢、多 worker 均可查询
+    store = get_upload_task_store()
+    try:
+        from careercrew_core.observability.metrics import get_metrics_registry
+
+        get_metrics_registry().inc_upload("queued")
+    except Exception:
+        pass
+    if store is not None:
+        try:
+            store.create(job_id, user_id, "knowledge_ingest", filename)
+        except Exception:  # noqa: BLE001
+            pass
     return job_id
 
 
@@ -75,6 +88,7 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
                     user_id: str, category: str = "", doc_name: str = "",
                     output_dir: str = "", visibility: str = "private") -> None:
     """后台线程执行入库，通过进度回调更新任务状态。"""
+    store = get_upload_task_store()
 
     def cb(stage: str, progress: float) -> None:
         with _jobs_lock:
@@ -84,26 +98,63 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
             job["status"] = "running"
             job["stage"] = stage
             job["progress"] = min(max(progress, 0.0), 1.0)
+        if store is not None:
+            try:
+                store.update(job_id, user_id, "knowledge_ingest",
+                             status="running", stage=stage,
+                             progress=min(max(progress, 0.0), 1.0))
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            from careercrew_core.observability.metrics import get_metrics_registry
+
+            get_metrics_registry().inc_upload("running")
+        except Exception:
+            pass
 
     with _jobs_lock:
         job = _jobs.get(job_id)
         if job is not None:
             job["status"] = "running"
+    with maintain_upload_lease(store, job_id, user_id, "knowledge_ingest"):
+        try:
+            result = rt.ingest_document(
+                save_path, user_id=user_id, progress_cb=cb, category=category,
+                output_dir=output_dir or None, doc_name=doc_name, visibility=visibility,
+            )
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if job is not None:
+                    job.update(status="done", stage="done", progress=1.0, result=result)
+            if store is not None:
+                try:
+                    store.update(job_id, user_id, "knowledge_ingest",
+                                 status="done", stage="done", progress=1.0, result=result)
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                from careercrew_core.observability.metrics import get_metrics_registry
 
-    try:
-        result = rt.ingest_document(
-            save_path, user_id=user_id, progress_cb=cb, category=category,
-            output_dir=output_dir or None, doc_name=doc_name, visibility=visibility,
-        )
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if job is not None:
-                job.update(status="done", stage="done", progress=1.0, result=result)
-    except Exception as e:  # noqa: BLE001 - 用户可见的解析/入库错误统一收口
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if job is not None:
-                job.update(status="error", error=friendly_error(e))
+                get_metrics_registry().inc_upload("done")
+            except Exception:
+                pass
+        except Exception as e:  # noqa: BLE001 - 用户可见的解析/入库错误统一收口
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if job is not None:
+                    job.update(status="error", stage="error", error=friendly_error(e))
+            if store is not None:
+                try:
+                    store.update(job_id, user_id, "knowledge_ingest",
+                                 status="error", stage="error", error=friendly_error(e))
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                from careercrew_core.observability.metrics import get_metrics_registry
+
+                get_metrics_registry().inc_upload("error")
+            except Exception:
+                pass
 
 
 @router.post("/upload", status_code=202)
@@ -161,9 +212,16 @@ async def upload_knowledge(
 
 @router.get("/upload/{job_id}")
 def upload_status(job_id: str, current_user: CurrentUser) -> dict:
-    """查询上传任务进度：{status, stage, progress, error, result}。"""
+    """查询上传任务进度：内存未命中时回源数据库（重启/多 worker 仍可查）。"""
     with _jobs_lock:
         job = _jobs.get(job_id)
+    if job is None:
+        store = get_upload_task_store()
+        if store is not None:
+            try:
+                job = store.get(job_id, current_user["id"], "knowledge_ingest")
+            except Exception:  # noqa: BLE001
+                job = None
     if job is None or job.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail=f"上传任务不存在：{job_id}")
     return dict(job)

@@ -66,6 +66,10 @@ COPY careercrew_ai/ careercrew_ai/
 COPY careercrew_api/ careercrew_api/
 COPY careercrew_mcp/ careercrew_mcp/
 
+# Fail the image build if a published migration was edited or the revision
+# manifest no longer describes the checked-in migration set.
+RUN python scripts/validate_migrations.py --static
+
 # 拷贝阶段 0 构建的前端生产构建产物，供 FastAPI 单端口托管 + SPA fallback
 COPY --from=web-builder /web/dist /app/careercrew_web/dist
 

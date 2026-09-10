@@ -93,6 +93,35 @@ def test_knowledge_upload_status_404(client):
 
 
 @pytest.mark.web
+def test_upload_status_recovers_from_owner_scoped_persistent_store(client, monkeypatch):
+    """知识库状态回源必须同时约束当前账号和 knowledge_ingest 类型。"""
+    from careercrew_api.routers import knowledge
+
+    class Store:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, job_id, owner_id, kind):
+            self.calls.append((job_id, owner_id, kind))
+            return {
+                "job_id": job_id, "user_id": owner_id, "kind": kind,
+                "filename": "note.pdf", "status": "error", "stage": "interrupted",
+                "progress": 0.2, "error": "任务因服务重启中断，请重新上传", "result": None,
+            }
+
+    store = Store()
+    monkeypatch.setattr(knowledge, "get_upload_task_store", lambda: store)
+    with knowledge._jobs_lock:
+        knowledge._jobs.pop("durable-knowledge", None)
+
+    response = client.get("/api/knowledge/upload/durable-knowledge")
+
+    assert response.status_code == 200
+    assert response.json()["stage"] == "interrupted"
+    assert store.calls == [("durable-knowledge", "u_001", "knowledge_ingest")]
+
+
+@pytest.mark.web
 def test_knowledge_delete(client):
     """DELETE /api/knowledge/{doc_id} -> {deleted, doc_id}。"""
     resp = client.delete("/api/knowledge/note")

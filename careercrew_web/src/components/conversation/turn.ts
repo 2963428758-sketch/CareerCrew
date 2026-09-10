@@ -26,17 +26,23 @@ export function groupTurns<T extends { id: string; role: "user" | "assistant"; t
     if (m.role === "user") {
       turns.push({ id: m.id, user: m })
     } else {
-      const last = turns[turns.length - 1]
       const matched = m.turnId
         ? turns.find((t) => t.id === m.turnId || t.assistant?.turnId === m.turnId || t.user.turnId === m.turnId)
-        : last
+        : undefined
+      const last = turns[turns.length - 1]
       if (matched && !matched.assistant) {
         matched.assistant = m
         matched.versions = [m]
       } else if (matched) {
+        // 同 turn 的追加版本：归入该 turn 的版本列表，新增版本为最新
         matched.versions = [...(matched.versions ?? [matched.assistant!]), m]
         matched.assistant = m
+      } else if (last && !last.assistant) {
+        // 兜底：紧随用户消息的第一个回答（含 turnId 未匹配到任何 turn 的场景）
+        last.assistant = m
+        last.versions = [m]
       } else {
+        // 没有前置用户消息、或前置 turn 已有回答且无法按 turnId 归版本：孤儿合成 turn
         turns.push({ id: m.id, user: m, assistant: m, versions: [m] })
       }
     }

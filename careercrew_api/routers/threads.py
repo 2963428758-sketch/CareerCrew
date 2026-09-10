@@ -51,6 +51,7 @@ def _replay_done_event(rt: CareerCrewRuntime, msg: dict) -> str:
     if msg.get("run_id"):
         run = rt.conversation_store.get_run(msg["user_id"], msg["run_id"])
     run = run or {}
+    jobs = (msg.get("metadata") or {}).get("jobs") or []
     return done_event(
         msg.get("content", "") or "",
         thread_id=msg.get("thread_id", ""),
@@ -62,6 +63,7 @@ def _replay_done_event(rt: CareerCrewRuntime, msg: dict) -> str:
         model=run.get("model") or "",
         prompt_version=run.get("prompt_version") or "unversioned",
         agent_version=run.get("agent_version") or "unversioned",
+        **({"jobs": jobs} if jobs else {}),
     )
 
 
@@ -370,6 +372,7 @@ def regenerate_message(
             )
             result["content"] = (res.content if hasattr(res, "content") else res) or ""
             result["sources"] = getattr(res, "sources", [])
+            result["jobs"] = getattr(res, "jobs", None) or []
             result["turn"] = getattr(res, "turn", None)
 
         failed = False
@@ -392,6 +395,7 @@ def regenerate_message(
                 yield done_event(
                     result["content"] or "".join(content_parts),
                     sources=result.get("sources", []),
+                    **({"jobs": result["jobs"]} if result.get("jobs") else {}),
                     **done_fields,
                 )
         except Exception as e:

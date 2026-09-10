@@ -108,6 +108,9 @@ describe("KnowledgePage 检索范围", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新生成" }))
     await waitFor(() => expect(regenerate).toHaveBeenCalledWith("k-a", "answer-v2"))
 
+    // 725e5ee 起重新生成的占位符归入同一 turn 版本链（3 个版本，默认选中最新占位）
+    // 需要连点两次「上一个版本」才到「旧版本」
+    fireEvent.click(screen.getByRole("button", { name: "上一个版本" }))
     fireEvent.click(screen.getByRole("button", { name: "上一个版本" }))
     expect(screen.getByText("旧版本")).toBeTruthy()
     await waitFor(() => expect(screen.getByRole("button", { name: "取消反馈" })).toBeTruthy())

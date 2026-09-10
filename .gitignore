@@ -55,6 +55,7 @@ data/parsed/
 data/transcripts/
 data/uploads/
 data/migrations/
+data/backups/
 data/demo_c/
 data/user_model.json
 data/user_model_demo.json

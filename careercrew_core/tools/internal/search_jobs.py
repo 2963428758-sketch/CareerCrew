@@ -162,10 +162,12 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
 
     jobs_store：启用库缓存；None 保持直连行为。
     boss_cdp_url：非空时启用 Boss直聘 与 猎聘 CDP 后端并交错合并。
+    返回 content_and_artifact：content 仍是给模型的精简 JSON 字符串（invoke 兼容），
+    artifact 是同一结构化列表（不受工具结果钳制影响），供岗位卡片提取。
     """
 
-    @tool
-    def search_jobs(direction: str, top_k: int = 8, realtime: bool = False) -> str:
+    @tool(response_format="content_and_artifact")
+    def search_jobs(direction: str, top_k: int = 8, realtime: bool = False):
         """按求职方向搜索职位 JD（优先本地岗位库，用户要求实时或未命中时抓取 Boss/猎聘平台）。
 
         Args:
@@ -177,6 +179,10 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
         search_query_str = _clean_direction_query(direction) if force_realtime else direction
         query = parse_job_search_query(search_query_str)
 
+        def _emit(jobs_list: list[dict], mode: str):
+            payload = _slim(jobs_list, mode)
+            return json.dumps(payload, ensure_ascii=False), payload
+
         # 1) 岗位库命中：非强制实时且存在新鲜缓存时直接返回
         if not force_realtime and jobs_store is not None:
             try:
@@ -184,7 +190,7 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
             except Exception:
                 hits = []  # 库故障不阻塞查询路径，降级实时爬取
             if hits:
-                return json.dumps(_slim(hits, "cache"), ensure_ascii=False)
+                return _emit(hits, "cache")
 
         # 2) 实时抓取：推断有效城市
         effective_city = boss_city.strip()
@@ -236,19 +242,15 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
                     fallback_hits = jobs_store.search(search_query_str, top_k=top_k, max_age_days=_CACHE_MAX_AGE_DAYS)
                     if fallback_hits:
                         logger.info("实时抓取未获得新岗位，降级返回本地缓存 %d 条", len(fallback_hits))
-                        return json.dumps(_slim(fallback_hits, "cache"), ensure_ascii=False)
+                        return _emit(fallback_hits, "cache")
                 except Exception:
                     pass
 
             if errors and len(errors) == len(tasks):
-                return json.dumps(
-                    [{"error": "Boss直聘/猎聘暂时无法获取职位，请确认 Chrome 调试窗口已开启并已登录"}],
-                    ensure_ascii=False,
-                )
-            return json.dumps(
-                [{"error": f"未找到与「{direction}」相关的岗位，可换个关键词试试"}],
-                ensure_ascii=False,
-            )
+                error_payload = [{"error": "Boss直聘/猎聘暂时无法获取职位，请确认 Chrome 调试窗口已开启并已登录"}]
+            else:
+                error_payload = [{"error": f"未找到与「{direction}」相关的岗位，可换个关键词试试"}]
+            return json.dumps(error_payload, ensure_ascii=False), error_payload
 
         if jobs_store is not None:
             try:
@@ -256,7 +258,7 @@ def make_search_jobs_tool(jobs_store=None, boss_cdp_url: str = "", boss_city: st
             except Exception:
                 pass  # 入库失败不影响本次返回
 
-        return json.dumps(_slim(jobs, "live"), ensure_ascii=False)
+        return _emit(jobs, "live")
 
     return search_jobs
 

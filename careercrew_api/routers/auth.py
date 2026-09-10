@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from typing import Annotated
 from uuid import uuid4
@@ -46,6 +47,7 @@ from careercrew_api.schemas import (
 )
 from careercrew_api.storage import DATA_ROOT, L, resolve_under
 from careercrew_api.upload_io import read_bounded
+from careercrew_core.preparation.store import PreparationStore
 
 router = APIRouter()
 _REFRESH_COOKIE = "careercrew_refresh"
@@ -407,6 +409,20 @@ def delete_user(
                 path.unlink(missing_ok=True)
             except OSError as err:
                 logging.getLogger("careercrew_api").warning("delete attachment %s failed: %s", key, err)
+
+    # 岗位准备与求职跟进存储独立于重组件（主业务库），不依赖运行时可用性，
+    # 账号删除时一并清理。主业务库不可用时上方业务数据清理已中止删除；
+    # 此处失败（如迁移未应用）仅告警，不阻断账号删除主流程。
+    prep_dsn = os.environ.get("DATABASE_URL", "").strip()
+    if prep_dsn:
+        try:
+            PreparationStore(prep_dsn).delete_all_for_user(user_id)
+            from careercrew_core.career.store import CareerStore
+
+            CareerStore(prep_dsn).purge_all(user_id)
+        except Exception as err:  # noqa: BLE001 - 清理失败不阻断删除，遗留行由迁移/运维兜底
+            logging.getLogger("careercrew_api").warning(
+                "清理岗位准备/求职跟进数据失败（owner=%s）：%s", user_id, err)
 
     # 删除前取头像引用（账号行删掉后就查不到了），删除成功后再清理存储
     try:

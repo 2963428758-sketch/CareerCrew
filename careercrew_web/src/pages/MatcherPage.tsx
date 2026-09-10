@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
 import { toMessageAttachments, type Attachment } from "@/lib/attachments"
@@ -20,9 +21,11 @@ import { useChatScroll } from "@/hooks/useChatScroll"
 import { JumpToLatest } from "@/components/JumpToLatest"
 import { useThreadStore } from "@/store/threadStore"
 import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
-import { AGENT_META, type MessageAttachment } from "@/types"
+import { AGENT_META, type JobOpportunity, type MessageAttachment } from "@/types"
 import { restoreHistory } from "@/lib/historyRestore"
 import { CdpStatusBar } from "@/components/matcher/CdpStatusBar"
+import { JobCards } from "@/components/preparation/JobCards"
+import { jobsFromMetadata } from "@/lib/preparation"
 
 interface MatcherMessage {
   id: string
@@ -33,6 +36,8 @@ interface MatcherMessage {
   turnId?: string
   runId?: string
   attachments?: MessageAttachment[]
+  /** 结构化岗位结果：done 事件或历史 metadata.jobs 恢复。 */
+  jobs?: JobOpportunity[]
 }
 
 let msgId = 0
@@ -110,6 +115,7 @@ export default function MatcherPage() {
               messageId: stream.doneIds?.messageId,
               turnId: stream.doneIds?.turnId,
               runId: stream.doneIds?.runId,
+              ...(stream.doneJobs.length ? { jobs: stream.doneJobs } : {}),
             }
             break
           }
@@ -117,7 +123,7 @@ export default function MatcherPage() {
         return msgs
       })
     }
-  }, [stream.status, stream.doneContent, stream.doneIds])
+  }, [stream.status, stream.doneContent, stream.doneIds, stream.doneJobs])
 
   // 当前会话变化（选中历史 / 新建）时加载该 thread 的消息
   useEffect(() => {
@@ -135,11 +141,13 @@ export default function MatcherPage() {
         messageId: r.messageId,
         turnId: r.turnId,
         runId: r.runId,
+        jobs: r.role === "assistant" ? jobsFromMetadata(r.metadata) : undefined,
       }))
       // 切回一个仍在流式回答的会话：补一个流式占位气泡
       const live = useStreamStore.getState().sessions[tid]
       setMessages(live && live.status === "streaming"
-        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true,
+            turnId: msgs[msgs.length - 1]?.role === "assistant" ? msgs[msgs.length - 1].turnId : undefined }]
         : msgs)
       jumpToLatest()
     })
@@ -297,7 +305,11 @@ export default function MatcherPage() {
                               : undefined
                           }
                           onFeedback={() => showToast("感谢你的反馈")}
-                        />
+                        >
+                          {!asstStreaming && asst.jobs && asst.jobs.length > 0 && (
+                            <JobCards jobs={asst.jobs} />
+                          )}
+                        </AssistantMessage>
                       )}
                     </TurnSection>
                   )
@@ -305,7 +317,25 @@ export default function MatcherPage() {
 
                 {stream.errorMsg && (
                   <Card className="border-destructive/40">
-                    <CardContent className="p-4 text-[13px] text-destructive">{stream.errorMsg}</CardContent>
+                    <CardContent className="flex flex-wrap items-center gap-2 p-4 text-[13px] text-destructive">
+                      <span className="min-w-0 flex-1">{stream.errorMsg}</span>
+                      {(() => {
+                        const lastTurn = turns[turns.length - 1]
+                        if (!lastTurn?.user.content) return null
+                        const lastAssistant = lastTurn.assistant
+                        return (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-[26px] text-[12px]"
+                            disabled={lastIsStreaming}
+                            onClick={() => void handleRegenerate(lastTurn.id, lastAssistant?.messageId)}
+                          >
+                            重试上一问
+                          </Button>
+                        )
+                      })()}
+                    </CardContent>
                   </Card>
                 )}
               </div>

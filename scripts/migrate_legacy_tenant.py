@@ -30,6 +30,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_USER_ID = "u_001"
 _CHECKPOINT_MIGRATION_TABLE = "careercrew_tenant_thread_migrations"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from careercrew_core.pg_pool import normalize_dsn  # noqa: E402
 
 
 @dataclass
@@ -412,7 +416,7 @@ def migrate_postgres(
         "user_memory_policy": "user_id",
         "threads": "thread_id",
     }
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(normalize_dsn(dsn)) as conn:
         with conn.cursor() as cur:
             existing_tables: dict[str, str] = {}
             for table, key in tables.items():

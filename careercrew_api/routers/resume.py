@@ -33,6 +33,11 @@ from careercrew_api import storage
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.limits import user_stream_slot
+from careercrew_api.preparation_context import (
+    is_prepared_thread,
+    load_prepared_or_404,
+    prepared_context_block,
+)
 from careercrew_api.request_helpers import (
     ndjson_response as _ndjson_response,
 )
@@ -50,17 +55,17 @@ from careercrew_api.runtime import (
 )
 from careercrew_api.schemas import GenerateRequest, ResumeChatRequest
 from careercrew_api.sse import (
-    CancellationEvent,
-    register_stream_cancellation,
     done_event,
     error_event,
     friendly_error,
+    register_stream_cancellation,
     stage_event,
     stream_agent,
     turn_done_fields,
     unregister_stream_cancellation,
 )
 from careercrew_api.upload_io import read_bounded
+from careercrew_core.upload_tasks import get_upload_task_store, maintain_upload_lease
 
 router = APIRouter()
 
@@ -125,6 +130,13 @@ def _new_job(filename: str, user_id: str) -> str:
         overflow = len(_jobs) - _MAX_JOBS
         for jid, _ in finished[: max(overflow, 0)]:
             del _jobs[jid]
+    # 状态持久化（尽力而为）：重启不丢、多 worker 均可查询；失败降级为纯内存
+    store = get_upload_task_store()
+    if store is not None:
+        try:
+            store.create(job_id, user_id, "resume_parse", filename)
+        except Exception:  # noqa: BLE001 - 持久化失败不阻塞上传主流程
+            pass
     return job_id
 
 
@@ -168,49 +180,57 @@ def _parse_resume_file(rt: CareerCrewRuntime, path: str, ext: str,
 def _run_upload_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
                     filename: str, ext: str, user_id: str) -> None:
     """后台线程解析简历并写入简历库，通过任务状态向前端反馈进度。"""
+    store = get_upload_task_store()
 
     def _set(**updates: object) -> None:
         with _jobs_lock:
             job = _jobs.get(job_id)
             if job is not None:
                 job.update(**updates)
+        if store is not None:
+            try:
+                store.update(job_id, user_id, "resume_parse", **updates)
+            except Exception:  # noqa: BLE001 - 持久化失败不阻塞解析主流程
+                pass
 
-    _set(status="running", stage="parse", progress=0.1)
-    try:
-        doc_type, text = _parse_resume_file(
-            rt, save_path, ext, output_dir=str(storage.resolve_under(storage.L.parsed_resumes, user_id, job_id))
-        )
-        truncated = False
-        if len(text) > _MAX_CONTENT_CHARS:
-            text = text[:_MAX_CONTENT_CHARS]
-            truncated = True
-        text = _clean_text(text)
+    with maintain_upload_lease(store, job_id, user_id, "resume_parse"):
+        _set(status="running", stage="parse", progress=0.1)
+        try:
+            doc_type, text = _parse_resume_file(
+                rt, save_path, ext,
+                output_dir=str(storage.resolve_under(storage.L.parsed_resumes, user_id, job_id)),
+            )
+            truncated = False
+            if len(text) > _MAX_CONTENT_CHARS:
+                text = text[:_MAX_CONTENT_CHARS]
+                truncated = True
+            text = _clean_text(text)
 
-        resume_id = uuid.uuid4().hex[:12]
-        lib_dir = _resume_lib_dir(user_id, resume_id)
-        lib_dir.mkdir(parents=True, exist_ok=True)
-        (lib_dir / "content.txt").write_text(text, encoding="utf-8")
-        meta = {
-            "resume_id": resume_id,
-            "user_id": user_id,
-            # 上传任务 id：原件（resumes_raw/{user}/{job_id}{ext}）与 MinerU
-            # 解析产物目录（parsed/resumes/{user}/{job_id}/）的磁盘键名，
-            # 删除简历时据此连带清理，避免磁盘只进不出。
-            "job_id": job_id,
-            "filename": filename,
-            "doc_type": doc_type,
-            "char_count": len(text),
-            "truncated": truncated,
-            "created_at": time.time(),
-        }
-        (lib_dir / "meta.json").write_text(
-            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-        )
-        _set(status="done", stage="done", progress=1.0, result={**meta, "content": text})
-    except RuntimeInitError as e:
-        _set(status="error", error=friendly_error(e))
-    except Exception as e:  # noqa: BLE001 - 用户可见的解析错误统一收口
-        _set(status="error", error=friendly_error(e))
+            resume_id = uuid.uuid4().hex[:12]
+            lib_dir = _resume_lib_dir(user_id, resume_id)
+            lib_dir.mkdir(parents=True, exist_ok=True)
+            (lib_dir / "content.txt").write_text(text, encoding="utf-8")
+            meta = {
+                "resume_id": resume_id,
+                "user_id": user_id,
+                # 上传任务 id：原件（resumes_raw/{user}/{job_id}{ext}）与 MinerU
+                # 解析产物目录（parsed/resumes/{user}/{job_id}/）的磁盘键名，
+                # 删除简历时据此连带清理，避免磁盘只进不出。
+                "job_id": job_id,
+                "filename": filename,
+                "doc_type": doc_type,
+                "char_count": len(text),
+                "truncated": truncated,
+                "created_at": time.time(),
+            }
+            (lib_dir / "meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+            )
+            _set(status="done", stage="done", progress=1.0, result={**meta, "content": text})
+        except RuntimeInitError as e:
+            _set(status="error", stage="error", error=friendly_error(e))
+        except Exception as e:  # noqa: BLE001 - 用户可见的解析错误统一收口
+            _set(status="error", stage="error", error=friendly_error(e))
 
 
 @router.post("/upload", status_code=202)
@@ -259,9 +279,20 @@ async def upload(
 
 @router.get("/upload/{job_id}")
 def upload_status(job_id: str, current_user: CurrentUser) -> dict:
-    """查询上传任务进度：{status, stage, progress, error, result}。"""
+    """查询上传任务进度：{status, stage, progress, error, result}。
+
+    先查进程内存（进行中任务最快路径），未命中回源数据库——
+    进程重启或多 worker 部署下，状态依然可查（第五期 P0）。
+    """
     with _jobs_lock:
         job = _jobs.get(job_id)
+    if job is None:
+        store = get_upload_task_store()
+        if store is not None:
+            try:
+                job = store.get(job_id, current_user["id"], "resume_parse")
+            except Exception:  # noqa: BLE001 - 回源失败按不存在处理
+                job = None
     if job is None or job.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail=f"上传任务不存在：{job_id}")
     return dict(job)
@@ -417,6 +448,12 @@ def chat(
     attachment_blocks = _resolve_attachments(rt, current_user["id"], req.attachments)
     effective = rt.compute_effective_tools("resume", req.tools, user_id=current_user["id"])
     hitl = rt._hitl_requires()
+    # r-prep- 准备会话：进入 gen 前完成 owner 校验（404 以 JSON 返回，而非流内错误）。
+    # 快照 JD/简历在每一轮注入，普通线程完全不受影响。
+    prepared = (
+        load_prepared_or_404(current_user["id"], req.thread_id, "resume")
+        if is_prepared_thread(req.thread_id) else None
+    )
 
     def gen() -> Generator[str, None, None]:
         result: dict = {"content": "", "turn": None, "lr": None}
@@ -436,19 +473,29 @@ def chat(
                 hitl_requires=hitl,
                 forced_doc_ids=rt._mention_knowledge_ids(mentions),
             )
-            if req.resume_text.strip():
-                _save_resume(user_id, req.thread_id, req.resume_text)
-            resume = req.resume_text.strip() or _load_resume(user_id, req.thread_id)
+            if prepared is not None:
+                # 准备会话使用不可变快照，不读写该线程的简历存储
+                resume = prepared["resume_content"]
+                jd = prepared["jd"]
+            else:
+                if req.resume_text.strip():
+                    _save_resume(user_id, req.thread_id, req.resume_text)
+                resume = req.resume_text.strip() or _load_resume(user_id, req.thread_id)
+                jd = req.jd
             try:
                 pending_id = rt.record_user_message(
                     user_id, req.thread_id, req.question, module="resume"
                 )
             except Exception:
                 pending_id = None
-            if resume:
+            if prepared is not None:
+                current = (
+                    f"{prepared_context_block(prepared)}\n\n用户问题：{req.question}"
+                )
+            elif resume:
                 current = (
                     f"我的简历：\n{resume}\n\n"
-                    f"目标 JD：\n{req.jd or '未指定'}\n\n"
+                    f"目标 JD：\n{jd or '未指定'}\n\n"
                     f"用户问题：{req.question}"
                 )
             else:

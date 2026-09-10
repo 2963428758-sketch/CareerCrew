@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Flag, Check } from "lucide-react"
+import { Flag, Check, ClipboardCheck } from "lucide-react"
 import { PromptComposer } from "@/components/prompt/PromptComposer"
 import { AttachmentPicker, type AttachmentPickerHandle } from "@/components/prompt/AttachmentPicker"
 import { toMessageAttachments, type Attachment } from "@/lib/attachments"
@@ -22,6 +22,9 @@ import { IDLE_SESSION, useStreamStore } from "@/store/streamStore"
 import { apiFetch } from "@/lib/auth"
 import { apiErrorText, networkErrorText } from "@/lib/errors"
 import { restoreHistory } from "@/lib/historyRestore"
+import { usePreparationContext } from "@/hooks/usePreparationContext"
+import { PreparationBanner } from "@/components/preparation/PreparationBanner"
+import { VoiceButton } from "@/components/interview/VoiceButton"
 import type { InterviewQA, MessageAttachment } from "@/types"
 
 const INTERVIEWER = { label: "面试官", color: "#BE185D" }
@@ -40,6 +43,16 @@ interface ChatMsg {
   turnId?: string
   runId?: string
   attachments?: MessageAttachment[]
+}
+
+/** 单次作答的表达分析（启发式，非评分依据）。 */
+interface SpeechNote {
+  chars: number
+  seconds: number
+  cps: number
+  fillers: Array<{ word: string; count: number }>
+  totalFillers: number
+  star: string[]
 }
 
 export default function InterviewPage() {
@@ -62,6 +75,33 @@ export default function InterviewPage() {
   const initializing = stream.status === "streaming" && stream.streamingText === "" && Object.keys(stream.agentChunks).length === 0
   /** 当前作答对应的题目（用户回答前最近一条面试官消息），done 评分后入 qaList */
   const pendingRef = useRef<{ q: string; a: string } | null>(null)
+  /** 语音表达辅助：题目出现（可开始作答）的时间戳 */
+  const questionShownAtRef = useRef<number | null>(null)
+  /** 语音表达分析：每次作答的即时反馈（语速/口头禅/STAR 完整度启发式） */
+  const [speechNotes, setSpeechNotes] = useState<SpeechNote[]>([])
+
+  function analyzeSpeech(answer: string, seconds: number): SpeechNote {
+    const fillers = ["然后", "就是", "那个", "其实", "就是说", "嗯嗯", "对吧"]
+    const fillerHits: Array<{ word: string; count: number }> = []
+    for (const word of fillers) {
+      const count = answer.split(word).length - 1
+      if (count > 0) fillerHits.push({ word, count })
+    }
+    const totalFillers = fillerHits.reduce((sum, f) => sum + f.count, 0)
+    const star: string[] = []
+    if (/项目|在.{2,12}(期间|时)|负责|公司/.test(answer)) star.push("S·背景")
+    if (/实现|做了|推动|优化|设计|搭建|引入|主导|完成/.test(answer)) star.push("T/A·行动")
+    if (/提升|下降|达到|减少|增长|\d+(\.\d+)?%|\d+\s*(万|k|K|QPS)/.test(answer)) star.push("R·结果")
+    const minutes = Math.max(seconds / 60, 1 / 60)
+    return {
+      chars: answer.length,
+      seconds,
+      cps: Math.round(answer.length / minutes),
+      fillers: fillerHits,
+      totalFillers,
+      star,
+    }
+  }
 
   // ── Turn 分组 + Anchor Rail 导航 ──
   const turns = useMemo(() => groupTurns(messages), [messages])
@@ -71,6 +111,27 @@ export default function InterviewPage() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const search = useConversationSearch(messages, scrollRef, workspaceRef)
+  // i-prep- 准备会话：横幅展示岗位/版本；首轮主题预填，由用户点击发送触发
+  const { prepSession } = usePreparationContext("interview", currentThreadId)
+  const prepPrefilledRef = useRef<string>("")
+
+  useEffect(() => {
+    if (!prepSession || prepPrefilledRef.current === currentThreadId) return
+    if (messages.length > 0) return
+    prepPrefilledRef.current = currentThreadId
+    const text = `请针对岗位「${prepSession.company} · ${prepSession.title}」开始模拟面试`
+    setTopic(text)
+    setInput(text)
+  }, [prepSession, currentThreadId, messages.length])
+
+  // 薄弱点复练交接：求职中心「一键复练」放入的一次性训练主题
+  useEffect(() => {
+    const practice = sessionStorage.getItem("interview:practice")
+    if (!practice) return
+    sessionStorage.removeItem("interview:practice")
+    if (messages.length > 0 || input) return
+    setInput(`请针对以下薄弱点出题训练：${practice}`)
+  }, [messages.length, input])
 
   // 流结束：把最终内容写回最后一条 assistant 气泡；若带评分则计入 qaList
   useEffect(() => {
@@ -95,6 +156,7 @@ export default function InterviewPage() {
       }])
     }
     setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)))
+    questionShownAtRef.current = Date.now()
   }, [stream.status, stream.doneContent, stream.doneIds, stream.doneScore, stream.doneFeedback])
 
   // 流失败：用错误信息填充空气泡
@@ -127,7 +189,8 @@ export default function InterviewPage() {
       // 切回一个仍在流式回答的会话：补一个流式占位气泡
       const live = useStreamStore.getState().sessions[tid]
       setMessages(live && live.status === "streaming"
-        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true }]
+        ? [...msgs, { id: nextId(), role: "assistant", content: "", streaming: true,
+            turnId: msgs[msgs.length - 1]?.role === "assistant" ? msgs[msgs.length - 1].turnId : undefined }]
         : msgs)
       jumpToLatest()
     })
@@ -148,6 +211,13 @@ export default function InterviewPage() {
       content: trimmed,
       attachments: toMessageAttachments(turnAttachments),
     }])
+    // 语音表达辅助：即时分析语速/口头禅/STAR 完整度（启发式，非评分依据）
+    const shownAt = questionShownAtRef.current
+    if (pendingRef.current && shownAt) {
+      const seconds = Math.max(1, Math.round((Date.now() - shownAt) / 1000))
+      setSpeechNotes((prev) => [...prev, analyzeSpeech(trimmed, seconds)])
+      questionShownAtRef.current = Date.now()
+    }
     setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "", streaming: true }])
     setInput("")
     jumpToLatest()
@@ -194,6 +264,25 @@ export default function InterviewPage() {
     }
   }
 
+  /** 生成整场复盘报告（按回答证据汇总优势与薄弱点，存入求职中心）。 */
+  const handleGenerateReview = async () => {
+    if (lastIsStreaming || !currentThreadId) return
+    try {
+      const resp = await apiFetch("/api/career/interview-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: currentThreadId }),
+      })
+      if (!resp.ok) {
+        showToast(await apiErrorText(resp, "生成复盘失败，请重试"))
+        return
+      }
+      showToast("复盘报告已生成，可在「求职中心 → 面试复盘」查看")
+    } catch (e) {
+      showToast(networkErrorText(e, "生成复盘失败，请检查网络后重试"))
+    }
+  }
+
   const handleEdit = (text: string) => {
     setInput(text)
     requestAnimationFrame(() => composerRef.current?.focus())
@@ -231,6 +320,11 @@ export default function InterviewPage() {
                 <Flag className="h-4 w-4" strokeWidth={1.7} />
               </HeaderIconAction>
             ) : undefined}
+            {messages.length > 0 && (
+              <HeaderIconAction label="生成整场复盘报告" onClick={() => void handleGenerateReview()} disabled={lastIsStreaming}>
+                <ClipboardCheck className="h-4 w-4" strokeWidth={1.7} />
+              </HeaderIconAction>
+            )}
             <ConversationMenu
               threadId={currentThreadId}
               title={threadTitle ?? "新对话"}
@@ -240,6 +334,31 @@ export default function InterviewPage() {
           </>
         }
       />
+
+      {prepSession && <PreparationBanner session={prepSession} />}
+
+      {speechNotes.length > 0 && (
+        <div className="border-b border-[var(--border-soft)] bg-muted/30 px-4 py-2 text-[11.5px] text-ink-soft md:px-6" data-testid="speech-feedback">
+          <span className="font-[560] text-ink">表达反馈</span>
+          <span className="ml-2">
+            第 {speechNotes.length} 答：{speechNotes[speechNotes.length - 1].chars} 字 ·
+            语速约 {speechNotes[speechNotes.length - 1].cps} 字/分
+            {speechNotes[speechNotes.length - 1].totalFillers > 0 &&
+              ` · 口头禅 ${speechNotes[speechNotes.length - 1].totalFillers} 处（` +
+              speechNotes[speechNotes.length - 1].fillers.map((f) => `${f.word}×${f.count}`).join("、") + "）"}
+            {speechNotes[speechNotes.length - 1].star.length > 0 &&
+              ` · 已覆盖 ${speechNotes[speechNotes.length - 1].star.join("/")}`}
+            {speechNotes[speechNotes.length - 1].star.length < 3 &&
+              ` · 建议补齐 ${["S·背景", "T/A·行动", "R·结果"].filter((p) => !speechNotes[speechNotes.length - 1].star.includes(p)).join("、")}`}
+          </span>
+          {speechNotes.length >= 2 && (
+            <span className="ml-2 text-ink-faint">
+              本场平均语速 {Math.round(speechNotes.reduce((s, n) => s + n.cps, 0) / speechNotes.length)} 字/分
+            </span>
+          )}
+          <span className="ml-2 text-ink-faint">（启发式提示，非评分）</span>
+        </div>
+      )}
 
       <div
         ref={workspaceRef}
@@ -317,7 +436,9 @@ export default function InterviewPage() {
         <div className="composer-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[150px]" />
         <JumpToLatest visible={showJumpToLatest} onClick={jumpToLatest} className="bottom-[110px]" />
         <div className="absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-3 sm:px-6 sm:pb-4">
-          <PromptComposer
+          <div className="flex w-full items-end gap-1.5">
+            <VoiceButton onText={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))} onError={showToast} />
+            <PromptComposer
             value={input}
             onChange={setInput}
             onSend={() => (messages.length === 0 ? startWithTopic(input) : send(input))}
@@ -336,6 +457,7 @@ export default function InterviewPage() {
             textareaRef={composerRef}
             className="w-full"
           />
+          </div>
         </div>
         <ToastBubble message={toast} />
       </div>

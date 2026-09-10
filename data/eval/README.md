@@ -1,23 +1,44 @@
-# 评估数据（data/eval）
+# CareerCrew evaluation dataset contract
 
-- `cases.jsonl`：评估用例（kind: route/retrieval/citation/tool/memory/consult），每行一个 JSON 对象。
-- `fixtures/*.json`：离线观测值（`source: "fixture"`），供 PR 离线门禁使用。
-- `baseline.json`：版本化基线（由 `python scripts/eval_runner.py --offline --update-baseline` 生成）。
+`cases.jsonl` is the checked-in, immutable-by-convention baseline dataset for
+Phase 7 real-model and offline regression evaluation.
 
-## 运行方式
+- Dataset version: `2026-09-10.v1`
+- Format: one UTF-8 JSON object per line.
+- Identity: `case_id` is canonical. `id` remains an accepted read-time alias
+  for the existing dataset and is normalized to `case_id`; duplicate IDs fail
+  loading.
+- Required fields: `case_id` (or legacy `id`), `kind`, `question`, and
+  `expected`. Supported kinds are `route`, `retrieval`, `citation`, `tool`,
+  `memory`, and `consult`.
+- Privacy: keep cases synthetic or redacted. Reports retain only IDs, kinds,
+  timings, tokens, and safe error codes; never add prompts, answers, resumes,
+  user IDs, or provider credentials.
+
+## Commands
 
 ```bash
-# 离线非回归门禁（PR 必跑；任一指标低于基线 0.01 即失败）
+# Offline non-regression gate (required on PRs)
 python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail-on-regression
 
-# 更新基线（新功能带来合法指标变化时人工执行并提交）
+# Intentional, human-reviewed offline baseline update
 python scripts/eval_runner.py --offline --update-baseline
 
-# 真实模型评估（依赖本地 conda env：BGE-M3/Qdrant/硅基流动 API；nightly/manual）
-python scripts/eval_runner.py --real
+# Optional real-model observation: only unavailable configuration/dependencies may skip
+python scripts/eval_runner.py --real --allow-skip --report reports/real-eval.json
+
+# Protected release gate: missing environment, collection errors, case failures, or regressions fail
+python scripts/eval_runner.py --real --require-real --compare data/eval/baseline.json --fail-on-regression --report reports/real-eval-release.json
 ```
 
-## 门禁原理
+Do not edit this dataset to make a failing run pass. Dataset or baseline changes
+require human review, a new documented version, and an intentional baseline
+update. Offline fixtures describe the recorded observation for this exact
+dataset; real-model reports are observations, not approval to alter either
+artifact.
 
-真实模型评估放在 nightly/manual；PR 只用 fixtures 验证 runner 与 schema 的非回归，
-避免把不确定的真实模型分数作为发布门禁。
+Promoted bad-case JSONL supplied through `--bad-cases` also accepts legacy
+`id`. Its `rubric` must contain a non-empty `must_include` and/or
+`must_not_contain` list. When `rubric` is absent, a non-empty string/list
+`expected` is normalized to `must_include`; an empty rubric is rejected rather
+than treated as a passing case.

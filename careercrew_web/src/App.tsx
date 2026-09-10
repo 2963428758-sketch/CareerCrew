@@ -10,6 +10,7 @@ import { Tooltip } from "@/components/ui/tooltip"
 import { AuthLoading, AuthScreen } from "@/components/AuthScreen"
 import PasswordChangeScreen from "@/components/PasswordChangeScreen"
 import { ToastHost } from "@/components/ToastHost"
+import { OnboardingDialog } from "@/components/preparation/OnboardingDialog"
 import { getAuthSnapshot, restoreSession, subscribeAuth } from "@/lib/auth"
 
 // 路由懒加载：按页拆 chunk，消除首屏大 bundle（Chat/Consult/Knowledge 等重页面按需加载）
@@ -19,12 +20,16 @@ const InterviewPage = lazy(() => import("@/pages/InterviewPage"))
 const ResumePage = lazy(() => import("@/pages/ResumePage"))
 const KnowledgePage = lazy(() => import("@/pages/KnowledgePage"))
 const ConsultPage = lazy(() => import("@/pages/ConsultPage"))
+const PreparationPage = lazy(() => import("@/pages/PreparationPage"))
+const CareerCenterPage = lazy(() => import("@/pages/CareerCenterPage"))
+const SharePage = lazy(() => import("@/pages/SharePage"))
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"))
 const AdminUsersPage = lazy(() => import("@/pages/AdminUsersPage"))
 const QualityDashboardPage = lazy(() => import("@/pages/QualityDashboardPage"))
 const BadCasesPage = lazy(() => import("@/pages/BadCasesPage"))
 const BadCaseDetailPage = lazy(() => import("@/pages/BadCaseDetailPage"))
 const EvalCasesPage = lazy(() => import("@/pages/EvalCasesPage"))
+const WorkspacePage = lazy(() => import("@/pages/WorkspacePage"))
 
 const PAGES: Record<string, ComponentType> = {
   "/": ChatPage,
@@ -33,10 +38,13 @@ const PAGES: Record<string, ComponentType> = {
   "/resume": ResumePage,
   "/knowledge": KnowledgePage,
   "/consult": ConsultPage,
+  "/preparation": PreparationPage,
+  "/career": CareerCenterPage,
   "/admin/users": AdminUsersPage,
   "/quality": QualityDashboardPage,
   "/quality/bad-cases": BadCasesPage,
   "/quality/eval-cases": EvalCasesPage,
+  "/workspace": WorkspacePage,
 }
 
 /** 质检详情路由 /quality/bad-cases/:feedbackId（PAGES 精确匹配之外的动态段） */
@@ -76,6 +84,16 @@ export default function App() {
     useThreadStore.getState().resetAll()
     useStreamStore.getState().resetAll()
   }, [userId])
+
+  // 导师只读分享页：令牌即凭证，无需登录（公开访问，不渲染主应用壳）。
+  // 必须放在所有登录态检查之前，否则未登录用户会被登录页拦截。
+  if (location.pathname.startsWith("/share/")) {
+    return (
+      <Suspense fallback={<div className="flex h-screen items-center justify-center text-[13px] text-ink-soft">加载中…</div>}>
+        <SharePage />
+      </Suspense>
+    )
+  }
 
   if (auth.status === "loading") return <AuthLoading />
   if (auth.status === "anonymous") return <AuthScreen />
@@ -166,6 +184,9 @@ export default function App() {
 
       {/* 全局错误/信息 toast（底部居中）：所有页面的静默失败点统一从这里提示 */}
       <ToastHost />
+
+      {/* 首次使用引导（仅登录用户；可跳过，求职中心可重做） */}
+      {auth.status === "authenticated" && <OnboardingDialog />}
     </div>
   )
 }
