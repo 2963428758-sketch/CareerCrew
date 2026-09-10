@@ -6,7 +6,7 @@
 
 ## 代码交付
 
-本期提交已形成独立提交链，最新提交为 `ca055e8 fix: restore qdrant snapshots from local files`。主要交付包括：
+本期提交已形成独立提交链，最新提交为 `ba8a605 docs: record phase six final verification`。主要交付包括：
 
 - 浏览器 CDP 路由注册到主应用，三条路由均要求登录并限制 loopback 来源；非 loopback 在 CDP 探测或启动前被拒绝。
 - 恢复后端基线：百炼模型期望、知识来源默认阈值和 Qdrant 访问过滤形态。
@@ -31,6 +31,7 @@
 | 前端类型与构建 | `npm run build` | `tsc -b` 与 Vite build 均通过；仓库没有独立 `npm run typecheck` script |
 | Compose/CI | `docker compose config -q`；CI YAML safe-load | 均通过 |
 | 工作树 | `git diff --check` | 通过；Phase 5 既有 dirty 文件未触碰、未暂存 |
+| 独立复审 | 当前 HEAD `ba8a605` | 已批准；未发现 Critical/Important 问题 |
 
 仓库级 Ruff 仍报告 13 个 Phase 5/legacy 文件的既有错误；本期脚本和测试文件已单独通过 Ruff，本期没有扩大修改范围。
 
@@ -65,4 +66,5 @@
 - 恢复演练在发出 `CREATE DATABASE` 前即登记清理责任；即使客户端在创建请求后异常，也会尝试 `DROP DATABASE ... WITH (FORCE)`。
 - Compose 验证时曾产生一个空的项目级 Qdrant 容器/卷，已仅清理该次产生的空容器和空卷；没有删除数据卷。
 - 没有注册真实 Windows Task Scheduler 任务；安装脚本和 operator 文档已交付，生产环境按明确 Python 路径注册。
+- 最后一次独立复审批准当前 HEAD，未发现 Critical/Important 问题；剩余风险已记录为非阻断项。
 - 未修改生产数据库、未 push、未 merge。
