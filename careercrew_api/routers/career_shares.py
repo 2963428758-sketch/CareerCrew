@@ -174,4 +174,3 @@ def datetime_now_utc():
     from datetime import UTC, datetime
 
     return datetime.now(UTC)
-
