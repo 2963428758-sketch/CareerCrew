@@ -14,6 +14,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_SQLITE = PROJECT_ROOT / "data" / "db" / "accounts.db"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from careercrew_core.pg_pool import normalize_dsn  # noqa: E402
 
 
 def _utcnow() -> datetime:
@@ -66,7 +70,7 @@ def apply_migration(dsn: str, rows: list[dict]) -> int:
     import psycopg
 
     inserted = 0
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(normalize_dsn(dsn)) as conn:
         for row in rows:
             with conn.transaction():
                 conn.execute(
@@ -83,7 +87,7 @@ def _pg_accounts(dsn: str) -> list[dict]:
     import psycopg
     import psycopg.rows
 
-    with psycopg.connect(dsn, row_factory=psycopg.rows.dict_row) as conn:
+    with psycopg.connect(normalize_dsn(dsn), row_factory=psycopg.rows.dict_row) as conn:
         rows = conn.execute(
             "SELECT id, username, password_hash, role, status, token_version FROM auth_accounts"
         ).fetchall()

@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from scripts import validate_migrations as migration_validator
 from scripts.validate_migrations import (
     MigrationValidationError,
     build_checksum_manifest,
@@ -99,6 +102,27 @@ def test_build_checksum_manifest_is_stable_across_crlf_and_lf(tmp_path: Path) ->
 
     (versions / "0001.py").write_bytes(content.replace(b"\r\n", b"\n"))
     assert build_checksum_manifest(versions) == manifest
+
+
+def test_validate_database_normalizes_sqlalchemy_driver_dsn(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeConnection:
+        def close(self) -> None:
+            pass
+
+    def connect(database_url: str) -> FakeConnection:
+        calls.append(database_url)
+        return FakeConnection()
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=connect))
+    monkeypatch.setattr(migration_validator, "validate_schema_invariants", lambda connection: None)
+
+    migration_validator._validate_database(
+        "postgresql+psycopg://backup_user:secret@db.example:5433/careercrew"
+    )
+
+    assert calls == ["postgresql://backup_user:secret@db.example:5433/careercrew"]
 
 
 class _FakeCursor:

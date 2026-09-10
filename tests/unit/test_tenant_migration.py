@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
+from types import ModuleType
 
 import pytest
 from qdrant_client import QdrantClient
@@ -28,6 +30,52 @@ def test_first_admin_is_migration_target(tmp_path) -> None:
         conn.execute("INSERT INTO accounts VALUES ('u_user', 'user', 'x', 'user', '2026-01-01')")
         conn.execute("INSERT INTO accounts VALUES ('u_admin', 'admin', 'x', 'admin', '2026-01-02')")
     assert first_admin_id(db) == "u_admin"
+
+
+def test_postgres_tenant_migration_normalizes_driver_dsn(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=()):
+            del query, params
+
+        def fetchone(self):
+            return (None,)
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def rollback(self):
+            pass
+
+    def connect(dsn: str):
+        calls.append(dsn)
+        return FakeConnection()
+
+    fake_psycopg = ModuleType("psycopg")
+    fake_psycopg.connect = connect
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+
+    result = migrate_legacy_tenant.migrate_postgres(
+        "postgresql+psycopg://backup_user:secret@db.example:5433/careercrew",
+        "u_admin",
+    )
+
+    assert result.changed == 0
+    assert calls == ["postgresql://backup_user:secret@db.example:5433/careercrew"]
 
 
 def test_checkpoint_migration_is_dry_run_then_idempotent(tmp_path) -> None:

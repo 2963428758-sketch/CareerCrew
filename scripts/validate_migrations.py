@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from careercrew_core.pg_pool import normalize_dsn
+
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = ROOT / "migrations" / "versions"
 CHECKSUM_MANIFEST = ROOT / "migrations" / "checksums.json"
@@ -388,7 +390,7 @@ def _validate_database(database_url: str) -> None:
     except ImportError as exc:  # pragma: no cover - only affects a CLI environment
         raise MigrationValidationError("psycopg is required for --database-url") from exc
     try:
-        connection = psycopg.connect(database_url)
+        connection = psycopg.connect(normalize_dsn(database_url))
     except Exception as exc:  # noqa: BLE001 - CLI converts driver errors to one-line output
         raise MigrationValidationError(
             f"database connection failed: {_redact_error(str(exc))[:500]}"

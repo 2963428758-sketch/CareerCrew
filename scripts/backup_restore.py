@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,8 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
 
 import requests
 
+from careercrew_core.pg_pool import normalize_dsn
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BACKUP_ROOT = ROOT / "data" / "backups"
 DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
@@ -33,6 +36,7 @@ BACKUP_NAME_RE = re.compile(r"^careercrew-(?P<stamp>\d{8}-\d{6})$")
 RESTORE_NAME_RE = re.compile(r"^careercrew_restore_[a-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COLLECTION_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+DOCKER_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 class BackupValidationError(ValueError):
@@ -108,7 +112,7 @@ def _database_url_for(config: DatabaseConfig, database: str) -> str:
         for key, value in config.options.items()
     )
     auth = f"{user}:{password}@" if config.password else f"{user}@"
-    return urlunsplit((config.scheme, auth + host + f":{config.port}", f"/{database}", query, ""))
+    return normalize_dsn(urlunsplit((config.scheme, auth + host + f":{config.port}", f"/{database}", query, "")))
 
 
 def pg_dump_command(config: DatabaseConfig, output_path: Path) -> list[str]:
@@ -286,19 +290,32 @@ def _artifact_digest(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def _resolve_backup_root(value: Path) -> Path:
+def _absolute_path(value: Path | str) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = ROOT / candidate
-    root = candidate.resolve()
-    protected = {
+    return candidate.resolve()
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
+
+
+def _resolve_backup_root(value: Path, *, source_dirs: Sequence[Path | str] = ()) -> Path:
+    root = _absolute_path(value)
+    protected_roots = {
         ROOT.resolve(),
         (ROOT / "data").resolve(),
-        (ROOT / "data" / "uploads").resolve(),
-        (ROOT / "data" / "parsed").resolve(),
     }
-    if root in protected:
-        raise BackupValidationError("backup root cannot be a source or repository root")
+    default_sources = (
+        ROOT / "data" / "uploads",
+        ROOT / "data" / "parsed",
+    )
+    source_roots = [_absolute_path(path) for path in (*default_sources, *source_dirs)]
+    if root in protected_roots:
+        raise BackupValidationError("backup root cannot be a repository or data root")
+    if any(_paths_overlap(root, source) for source in source_roots):
+        raise BackupValidationError("backup root cannot overlap a backup source")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -326,7 +343,6 @@ def create_backup(
     """Create a PostgreSQL, Qdrant, and upload/parsed backup run."""
 
     config = parse_database_url(database_url or os.getenv("DATABASE_URL", ""))
-    root = _resolve_backup_root(Path(backup_root or os.getenv("BACKUP_ROOT", DEFAULT_BACKUP_ROOT)))
     qdrant_url = qdrant_url or os.getenv("QDRANT_URL", DEFAULT_QDRANT_URL)
     if retention_days is None:
         retention_days = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
@@ -339,6 +355,10 @@ def create_backup(
         uploads_dir = ROOT / "data" / "uploads"
     if parsed_dir is None:
         parsed_dir = ROOT / "data" / "parsed"
+    root = _resolve_backup_root(
+        Path(backup_root or os.getenv("BACKUP_ROOT", DEFAULT_BACKUP_ROOT)),
+        source_dirs=(Path(uploads_dir), Path(parsed_dir)),
+    )
 
     timestamp = (now or datetime.now(UTC)).astimezone(UTC)
     run_dir = root / f"careercrew-{timestamp.strftime('%Y%m%d-%H%M%S')}"
@@ -635,12 +655,71 @@ def _execute_admin(database_url: str, sql: str) -> None:
     try:
         import psycopg
 
-        with psycopg.connect(database_url, autocommit=True) as connection:
+        with psycopg.connect(normalize_dsn(database_url), autocommit=True) as connection:
             connection.execute(sql)
     except BackupValidationError:
         raise
     except Exception as exc:  # noqa: BLE001 - convert driver details to operator-safe error
         raise BackupValidationError(f"PostgreSQL administrative operation failed: {_compact_error(str(exc))}") from exc
+
+
+def _validate_docker_target(value: str) -> str:
+    target = value.strip() if isinstance(value, str) else ""
+    if not target or not DOCKER_TARGET_RE.fullmatch(target):
+        raise BackupValidationError("Qdrant container target is invalid")
+    return target
+
+
+def resolve_qdrant_container(explicit: str | None = None) -> str:
+    """Resolve the Compose Qdrant container, with a validated explicit fallback."""
+
+    requested = _validate_docker_target(explicit) if explicit and explicit.strip() else None
+    try:
+        compose_process = subprocess.run(  # noqa: S603 -- fixed docker compose argv
+            ["docker", "compose", "ps", "-q", "qdrant"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        compose_process = None
+    if compose_process is not None and compose_process.returncode == 0:
+        compose_target = next((line.strip() for line in compose_process.stdout.splitlines() if line.strip()), "")
+        if compose_target:
+            return _validate_docker_target(compose_target)
+
+    if requested:
+        try:
+            inspect_process = subprocess.run(  # noqa: S603 -- explicit validated docker target
+                ["docker", "inspect", "--format", "{{.Id}}|{{.State.Running}}", requested],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            inspect_process = None
+        if inspect_process is not None and inspect_process.returncode == 0:
+            inspected = inspect_process.stdout.strip().split("|", 1)
+            if len(inspected) == 2 and inspected[0] and inspected[1].lower() == "true":
+                return requested
+    else:
+        try:
+            legacy_process = subprocess.run(  # noqa: S603 -- fixed exact-name compatibility fallback
+                ["docker", "ps", "--filter", "name=^qdrant$", "--format", "{{.ID}}"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            legacy_process = None
+        if legacy_process is not None and legacy_process.returncode == 0:
+            legacy_target = next((line.strip() for line in legacy_process.stdout.splitlines() if line.strip()), "")
+            if legacy_target:
+                return _validate_docker_target(legacy_target)
+    raise BackupValidationError("Qdrant container could not be resolved")
 
 
 def _extract_files_to_temp(files_path: Path) -> None:
@@ -669,6 +748,7 @@ def restore_qdrant_snapshots(
     qdrant_entries = manifest.get("qdrant") or []
     if not isinstance(qdrant_entries, list):
         raise BackupValidationError("backup Qdrant manifest is invalid")
+    qdrant_container = _validate_docker_target(qdrant_container)
     base_url = qdrant_url.rstrip("/")
     snapshot_directory = "/qdrant/snapshots"
     temporary: list[tuple[str, str]] = []
@@ -779,7 +859,8 @@ def restore_drill(
     manifest = verify_backup(backup_dir)
     config = parse_database_url(database_url)
     timestamp = (now or datetime.now(UTC)).astimezone(UTC)
-    target_database = f"careercrew_restore_{timestamp.strftime('%Y%m%d%H%M%S')}"
+    restore_stamp = f"{timestamp.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(8)}"
+    target_database = f"careercrew_restore_{restore_stamp}"
     validate_restore_target(target_database, config.database)
     admin_url = _database_url_for(config, "postgres")
     target_url = _database_url_for(config, target_database)
@@ -793,30 +874,29 @@ def restore_drill(
         for item in manifest["artifacts"]
         if item.get("kind") == "files"
     )
-    created = False
+    cleanup_required = True
     try:
         _execute_admin(admin_url, f'CREATE DATABASE "{target_database}"')
-        created = True
         restore_postgres_dump(dump_path, target_database, config)
         try:
             import psycopg
 
-            with psycopg.connect(target_url) as connection:
+            with psycopg.connect(normalize_dsn(target_url)) as connection:
                 connection.execute("SELECT 1")
         except Exception as exc:  # noqa: BLE001 - operator-safe drill failure
             raise BackupValidationError(f"restored PostgreSQL verification failed: {_compact_error(str(exc))}") from exc
         _extract_files_to_temp(files_path)
-        if qdrant_container:
+        if manifest.get("qdrant"):
             restore_qdrant_snapshots(
                 backup_dir,
                 manifest,
                 qdrant_url or os.getenv("QDRANT_URL", DEFAULT_QDRANT_URL),
-                qdrant_container,
-                timestamp.strftime("%Y%m%d%H%M%S"),
+                resolve_qdrant_container(qdrant_container),
+                restore_stamp,
             )
         return target_database
     finally:
-        if created:
+        if cleanup_required:
             try:
                 _execute_admin(admin_url, f'DROP DATABASE IF EXISTS "{target_database}" WITH (FORCE)')
             except BackupValidationError as exc:

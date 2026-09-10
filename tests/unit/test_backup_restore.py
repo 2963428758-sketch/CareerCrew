@@ -63,6 +63,16 @@ def test_parse_database_url_keeps_password_internal_and_never_in_dump_argv() -> 
     assert "super-secret" not in backup_restore.redacted_database_identifier(config)
 
 
+def test_database_url_for_normalizes_psycopg_driver_scheme() -> None:
+    config = backup_restore.parse_database_url(
+        "postgresql+psycopg://backup_user:super-secret@db.example:5433/careercrew?sslmode=require"
+    )
+
+    assert backup_restore._database_url_for(config, "postgres") == (
+        "postgresql://backup_user:super-secret@db.example:5433/postgres?sslmode=require"
+    )
+
+
 def test_create_backup_manifest_records_size_hash_and_point_count(tmp_path: Path) -> None:
     uploads = tmp_path / "data" / "uploads"
     uploads.mkdir(parents=True)
@@ -153,6 +163,53 @@ def test_restore_drill_surfaces_database_cleanup_failure(tmp_path: Path, monkeyp
         )
 
     assert calls == 2
+
+
+def test_restore_drill_uses_unique_generated_database_name(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path, collections=[])
+    admin_calls: list[str] = []
+
+    def fake_admin(database_url: str, sql: str) -> None:
+        del database_url
+        admin_calls.append(sql)
+
+    def fail_restore(*args, **kwargs) -> None:
+        raise backup_restore.BackupValidationError("synthetic restore failure")
+
+    monkeypatch.setattr(backup_restore, "_execute_admin", fake_admin)
+    monkeypatch.setattr(backup_restore, "restore_postgres_dump", fail_restore)
+    monkeypatch.setattr(backup_restore.secrets, "token_hex", lambda size: "a1b2c3d4e5f60708")
+
+    with pytest.raises(backup_restore.BackupValidationError, match="synthetic restore failure"):
+        backup_restore.restore_drill(
+            backup_dir,
+            database_url="postgresql://backup_user:secret@db.example:5433/careercrew",
+            now=datetime(2026, 9, 9, 3, 0, 3, tzinfo=UTC),
+        )
+
+    assert any("careercrew_restore_20260909030003_a1b2c3d4e5f60708" in sql for sql in admin_calls)
+
+
+def test_restore_drill_cleans_database_when_create_request_errors(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _create_backup(tmp_path, collections=[])
+    admin_calls: list[str] = []
+
+    def fail_create(database_url: str, sql: str) -> None:
+        del database_url
+        admin_calls.append(sql)
+        if sql.startswith("CREATE DATABASE"):
+            raise backup_restore.BackupValidationError("connection lost after create request")
+
+    monkeypatch.setattr(backup_restore, "_execute_admin", fail_create)
+
+    with pytest.raises(backup_restore.BackupValidationError, match="connection lost after create request"):
+        backup_restore.restore_drill(
+            backup_dir,
+            database_url="postgresql://backup_user:secret@db.example:5433/careercrew",
+            now=datetime(2026, 9, 9, 3, 0, 2, tzinfo=UTC),
+        )
+
+    assert any(sql.startswith('DROP DATABASE IF EXISTS "careercrew_restore_') for sql in admin_calls)
 
 
 class _FakeQdrantResponse:
@@ -322,6 +379,71 @@ def test_qdrant_restore_continues_after_cleanup_subprocess_error(tmp_path: Path,
     assert len(cleanup_calls) == 2
 
 
+def test_resolve_qdrant_container_prefers_compose_service(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="compose-container-id\n", stderr="")
+
+    monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
+
+    assert backup_restore.resolve_qdrant_container() == "compose-container-id"
+    assert calls == [["docker", "compose", "ps", "-q", "qdrant"]]
+
+
+def test_resolve_qdrant_container_falls_back_to_explicit_container(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        calls.append(args)
+        if args[:4] == ["docker", "compose", "ps", "-q"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="container-id|true\n", stderr="")
+
+    monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
+
+    assert backup_restore.resolve_qdrant_container("qdrant") == "qdrant"
+    assert calls == [
+        ["docker", "compose", "ps", "-q", "qdrant"],
+        ["docker", "inspect", "--format", "{{.Id}}|{{.State.Running}}", "qdrant"],
+    ]
+
+
+def test_resolve_qdrant_container_rejects_stopped_explicit_container(monkeypatch) -> None:
+    def fake_run(args, **kwargs):
+        del kwargs
+        if args[:4] == ["docker", "compose", "ps", "-q"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="container-id|false\n", stderr="")
+
+    monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
+
+    with pytest.raises(backup_restore.BackupValidationError, match="could not be resolved"):
+        backup_restore.resolve_qdrant_container("qdrant")
+
+
+def test_resolve_qdrant_container_falls_back_to_running_legacy_name(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        calls.append(args)
+        if args[:4] == ["docker", "compose", "ps", "-q"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="legacy-container-id\n", stderr="")
+
+    monkeypatch.setattr(backup_restore.subprocess, "run", fake_run)
+
+    assert backup_restore.resolve_qdrant_container() == "legacy-container-id"
+    assert calls == [
+        ["docker", "compose", "ps", "-q", "qdrant"],
+        ["docker", "ps", "--filter", "name=^qdrant$", "--format", "{{.ID}}"],
+    ]
+
+
 def test_schedule_installer_is_non_destructive_by_default() -> None:
     script = (backup_restore.ROOT / "scripts" / "install_backup_schedule.ps1").read_text(encoding="utf-8")
 
@@ -354,6 +476,26 @@ def test_prune_backups_only_removes_old_exact_backup_children(tmp_path: Path) ->
     assert fresh.exists()
     assert arbitrary.exists()
     assert source.exists()
+
+
+@pytest.mark.parametrize("backup_root_kind", ["inside_source", "parent_of_source"])
+def test_create_backup_rejects_backup_root_overlapping_source(tmp_path: Path, backup_root_kind: str) -> None:
+    uploads = tmp_path / "data" / "uploads"
+    parsed = tmp_path / "data" / "parsed"
+    uploads.mkdir(parents=True)
+    parsed.mkdir(parents=True)
+    backup_root = uploads / "backup-runs" if backup_root_kind == "inside_source" else tmp_path / "data"
+
+    with pytest.raises(backup_restore.BackupValidationError, match="source"):
+        backup_restore.create_backup(
+            database_url="postgresql://backup_user:secret@db.example:5433/careercrew",
+            backup_root=backup_root,
+            uploads_dir=uploads,
+            parsed_dir=parsed,
+            collections=[],
+            pg_dump_runner=_fake_dump,
+            qdrant_snapshotter=_fake_snapshots,
+        )
 
 
 @pytest.mark.parametrize(
