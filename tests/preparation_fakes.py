@@ -60,6 +60,8 @@ class SqliteCareerPool(SqlitePreparationPool):
     读取侧由 store 的 _maybe_json 归一。"""
     def __init__(self):
         super().__init__()
+        self.db.execute('CREATE TABLE career_product_events (id TEXT, owner_id TEXT, event TEXT, source TEXT, object_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(owner_id,id))')
+        self.db.execute('CREATE TABLE career_generation_events (id TEXT PRIMARY KEY, owner_id TEXT, feature TEXT, source TEXT, fallback_reason TEXT, model TEXT, latency_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER, created_at TEXT)')
         self.db.execute(
             "ALTER TABLE preparation_opportunities ADD COLUMN stage TEXT NOT NULL DEFAULT '待准备'")
         self.db.execute(
@@ -145,10 +147,11 @@ class SqliteCareerPool(SqlitePreparationPool):
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE career_share_tokens (
-                token TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+                token_hash TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
                 kind TEXT NOT NULL, ref_id TEXT NOT NULL,
                 mask_pii INTEGER NOT NULL DEFAULT 0,
                 expires_at TEXT NOT NULL, revoked_at TEXT,
+                access_count INTEGER NOT NULL DEFAULT 0, last_accessed_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE career_profiles (

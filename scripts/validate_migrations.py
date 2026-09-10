@@ -23,7 +23,7 @@ from careercrew_core.pg_pool import normalize_dsn
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = ROOT / "migrations" / "versions"
 CHECKSUM_MANIFEST = ROOT / "migrations" / "checksums.json"
-EXPECTED_HEAD = "0008_prod_hardening"
+EXPECTED_HEAD = "0016_workspace_owner_integrity"
 
 EXPECTED_TABLES = frozenset(
     {
@@ -31,10 +31,113 @@ EXPECTED_TABLES = frozenset(
         "career_product_events",
         "upload_tasks",
         "career_share_tokens",
+        "memory_record_events",
+        "knowledge_documents",
+        "knowledge_document_versions",
+        "knowledge_document_chunks",
+        "knowledge_citation_events",
+        "usage_budgets",
+        "usage_reservations",
+        "usage_events",
+        "conversation_bookmarks",
+        "conversation_branches",
+        "workspace_action_items",
+        "consultation_reports",
+        "consultation_plans",
+        "resume_master_documents",
+        "resume_master_versions",
+        "resume_experience_materials",
+        "resume_annotations",
+        "resume_export_jobs",
+        "tool_policies",
+        "tool_policy_audit",
     }
 )
 EXPECTED_SHARE_COLUMNS = frozenset(
     {"token_hash", "access_count", "last_accessed_at"}
+)
+EXPECTED_KNOWLEDGE_COLUMNS: Mapping[str, frozenset[str]] = {
+    "knowledge_documents": frozenset(
+        {"owner_id", "name", "visibility", "status", "active_version_id", "expires_at", "credibility"}
+    ),
+    "knowledge_document_versions": frozenset(
+        {"document_id", "version_number", "content_sha256", "size_bytes", "status", "indexed_at"}
+    ),
+    "knowledge_document_chunks": frozenset(
+        {"version_id", "ordinal", "page", "text", "text_hash", "index_status", "qdrant_point_id"}
+    ),
+    "knowledge_citation_events": frozenset(
+        {"owner_id", "document_id", "version_id", "chunk_id", "request_id", "count", "first_at", "last_at"}
+    ),
+}
+EXPECTED_USAGE_COLUMNS: Mapping[str, frozenset[str]] = {
+    "usage_budgets": frozenset(
+        {"owner_id", "scope_type", "scope_key", "period", "token_limit", "cost_limit_usd", "soft_limit_ratio", "downgrade_model", "enabled"}
+    ),
+    "usage_reservations": frozenset(
+        {"owner_id", "module", "provider", "model", "estimated_tokens", "estimated_cost_usd", "status", "source_request_id"}
+    ),
+    "usage_events": frozenset(
+        {"owner_id", "module", "provider", "model", "input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd", "pricing_version", "pricing_status", "status", "reservation_id", "source_event_id"}
+    ),
+}
+EXPECTED_WORKSPACE_COLUMNS: Mapping[str, frozenset[str]] = {
+    "conversation_bookmarks": frozenset(
+        {"owner_id", "message_id", "note", "tags", "created_at", "updated_at"}
+    ),
+    "conversation_branches": frozenset(
+        {"owner_id", "source_thread_id", "cutoff_message_id", "branch_thread_id", "title", "message_count", "created_at"}
+    ),
+    "workspace_action_items": frozenset(
+        {"owner_id", "source_message_id", "title", "note", "due_date", "status", "created_at", "updated_at"}
+    ),
+}
+EXPECTED_CONSULTATION_COLUMNS: Mapping[str, frozenset[str]] = {
+    "consultation_reports": frozenset(
+        {"owner_id", "source_message_id", "report_json", "status", "version", "created_at", "updated_at"}
+    ),
+    "consultation_plans": frozenset(
+        {"owner_id", "report_id", "title", "steps_json", "status", "version", "created_at", "updated_at"}
+    ),
+}
+EXPECTED_RESUME_COLUMNS: Mapping[str, frozenset[str]] = {
+    "resume_master_documents": frozenset(
+        {"owner_id", "title", "description", "created_at", "updated_at"}
+    ),
+    "resume_master_versions": frozenset(
+        {"owner_id", "master_id", "parent_version_id", "label", "content", "kind", "version_number", "content_sha256", "created_at"}
+    ),
+    "resume_experience_materials": frozenset(
+        {"owner_id", "title", "context", "role", "actions", "results", "tags", "created_at", "updated_at"}
+    ),
+    "resume_annotations": frozenset(
+        {"owner_id", "version_id", "start_offset", "end_offset", "note", "status", "created_at", "updated_at"}
+    ),
+    "resume_export_jobs": frozenset(
+        {"owner_id", "version_ids", "formats", "status", "result_zip", "error", "expires_at", "created_at", "updated_at"}
+    ),
+}
+EXPECTED_TOOL_COLUMNS: Mapping[str, frozenset[str]] = {
+    "tool_policies": frozenset(
+        {"tool_id", "enabled", "reason", "updated_by", "updated_at"}
+    ),
+    "tool_policy_audit": frozenset(
+        {"actor_id", "tool_id", "old_enabled", "new_enabled", "reason", "created_at"}
+    ),
+}
+EXPECTED_OWNER_CONSTRAINTS = frozenset(
+    {
+        "fk_workspace_bookmark_message_owner",
+        "fk_workspace_branch_source_owner",
+        "fk_workspace_branch_cutoff_owner",
+        "fk_workspace_branch_target_owner",
+        "fk_workspace_action_message_owner",
+        "fk_consultation_report_message_owner",
+        "fk_consultation_plan_report_owner",
+        "fk_resume_version_master_owner",
+        "fk_resume_version_parent_owner",
+        "fk_resume_annotation_version_owner",
+    }
 )
 EXPECTED_INDEX_TARGETS: Mapping[str, tuple[str, str]] = {
     "ix_p5_preparation_opportunities_company": ("preparation_opportunities", "company"),
@@ -300,7 +403,16 @@ def validate_schema_invariants(
             WHERE table_schema = 'public'
               AND table_name IN (
                 'career_generation_events', 'career_product_events',
-                'upload_tasks', 'career_share_tokens'
+                'upload_tasks', 'career_share_tokens', 'memory_record_events',
+                'knowledge_documents', 'knowledge_document_versions',
+                'knowledge_document_chunks', 'knowledge_citation_events',
+                'usage_budgets', 'usage_reservations', 'usage_events'
+                , 'conversation_bookmarks', 'conversation_branches',
+                'workspace_action_items'
+                , 'consultation_reports', 'consultation_plans'
+                , 'resume_master_documents', 'resume_master_versions',
+                'resume_experience_materials', 'resume_annotations', 'resume_export_jobs'
+                , 'tool_policies', 'tool_policy_audit'
               )
             """,
         )
@@ -316,7 +428,16 @@ def validate_schema_invariants(
             WHERE table_schema = 'public'
               AND table_name IN (
                 'career_generation_events', 'career_product_events',
-                'upload_tasks', 'career_share_tokens'
+                'upload_tasks', 'career_share_tokens', 'memory_record_events',
+                'knowledge_documents', 'knowledge_document_versions',
+                'knowledge_document_chunks', 'knowledge_citation_events',
+                'usage_budgets', 'usage_reservations', 'usage_events'
+                , 'conversation_bookmarks', 'conversation_branches',
+                'workspace_action_items'
+                , 'consultation_reports', 'consultation_plans'
+                , 'resume_master_documents', 'resume_master_versions',
+                'resume_experience_materials', 'resume_annotations', 'resume_export_jobs'
+                , 'tool_policies', 'tool_policy_audit'
               )
             """,
         )
@@ -333,6 +454,107 @@ def validate_schema_invariants(
         if "token" in share_columns:
             raise MigrationValidationError(
                 "legacy career_share_tokens.token column is still present"
+            )
+
+        columns_by_table: dict[str, set[Any]] = {}
+        for row in column_rows:
+            columns_by_table.setdefault(_row_value(row, 0), set()).add(_row_value(row, 1))
+        missing_knowledge_columns = {
+            table: sorted(required - columns_by_table.get(table, set()))
+            for table, required in EXPECTED_KNOWLEDGE_COLUMNS.items()
+            if required - columns_by_table.get(table, set())
+        }
+        if missing_knowledge_columns:
+            detail = "; ".join(
+                f"{table}: {', '.join(columns)}"
+                for table, columns in sorted(missing_knowledge_columns.items())
+            )
+            raise MigrationValidationError("missing knowledge columns: " + detail)
+
+        missing_usage_columns = {
+            table: sorted(required - columns_by_table.get(table, set()))
+            for table, required in EXPECTED_USAGE_COLUMNS.items()
+            if required - columns_by_table.get(table, set())
+        }
+        if missing_usage_columns:
+            detail = "; ".join(
+                f"{table}: {', '.join(columns)}"
+                for table, columns in sorted(missing_usage_columns.items())
+            )
+            raise MigrationValidationError("missing usage columns: " + detail)
+
+        missing_workspace_columns = {
+            table: sorted(required - columns_by_table.get(table, set()))
+            for table, required in EXPECTED_WORKSPACE_COLUMNS.items()
+            if required - columns_by_table.get(table, set())
+        }
+        if missing_workspace_columns:
+            detail = "; ".join(
+                f"{table}: {', '.join(columns)}"
+                for table, columns in sorted(missing_workspace_columns.items())
+            )
+            raise MigrationValidationError("missing workspace columns: " + detail)
+
+        missing_consultation_columns = {
+            table: sorted(required - columns_by_table.get(table, set()))
+            for table, required in EXPECTED_CONSULTATION_COLUMNS.items()
+            if required - columns_by_table.get(table, set())
+        }
+        if missing_consultation_columns:
+            detail = "; ".join(
+                f"{table}: {', '.join(columns)}"
+                for table, columns in sorted(missing_consultation_columns.items())
+            )
+            raise MigrationValidationError("missing consultation columns: " + detail)
+
+        missing_resume_columns = {
+            table: sorted(required - columns_by_table.get(table, set()))
+            for table, required in EXPECTED_RESUME_COLUMNS.items()
+            if required - columns_by_table.get(table, set())
+        }
+        if missing_resume_columns:
+            detail = "; ".join(
+                f"{table}: {', '.join(columns)}"
+                for table, columns in sorted(missing_resume_columns.items())
+            )
+            raise MigrationValidationError("missing resume workspace columns: " + detail)
+
+        missing_tool_columns = {
+            table: sorted(required - columns_by_table.get(table, set()))
+            for table, required in EXPECTED_TOOL_COLUMNS.items()
+            if required - columns_by_table.get(table, set())
+        }
+        if missing_tool_columns:
+            detail = "; ".join(
+                f"{table}: {', '.join(columns)}"
+                for table, columns in sorted(missing_tool_columns.items())
+            )
+            raise MigrationValidationError("missing tool columns: " + detail)
+
+        constraint_rows = _fetchall(
+            cursor,
+            """
+            SELECT conname FROM pg_constraint
+            WHERE connamespace = 'public'::regnamespace
+              AND conname IN (
+                'fk_workspace_bookmark_message_owner',
+                'fk_workspace_branch_source_owner',
+                'fk_workspace_branch_cutoff_owner',
+                'fk_workspace_branch_target_owner',
+                'fk_workspace_action_message_owner',
+                'fk_consultation_report_message_owner',
+                'fk_consultation_plan_report_owner',
+                'fk_resume_version_master_owner',
+                'fk_resume_version_parent_owner',
+                'fk_resume_annotation_version_owner'
+              )
+            """,
+        )
+        constraints = {_row_value(row, 0) for row in constraint_rows}
+        missing_constraints = sorted(EXPECTED_OWNER_CONSTRAINTS - constraints)
+        if missing_constraints:
+            raise MigrationValidationError(
+                "missing owner integrity constraints: " + ", ".join(missing_constraints)
             )
 
         extension_rows = _fetchall(

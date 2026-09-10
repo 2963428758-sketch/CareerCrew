@@ -45,7 +45,10 @@ def list_opportunities(user: CurrentUser, store: Store):
 
 @router.post("/opportunities", response_model=Opportunity, status_code=201)
 def create_opportunity(payload: OpportunityInput, user: CurrentUser, store: Store):
-    return store.create_opportunity(user["id"], payload.model_dump())
+    row = store.create_opportunity(user["id"], payload.model_dump())
+    from careercrew_core.career.product_events import safe_event
+    safe_event(store.pool, user['id'], 'opportunity_saved', 'preparation')
+    return row
 
 
 @router.get("/opportunities/{opportunity_id}", response_model=Opportunity)

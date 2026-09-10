@@ -176,6 +176,12 @@ def stream_agent(
             yield json.dumps({"type": "error", "message": friendly_error(err["exc"])}, ensure_ascii=False) + "\n"
     except GeneratorExit:
         cev.set()
+        try:
+            from careercrew_core.observability.metrics import get_metrics_registry
+
+            get_metrics_registry().inc_sse_interrupted()
+        except Exception:
+            logger.debug("sse interruption metric failed", exc_info=True)
         raise
     finally:
         t.join(timeout=1)

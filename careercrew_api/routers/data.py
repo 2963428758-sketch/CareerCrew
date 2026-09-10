@@ -172,11 +172,22 @@ def memory_records(
     kind: str = Query(""),
     category: str = Query(""),
     q: str = Query(""),
+    status: str = Query("active", pattern="^(active|all)$"),
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None),
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
     """长期记忆管理记录：不包含聊天 transcript，支持搜索和游标分页。"""
+    if status == "all":
+        from careercrew_core.memory.governance import MemoryGovernance
+
+        rt._ensure_stores()
+        db = getattr(rt, "memory_db", None)
+        if db is not None:
+            rows = MemoryGovernance(db).list_records(
+                current_user["id"], status="all", category=category, query=q, limit=limit,
+            )
+            return {"items": rows, "next_cursor": None, "total": len(rows)}
     return rt.memory_records(
         current_user["id"], kind=kind, category=category,
         query=q, limit=limit, cursor=cursor,
@@ -236,3 +247,18 @@ def consolidate(current_user: CurrentUser, force: bool = Query(False),
                 rt: CareerCrewRuntime = Depends(get_runtime_dep)) -> dict:
     """手动触发后台 consolidation（测试/运维用）。"""
     return rt.memory_consolidate(current_user["id"], force=force)
+
+
+# Keep the new governance paths alongside the existing data routes so the
+# application registration in main.py remains stable while Phase 5 is dirty.
+from careercrew_api.routers.memory_governance import router as memory_governance_router
+from careercrew_api.routers.knowledge_governance import router as knowledge_governance_router
+from careercrew_api.routers.usage import router as usage_router
+from careercrew_api.routers.workspace import router as workspace_router
+from careercrew_api.routers.tools import router as tools_router
+
+router.include_router(memory_governance_router)
+router.include_router(knowledge_governance_router)
+router.include_router(usage_router)
+router.include_router(workspace_router)
+router.include_router(tools_router)

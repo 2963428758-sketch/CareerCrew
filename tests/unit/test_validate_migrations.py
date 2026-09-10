@@ -161,12 +161,63 @@ def _valid_schema_rows() -> dict[str, list[tuple]]:
         ("career_product_events",),
         ("upload_tasks",),
         ("career_share_tokens",),
+        ("memory_record_events",),
+        ("knowledge_documents",),
+        ("knowledge_document_versions",),
+        ("knowledge_document_chunks",),
+        ("knowledge_citation_events",),
+        ("usage_budgets",),
+        ("usage_reservations",),
+        ("usage_events",),
+        ("conversation_bookmarks",),
+        ("conversation_branches",),
+        ("workspace_action_items",),
+        ("consultation_reports",),
+        ("consultation_plans",),
+        ("resume_master_documents",),
+        ("resume_master_versions",),
+        ("resume_experience_materials",),
+        ("resume_annotations",),
+        ("resume_export_jobs",),
+        ("tool_policies",),
+        ("tool_policy_audit",),
     ]
     columns = [
         ("career_share_tokens", "token_hash"),
         ("career_share_tokens", "access_count"),
         ("career_share_tokens", "last_accessed_at"),
+        ("memory_record_events", "id"),
     ]
+    columns.extend(
+        (table, column)
+        for table, required in migration_validator.EXPECTED_KNOWLEDGE_COLUMNS.items()
+        for column in required
+    )
+    columns.extend(
+        (table, column)
+        for table, required in migration_validator.EXPECTED_USAGE_COLUMNS.items()
+        for column in required
+    )
+    columns.extend(
+        (table, column)
+        for table, required in migration_validator.EXPECTED_WORKSPACE_COLUMNS.items()
+        for column in required
+    )
+    columns.extend(
+        (table, column)
+        for table, required in migration_validator.EXPECTED_CONSULTATION_COLUMNS.items()
+        for column in required
+    )
+    columns.extend(
+        (table, column)
+        for table, required in migration_validator.EXPECTED_RESUME_COLUMNS.items()
+        for column in required
+    )
+    columns.extend(
+        (table, column)
+        for table, required in migration_validator.EXPECTED_TOOL_COLUMNS.items()
+        for column in required
+    )
     indexes = [
         (
             name,
@@ -194,10 +245,13 @@ def _valid_schema_rows() -> dict[str, list[tuple]]:
         )
     ]
     return {
-        "alembic_version": [("0008_prod_hardening",)],
+        "alembic_version": [("0016_workspace_owner_integrity",)],
         "information_schema.tables": tables,
         "information_schema.columns": columns,
         "pg_extension": [("pg_trgm",)],
+        "pg_constraint": [
+            (name,) for name in migration_validator.EXPECTED_OWNER_CONSTRAINTS
+        ],
         "pg_indexes": indexes,
     }
 

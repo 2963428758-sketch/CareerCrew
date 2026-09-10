@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,9 @@ pass
 
 
 
+
+
+logger = logging.getLogger(__name__)
 
 
 class ToolsAgentsMixin:
@@ -152,6 +157,25 @@ class ToolsAgentsMixin:
         for n in list(getattr(reg, "internal", None) or []) + list(getattr(reg, "mcp", None) or []):
             if n not in registry:
                 registry.append(n)
+        # Tool operations center policies are server-side state.  A client
+        # requested-tools list can only narrow this already filtered set.
+        ensure_center = getattr(self, "_ensure_tool_operations_center", None)
+        center = ensure_center() if ensure_center is not None else getattr(self, "tool_operations_center", None)
+        if center is not None:
+            try:
+                enabled = set(center.enabled_registry())
+            except Exception as exc:  # noqa: BLE001 - policy storage must fail closed
+                from careercrew_core.tools.operations import is_tool_store_unavailable
+
+                if not is_tool_store_unavailable(exc):
+                    raise
+                logger.warning(
+                    "tool policy storage unavailable; disabling tools for this request",
+                    exc_info=True,
+                )
+                registry = []
+            else:
+                registry = [name for name in registry if name in enabled]
         module_allow = MODULE_TOOLS.get(module)
         if module_allow is None:
             return registry

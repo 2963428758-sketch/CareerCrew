@@ -263,6 +263,10 @@ def test_application_kit_llm_and_template(career_api, fake_runtime):
     sections = resp.json()["sections"]
     for key in ("cover_letter", "self_intro", "greeting", "followup", "thank_you"):
         assert sections[key].strip()
+    metrics = client.get('/api/career/generation-metrics', params={'feature': 'application_kit'}).json()
+    assert metrics['total'] == 2
+    assert metrics['by_source'] == {'llm': 1, 'template': 1}
+    assert metrics['fallback_count'] == 1
 
 
 def test_stats_by_source_attribution(career_api):
@@ -296,29 +300,47 @@ def test_contacts_crud_scoped(career_api):
 
 
 def test_share_lifecycle(career_api):
-    """只读分享：创建整包/单版本链接 → 公开访问 → 脱敏 → 撤销后 404。"""
-    client, _, _ = career_api
+    """只读分享（令牌哈希入库）：明文仅创建时返回一次；公开访问带审计与防爬头；
+    默认脱敏；撤销后 404。"""
+    client, store, _ = career_api
     oid = _create_opp(client)
     version = client.post(f"/api/preparation/opportunities/{oid}/versions",
-                          json={"label": "分享版本", "content": "联系我：13800001234 / me@x.com"}).json()
+                          json={"label": "分享版本",
+                                "content": (
+                                    "联系我：13800001234 / me@x.com / 010-87654321，"
+                                    "身份证 110101199003074258，微信号：career_2026，"
+                                    "地址：北京市朝阳区建国路88号"
+                                )}).json()
 
-    # 整包分享
+    # 整包分享：默认 mask_pii=True
     resp = client.post("/api/career/shares", json={"kind": "opportunity", "ref_id": oid})
     assert resp.status_code == 201, resp.text
     token = resp.json()["token"]
+    assert resp.json()["mask_pii"] is True
+    # 数据库不存明文，只存哈希
+    rows = store.list_shares("u_001")
+    assert rows and "token" not in rows[0]
+
     pub = client.get(f"/api/career/share/{token}")
     assert pub.status_code == 200
     assert pub.json()["company"] == "测试公司"
-    assert any(v["label"] == "分享版本" for v in pub.json()["versions"])
+    assert pub.headers["cache-control"].startswith("no-store")
+    assert pub.headers["x-robots-tag"] == "noindex, nofollow"
+    # 访问审计：计数已递增
+    assert store.list_shares("u_001")[0]["access_count"] == 1
 
-    # 单版本分享 + 脱敏
+    # 单版本分享 + 脱敏：手机/邮箱/座机/身份证/微信/地址全部隐藏
     resp = client.post("/api/career/shares", json={
         "kind": "resume_version", "ref_id": version["id"], "mask_pii": True})
     assert resp.status_code == 201
     masked = client.get(f"/api/career/share/{resp.json()['token']}")
-    assert "13800001234" not in masked.json()["content"]
-    assert "[手机号已隐藏]" in masked.json()["content"]
-    assert "[邮箱已隐藏]" in masked.json()["content"]
+    content = masked.json()["content"]
+    assert "13800001234" not in content and "[手机号已隐藏]" in content
+    assert "me@x.com" not in content and "[邮箱已隐藏]" in content
+    assert "010-87654321" not in content and "[电话已隐藏]" in content
+    assert "110101199003074258" not in content and "[证件号已隐藏]" in content
+    assert "career_2026" not in content and "[微信号已隐藏]" in content
+    assert "北京市朝阳区建国路88号" not in content and "[地址已隐藏]" in content
 
     # 撤销 → 公开访问 404
     assert client.delete(f"/api/career/shares/{token}").status_code == 200
@@ -327,6 +349,28 @@ def test_share_lifecycle(career_api):
     # 非法 kind / 越界有效期
     assert client.post("/api/career/shares", json={"kind": "bad", "ref_id": oid}).status_code == 422
     assert client.post("/api/career/shares", json={"kind": "opportunity", "ref_id": oid, "expires_days": 99}).status_code == 422
+
+
+def test_public_share_rate_limit_is_bounded(career_api, monkeypatch):
+    """公开读取按 IP 限流；超限响应仍带隐私头且不会暴露令牌。"""
+    from careercrew_api.routers import career_shares
+
+    client, _, _ = career_api
+    oid = _create_opp(client)
+    token = client.post("/api/career/shares", json={
+        "kind": "opportunity", "ref_id": oid,
+    }).json()["token"]
+    monkeypatch.setattr(career_shares, "_SHARE_RATE_LIMIT", 2)
+    career_shares._share_rate_bucket.clear()
+    try:
+        assert client.get(f"/api/career/share/{token}").status_code == 200
+        assert client.get(f"/api/career/share/{token}").status_code == 200
+        limited = client.get(f"/api/career/share/{token}")
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "60"
+        assert "no-store" in limited.headers["cache-control"]
+    finally:
+        career_shares._share_rate_bucket.clear()
 
 
 def test_intel_brief_template_and_llm(career_api, fake_runtime):
@@ -389,4 +433,74 @@ def test_global_search_endpoint(career_api):
     resp = client.get("/api/career/search", params={"q": "测试公司"})
     assert resp.status_code == 200
     assert len(resp.json()["opportunities"]) == 1
+    assert resp.json()["opportunities"][0]["company"] == "测试公司"
+    assert resp.json()["opportunities"][0]["jd"] == "负责接口开发"
     assert client.get("/api/career/search", params={"q": " "}).status_code == 422
+
+
+def test_share_can_be_revoked_from_history_without_bearer_token(career_api):
+    client, store, _ = career_api
+    oid = _create_opp(client)
+    created = client.post('/api/career/shares', json={'kind': 'opportunity', 'ref_id': oid}).json()
+    history = client.get('/api/career/shares').json()[0]
+    assert history['id'] == created['id']
+    assert 'token' not in history and 'token_hash' not in history
+    assert client.get('/api/career/share/' + history['id']).status_code == 404
+    assert client.delete('/api/career/shares/' + history['id']).status_code == 200
+    assert client.get('/api/career/share/' + created['token']).status_code == 404
+
+
+def test_share_error_responses_have_privacy_headers(career_api):
+    client, _, _ = career_api
+    response = client.get('/api/career/share/missing')
+    assert response.status_code == 404
+    assert 'no-store' in response.headers['cache-control']
+    assert response.headers['x-content-type-options'] == 'nosniff'
+    assert response.headers['referrer-policy'] == 'no-referrer'
+
+
+def test_search_cursor_pages_and_query_scope(career_api):
+    import base64
+    import json
+
+    from careercrew_api.auth.dependencies import get_current_user
+
+    client, _, _ = career_api
+    for _ in range(3):
+        _create_opp(client)
+    first = client.get('/api/career/search', params={'q': '测试', 'limit': 2}).json()
+    assert len(first['items']) == 2 and first['next_cursor']
+    second = client.get('/api/career/search', params={'q': '测试', 'limit': 2, 'cursor': first['next_cursor']}).json()
+    assert len(second['items']) == 1 and second['next_cursor'] is None
+    assert {r['id'] for r in first['items']}.isdisjoint(r['id'] for r in second['items'])
+    assert client.get('/api/career/search', params={'q': 'other', 'cursor': first['next_cursor']}).status_code == 422
+    decoded = json.loads(base64.urlsafe_b64decode(
+        first['next_cursor'] + '=' * (-len(first['next_cursor']) % 4),
+    ))
+    decoded[-1] = 'forged-position'
+    forged = base64.urlsafe_b64encode(json.dumps(decoded).encode()).decode().rstrip('=')
+    assert client.get('/api/career/search', params={'q': '测试', 'cursor': forged}).status_code == 422
+    client.app.dependency_overrides[get_current_user] = lambda: {"id": "bob", "role": "user"}
+    assert client.get('/api/career/search', params={
+        'q': '测试', 'cursor': first['next_cursor'],
+    }).status_code == 422
+    client.app.dependency_overrides[get_current_user] = lambda: {"id": "u_001", "role": "admin"}
+    assert client.get('/api/career/search', params={'q': '测试', 'limit': 51}).status_code == 422
+
+
+def test_product_events_validate_deduplicate_and_purge(career_api):
+    from careercrew_api.auth.dependencies import get_current_user
+
+    client, store, _ = career_api
+    payload = {'event': 'share_panel_opened', 'event_id': 'a90b7587-9e21-41e7-bb92-38612d861017', 'source': 'preparation'}
+    assert client.post('/api/career/events', json=payload).status_code == 201
+    assert client.post('/api/career/events', json=payload).status_code == 201
+    assert client.post('/api/career/events', json={**payload, 'resume': 'private'}).status_code == 422
+    assert client.post('/api/career/events', json={**payload, 'event': 'made_up'}).status_code == 422
+    metrics = client.get('/api/career/events/funnel').json()
+    assert metrics['counts']['share_panel_opened'] == 1
+    client.app.dependency_overrides[get_current_user] = lambda: {"id": "bob", "role": "user"}
+    assert client.get('/api/career/events/funnel').json()['counts'] == {}
+    client.app.dependency_overrides[get_current_user] = lambda: {"id": "u_001", "role": "admin"}
+    assert client.post('/api/career/privacy/purge').status_code == 200
+    assert client.get('/api/career/events/funnel').json()['counts'].get('share_panel_opened', 0) == 0

@@ -358,31 +358,45 @@ class CareerStore:
 
     # ── 导师只读分享 ──
 
-    def create_share(self, owner_id: str, kind: str, ref_id: str,
+    @staticmethod
+    def share_token_hash(token: str) -> str:
+        """令牌只存 SHA-256 哈希：数据库泄露不等于分享链接泄露。"""
+        import hashlib
+
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def create_share(self, owner_id: str, token: str, kind: str, ref_id: str,
                      expires_at: str, mask_pii: bool) -> dict:
-        """创建只读分享令牌（token 由调用方生成的高熵随机串）。"""
+        """创建只读分享。token 由调用方生成的高熵随机串，入库前哈希；
+        明文仅在创建响应中出现一次，数据库不保留。"""
         return self._one(
-            """INSERT INTO career_share_tokens (token, owner_id, kind, ref_id, mask_pii, expires_at)
-               VALUES (%s,%s,%s,%s,%s,%s) RETURNING *""",
-            (str(uuid4()) + str(uuid4()), owner_id, kind, ref_id, mask_pii, expires_at))
+            """INSERT INTO career_share_tokens (token_hash, owner_id, kind, ref_id, mask_pii, expires_at)
+               VALUES (%s,%s,%s,%s,%s,%s) RETURNING token_hash, owner_id, kind, ref_id, mask_pii,
+                 expires_at, revoked_at, access_count, last_accessed_at, created_at""",
+            (self.share_token_hash(token), owner_id, kind, ref_id, mask_pii, expires_at))
 
     def list_shares(self, owner_id: str):
+        # 明文令牌不可恢复，列表不含任何可用于访问的凭据
         return self._all(
-            "SELECT token, kind, ref_id, mask_pii, expires_at, revoked_at, created_at "
-            "FROM career_share_tokens WHERE owner_id=%s ORDER BY created_at DESC, token DESC",
+            """SELECT token_hash AS id, kind, ref_id, mask_pii, expires_at, revoked_at, access_count,
+               last_accessed_at, created_at
+               FROM career_share_tokens WHERE owner_id=%s ORDER BY created_at DESC""",
             (owner_id,))
 
     def revoke_share(self, owner_id: str, token: str) -> bool:
         return self._one(
             "UPDATE career_share_tokens SET revoked_at=CURRENT_TIMESTAMP "
-            "WHERE owner_id=%s AND token=%s AND revoked_at IS NULL RETURNING token",
-            (owner_id, token)) is not None
+            "WHERE owner_id=%s AND (token_hash=%s OR token_hash=%s) AND revoked_at IS NULL RETURNING token_hash",
+            (owner_id, token, self.share_token_hash(token))) is not None
 
     def resolve_share(self, token: str) -> dict | None:
-        """解析令牌：过期或已撤销一律 None（对外统一 404，不泄露状态）。"""
+        """解析令牌：过期或已撤销一律 None（对外统一 404，不泄露状态）；
+        成功解析时递增访问计数并记录最近访问时间（访问审计）。"""
         row = self._one(
-            """SELECT token, owner_id, kind, ref_id, mask_pii, expires_at, revoked_at
-               FROM career_share_tokens WHERE token=%s""", (token,))
+            """SELECT token_hash, owner_id, kind, ref_id, mask_pii, expires_at, revoked_at,
+               access_count, last_accessed_at
+               FROM career_share_tokens WHERE token_hash=%s""",
+            (self.share_token_hash(token),))
         if row is None or row.get("revoked_at"):
             return None
         from datetime import datetime
@@ -392,6 +406,10 @@ class CareerStore:
                 return None
         except ValueError:
             return None
+        self._one(
+            "UPDATE career_share_tokens SET access_count = access_count + 1, "
+            "last_accessed_at = CURRENT_TIMESTAMP WHERE token_hash=%s RETURNING token_hash",
+            (row["token_hash"],))
         return row
 
     # ── 求职画像 ──
@@ -525,6 +543,10 @@ class CareerStore:
                 "offers": fetch("SELECT * FROM offer_comparisons WHERE owner_id=%s"),
                 "real_interviews": fetch(
                     "SELECT * FROM real_interview_records WHERE owner_id=%s"),
+                "generation_metrics": fetch(
+                    "SELECT * FROM career_generation_events WHERE owner_id=%s"),
+                "product_events": fetch(
+                    "SELECT * FROM career_product_events WHERE owner_id=%s"),
                 "profile": fetch("SELECT * FROM career_profiles WHERE owner_id=%s"),
             }
 
@@ -534,7 +556,7 @@ class CareerStore:
             counts: dict[str, int] = {}
             for table in ("real_interview_records", "offer_comparisons", "hr_followups",
                           "action_items", "project_materials", "interview_reports",
-                          "job_contacts"):
+                          "job_contacts", "career_product_events", "career_generation_events"):
                 cur = conn.execute(f"DELETE FROM {table} WHERE owner_id=%s RETURNING id",
                                    (owner_id,))
                 counts[table] = len(cur.fetchall())
@@ -545,4 +567,6 @@ class CareerStore:
             cur = conn.execute("DELETE FROM career_profiles WHERE owner_id=%s RETURNING owner_id",
                                (owner_id,))
             counts["career_profiles"] = len(cur.fetchall())
+            cur = conn.execute('DELETE FROM career_share_tokens WHERE owner_id=%s RETURNING token_hash', (owner_id,))
+            counts['shares'] = len(cur.fetchall())
         return counts

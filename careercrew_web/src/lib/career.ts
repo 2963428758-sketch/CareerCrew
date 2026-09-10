@@ -136,7 +136,10 @@ export interface CareerProfile {
   updated_at?: string
 }
 
+export interface SearchItem { id: string; kind: string; title: string; summary: string }
 export interface SearchResult {
+  items: SearchItem[]
+  next_cursor: string | null
   opportunities: Array<{ id: string; company: string; title: string; jd: string; stage: string }>
   materials: Array<{ id: string; name: string; background: string }>
   real_interviews: Array<{ id: string; company: string; title: string; overall_reflection: string }>
@@ -343,8 +346,28 @@ export const listGapAnalyses = async (opportunityId: string): Promise<GapAnalysi
 
 export const getStats = async (): Promise<JobStats> => readData(await apiFetch("/api/career/stats"))
 
-export const globalSearch = async (q: string): Promise<SearchResult> => readData(
-  await apiFetch(`/api/career/search?q=${encodeURIComponent(q)}`))
+export interface GenerationMetrics {
+  total: number
+  success_count: number
+  fallback_count: number
+  fallback_rate: number
+  p95_latency_ms: number | null
+  by_source: Record<string, number>
+}
+
+export interface ProductFunnel {
+  counts: Record<string, number>
+  note: string
+}
+
+export const getGenerationMetrics = async (): Promise<GenerationMetrics> =>
+  readData(await apiFetch('/api/career/generation-metrics'))
+
+export const getProductFunnel = async (): Promise<ProductFunnel> =>
+  readData(await apiFetch('/api/career/events/funnel'))
+
+export const globalSearch = async (q: string, cursor?: string): Promise<SearchResult> => readData(
+  await apiFetch(`/api/career/search?q=${encodeURIComponent(q)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`))
 
 export const getProfile = async (): Promise<CareerProfile | null> => {
   const resp = await apiFetch("/api/career/profile")
@@ -445,7 +468,8 @@ export const deleteContact = async (id: string): Promise<void> => {
 // ── 导师只读分享 ──
 
 export interface ShareInfo {
-  token: string
+  id: string
+  token?: string
   kind: "opportunity" | "resume_version"
   ref_id: string
   mask_pii: boolean

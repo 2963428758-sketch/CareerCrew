@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING
 
@@ -16,10 +17,99 @@ if TYPE_CHECKING:
 pass
 
 
+logger = logging.getLogger(__name__)
+
+
 
 
 class TurnLifecycleMixin:
     """会话轮次生命周期 + 标题生成 + 线程 CRUD（ThreadService 职责）。"""
+
+    def _usage_reserve(self, user_id: str, module: str) -> dict | None:
+        """Reserve a conservative token budget before an agent is constructed.
+
+        Missing/old databases keep the existing conversation path available;
+        an explicit ``BudgetExceeded`` is intentionally allowed through so a
+        configured hard budget cannot be bypassed.
+        """
+        from careercrew_core.usage.ledger import BudgetExceeded, UsageLedger
+
+        db = getattr(self, "memory_db", None)
+        if db is None:
+            return None
+        settings = getattr(self, "settings", None)
+        llm_settings = getattr(settings, "llm", None)
+        model = str(getattr(llm_settings, "model", "") or "unknown")
+        provider = str(getattr(llm_settings, "provider", "") or "unknown")
+        estimate = int(getattr(llm_settings, "max_tokens", 4096) or 4096)
+        try:
+            return UsageLedger(db).reserve(
+                user_id, module=module, provider=provider, model=model,
+                estimated_tokens=max(estimate, 1),
+            )
+        except BudgetExceeded:
+            raise
+        except Exception:
+            # The ledger is additive.  A migration/telemetry outage must not
+            # turn a healthy conversation into a 500; hard budget failures do
+            # not reach this branch.
+            logger.warning("usage budget preflight unavailable", exc_info=True)
+            return None
+
+    def _usage_release(self, user_id: str, reservation: dict | None) -> None:
+        if not reservation:
+            return
+        try:
+            from careercrew_core.usage.ledger import UsageLedger
+
+            UsageLedger(self.memory_db).release(user_id, reservation["reservation_id"])
+        except Exception:
+            logger.warning("usage reservation release failed", exc_info=True)
+
+    def _record_usage(
+        self,
+        ctx,
+        *,
+        status: str,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+        retrievals: list[dict] | None = None,
+        tool_calls: list[dict] | None = None,
+    ) -> None:
+        """Persist allow-listed usage and update low-cardinality LLM metrics."""
+        from careercrew_core.observability.metrics import get_metrics_registry
+        from careercrew_core.usage.ledger import UsageLedger
+
+        duration_seconds = max(ctx.latency_ms(), 0) / 1000
+        get_metrics_registry().observe_llm(
+            ctx.module, status, duration_seconds,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+        )
+        for retrieval in retrievals or []:
+            get_metrics_registry().inc_rag("query")
+            get_metrics_registry().inc_rag(
+                "hit" if retrieval.get("used_in_final_context") else "miss"
+            )
+        for tool_call in tool_calls or []:
+            get_metrics_registry().inc_tool(str(tool_call.get("status") or "completed"))
+        db = getattr(self, "memory_db", None)
+        if db is None:
+            return
+        settings = getattr(self, "settings", None)
+        llm_settings = getattr(settings, "llm", None)
+        provider = str(getattr(llm_settings, "provider", "") or "unknown")
+        model = str(ctx.model or getattr(llm_settings, "model", "") or "unknown")
+        try:
+            UsageLedger(db).record(
+                ctx.user_id, module=ctx.module, provider=provider, model=model,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                total_tokens=total_tokens, status=status,
+                reservation_id=getattr(ctx, "usage_reservation_id", None),
+                source_event_id=ctx.run_id,
+            )
+        except Exception:
+            logger.warning("usage event recording failed", exc_info=True)
 
     def _conversation_model(self) -> str:
         """当前 run 的 model（settings.llm.model；未初始化时退化空串）。"""
@@ -43,6 +133,7 @@ class TurnLifecycleMixin:
         from careercrew_core.versioning import agent_version, prompt_version_for_agent
 
         self._ensure_heavy()
+        reservation = self._usage_reserve(user_id, module)
         try:
             ctx = begin_turn(
                 self.conversation_store,
@@ -54,6 +145,8 @@ class TurnLifecycleMixin:
                 user_metadata=user_metadata,
                 effective_tools=effective_tools,
             )
+            if reservation:
+                ctx.usage_reservation_id = reservation["reservation_id"]
             # Conversation 仍是全文唯一事实源。这里只把通过确定性高精度规则的
             # 稳定职业自述交给 MemoryService；普通聊天绝不会被复制为长期记忆。
             service = getattr(self, "memory_service", None)
@@ -67,6 +160,7 @@ class TurnLifecycleMixin:
                     logging.getLogger(__name__).warning("memory candidate capture failed", exc_info=True)
             return ctx
         except Exception:
+            self._usage_release(user_id, reservation)
             import logging
             logging.getLogger(__name__).exception("begin_chat_turn failed")
             return None
@@ -95,6 +189,11 @@ class TurnLifecycleMixin:
         except Exception:
             import logging
             logging.getLogger(__name__).exception("finish_chat_turn failed")
+        self._record_usage(
+            ctx, status=status, input_tokens=input_tokens,
+            output_tokens=output_tokens, total_tokens=total_tokens,
+            retrievals=retrievals, tool_calls=tool_calls,
+        )
         self._maybe_generate_first_title(ctx, content)
 
     def _generate_title(self, user_text: str, assistant_text: str) -> str:
@@ -168,6 +267,7 @@ class TurnLifecycleMixin:
         except Exception:
             import logging
             logging.getLogger(__name__).exception("fail_chat_turn failed")
+        self._record_usage(ctx, status="failed")
 
     def _cancel_chat_turn(self, ctx) -> None:
         from careercrew_api.chat_lifecycle import cancel_turn
@@ -179,6 +279,7 @@ class TurnLifecycleMixin:
         except Exception:
             import logging
             logging.getLogger(__name__).exception("cancel_chat_turn failed")
+        self._record_usage(ctx, status="cancelled")
 
     def _ensure_thread(self, thread_id: str, user_id: str, module: str = "chat",
                        title: str = "") -> None:

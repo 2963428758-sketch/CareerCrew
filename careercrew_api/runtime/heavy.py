@@ -60,6 +60,7 @@ class HeavyInitMixin:
         self.thread_store = None      # 线程元数据
         self.conversation_store = None  # 对话核心存储（Phase 1 Source of Truth）
         self.attachment_store = None   # 会话附件存储（Phase 3）
+        self.tool_operations_center = None  # 工具中心策略与调用审计（Phase 8）
 
         # 重组件（_ensure_heavy 后填充）
         self.llm: BaseChatModel | None = None
@@ -123,12 +124,32 @@ class HeavyInitMixin:
                 self.conversation_store = ConversationStore(create_conversation_db(settings))
                 # 会话附件存储（chat_attachments 表，与 conversation 同库）
                 self.attachment_store = AttachmentStore(create_attachment_db(settings))
+                self._ensure_tool_operations_center()
                 self._stores_ready = True
             except Exception as e:
                 logger.exception("轻量存储层初始化失败")
                 raise RuntimeInitError(
                     f"数据存储初始化失败，请检查数据库连接后重试（{type(e).__name__}: {e}）"
                 ) from e
+
+    def _ensure_tool_operations_center(self):
+        """Attach policy state before any real Agent assembles default tools.
+
+        The center reuses the already-created conversation store and performs
+        no MCP network probe.  Keeping this at the light runtime boundary
+        prevents policy changes from depending on whether a user opened the
+        tools page first.
+        """
+        center = getattr(self, "tool_operations_center", None)
+        if center is not None:
+            return center
+        if self.conversation_store is None or self.settings is None:
+            return None
+        from careercrew_core.tools.operations import ToolOperationsCenter
+
+        center = ToolOperationsCenter(self.conversation_store, self.settings)
+        self.tool_operations_center = center
+        return center
 
     def _ensure_heavy(self) -> None:
         """惰性初始化重组件（首调 10-30s）。任何失败统一映射 503（RuntimeInitError），

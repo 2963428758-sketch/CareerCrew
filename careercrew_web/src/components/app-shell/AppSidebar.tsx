@@ -4,7 +4,7 @@ import {
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
 import {
   BookOpen, Briefcase, Compass, Copy, FileText, FlaskConical, Gauge, GraduationCap, Loader2, MessageSquare,
-  MessageSquareWarning, MoreHorizontal, PanelLeftClose, Pencil, Pin, SquarePen,
+  MessageSquareWarning, MoreHorizontal, PanelLeftClose, Pencil, Pin, SquarePen, LayoutDashboard,
   Sun, Moon, Target, Trash2, UserCog, Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -25,6 +25,7 @@ const NAV: { to: string; label: string; icon: ComponentType<{ className?: string
   { to: "/resume", label: "简历优化", icon: FileText },
   { to: "/interview", label: "面试练习", icon: GraduationCap },
   { to: "/consult", label: "会诊", icon: Users },
+  { to: "/workspace", label: "工作台", icon: LayoutDashboard },
   { to: "/knowledge", label: "知识库问答", icon: BookOpen },
   { to: "/quality", label: "质检看板", icon: Gauge, reviewerOnly: true },
   { to: "/quality/bad-cases", label: "坏例处理", icon: MessageSquareWarning, reviewerOnly: true },

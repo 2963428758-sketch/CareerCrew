@@ -51,6 +51,7 @@ class TurnContext:
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     user_id: str = ""
     langsmith_run_id: str | None = None
+    usage_reservation_id: str | None = None
 
     def latency_ms(self) -> int:
         return int((datetime.now(UTC) - self.started_at).total_seconds() * 1000)

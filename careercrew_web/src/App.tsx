@@ -29,6 +29,7 @@ const QualityDashboardPage = lazy(() => import("@/pages/QualityDashboardPage"))
 const BadCasesPage = lazy(() => import("@/pages/BadCasesPage"))
 const BadCaseDetailPage = lazy(() => import("@/pages/BadCaseDetailPage"))
 const EvalCasesPage = lazy(() => import("@/pages/EvalCasesPage"))
+const WorkspacePage = lazy(() => import("@/pages/WorkspacePage"))
 
 const PAGES: Record<string, ComponentType> = {
   "/": ChatPage,
@@ -43,6 +44,7 @@ const PAGES: Record<string, ComponentType> = {
   "/quality": QualityDashboardPage,
   "/quality/bad-cases": BadCasesPage,
   "/quality/eval-cases": EvalCasesPage,
+  "/workspace": WorkspacePage,
 }
 
 /** 质检详情路由 /quality/bad-cases/:feedbackId（PAGES 精确匹配之外的动态段） */

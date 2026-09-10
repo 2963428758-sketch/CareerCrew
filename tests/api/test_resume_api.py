@@ -122,6 +122,35 @@ def test_upload_status_404(client):
 
 
 @pytest.mark.web
+def test_upload_status_recovers_from_owner_scoped_persistent_store(client, monkeypatch):
+    """提交 worker 的内存不存在时，当前账号仍可从 PostgreSQL 同类型任务回源。"""
+    from careercrew_api.routers import resume
+
+    class Store:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, job_id, owner_id, kind):
+            self.calls.append((job_id, owner_id, kind))
+            return {
+                "job_id": job_id, "user_id": owner_id, "kind": kind,
+                "filename": "resume.pdf", "status": "error", "stage": "interrupted",
+                "progress": 0.4, "error": "任务因服务重启中断，请重新上传", "result": None,
+            }
+
+    store = Store()
+    monkeypatch.setattr(resume, "get_upload_task_store", lambda: store)
+    with resume._jobs_lock:
+        resume._jobs.pop("durable-resume", None)
+
+    response = client.get("/api/resume/upload/durable-resume")
+
+    assert response.status_code == 200
+    assert response.json()["stage"] == "interrupted"
+    assert store.calls == [("durable-resume", "u_001", "resume_parse")]
+
+
+@pytest.mark.web
 def test_resume_library_list_and_content(client, fake_runtime):
     """上传完成后写入简历库：列表含元数据，content 可读取原文。"""
     fake_runtime.upload_content = "库内简历：Java 3 年"

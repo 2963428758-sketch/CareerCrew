@@ -28,7 +28,7 @@ export function WorkspaceHeader({
       <div className="flex min-w-0 items-baseline gap-1.5">
         <span className="text-[13px] text-ink-faint">{parent}</span>
         <span className="text-[13px] text-ink-faint opacity-70">/</span>
-        <span className="text-[13px] font-medium text-ink">{title}</span>
+        <h1 className="text-[13px] font-medium text-ink">{title}</h1>
         {subtitle && (
           <span className="ml-1.5 hidden truncate text-[11px] text-ink-faint lg:inline">{subtitle}</span>
         )}

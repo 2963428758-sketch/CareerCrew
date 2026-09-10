@@ -4,6 +4,7 @@ import { BookOpenCheck, Copy, Loader2, ScanSearch, Sparkles } from "lucide-react
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { networkErrorText } from "@/lib/errors"
+import { trackProductEvent } from '@/lib/productEvents'
 import {
   createApplicationKit, createIntelBrief, runAtsCheck,
   type ApplicationKit, type AtsResult, type IntelBrief } from "@/lib/career"
@@ -94,6 +95,7 @@ export function JobToolsPanel({ opportunity, onToast }: {
   const copySection = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
+      void trackProductEvent('material_copied', 'preparation')
       onToast("已复制")
     } catch {
       onToast("复制失败，请手动选择文本复制")
@@ -115,6 +117,7 @@ export function JobToolsPanel({ opportunity, onToast }: {
         confirmed: false,
       })
       onToast("已保存到素材库（标记为未确认草稿）")
+      void trackProductEvent('material_saved', 'preparation')
     } catch (e) {
       onToast(networkErrorText(e, "保存失败，请稍后重试"))
     }

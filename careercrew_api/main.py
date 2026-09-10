@@ -49,6 +49,55 @@ DIST = Path(__file__).resolve().parents[1] / "careercrew_web" / "dist"
 setup_logging()
 
 
+_SHARE_PATH_PREFIXES = ("/api/career/share/", "/share/")
+_SHARE_PRIVACY_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Pragma": "no-cache",
+    "X-Robots-Tag": "noindex, nofollow",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _is_share_token_path(path: str) -> bool:
+    return any(path.startswith(prefix) and len(path) > len(prefix)
+               for prefix in _SHARE_PATH_PREFIXES)
+
+
+def _safe_request_path(path: str) -> str:
+    """分享令牌是 bearer 凭据，应用访问日志只记录经过脱敏的路由形状。"""
+    for prefix in _SHARE_PATH_PREFIXES:
+        if path.startswith(prefix) and len(path) > len(prefix):
+            return f"{prefix}[redacted]"
+    return path
+
+
+class _UvicornSharePathFilter(logging.Filter):
+    """Redact share bearer credentials from Uvicorn's server-level access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        # Uvicorn AccessFormatter arguments are:
+        # (client_addr, method, full_path, http_version, status_code).
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            values = list(args)
+            values[2] = _safe_request_path(values[2])
+            record.args = tuple(values)
+        return True
+
+
+_uvicorn_share_path_filter = _UvicornSharePathFilter()
+logging.getLogger("uvicorn.access").addFilter(_uvicorn_share_path_filter)
+
+
+def _recover_interrupted_upload_tasks() -> int:
+    """启动时收口租约已过期的任务；新鲜租约由其他 worker 持有，不会被触碰。"""
+    from careercrew_core import upload_tasks
+
+    store = upload_tasks.get_upload_task_store()
+    return store.mark_interrupted() if store is not None else 0
+
+
 def _has_cjk(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
@@ -79,6 +128,10 @@ async def lifespan(app: FastAPI):
     stop = threading.Event()
     interval = max(get_auth_service().settings.cleanup_interval_hours, 1) * 3600
 
+    interrupted = _recover_interrupted_upload_tasks()
+    if interrupted:
+        logger.warning("upload task recovery: marked %d expired tasks interrupted", interrupted)
+
     def _cleanup_once() -> None:
         try:
             removed = get_auth_service().store.delete_expired_refresh_sessions()
@@ -92,13 +145,12 @@ async def lifespan(app: FastAPI):
         while not stop.wait(interval):
             _cleanup_once()
 
-    # 进程内任务表（resume/knowledge 上传 job）按单进程假设实现：
-    # uvicorn --workers >1 时任务状态会查不到，启动即提醒部署侧。
+    # 状态已落 PostgreSQL，任意 worker 可查；执行线程仍归提交请求的 worker。
     workers = int(os.environ.get("WEB_CONCURRENCY", "1") or "1")
     if workers > 1:
         logger.warning(
-            "WEB_CONCURRENCY=%d：上传任务表为进程内实现，多 worker 下"
-            " GET /upload/{job_id} 将跨进程失效；如需横向扩容请改外部存储",
+            "WEB_CONCURRENCY=%d：上传任务状态可跨 worker 查询，但解析执行仍在"
+            "提交请求的 worker 内；部署退出应保留优雅停机窗口",
             workers,
         )
 
@@ -143,7 +195,7 @@ async def lifespan(app: FastAPI):
         if getattr(rt, "settings", None) is not None:
             schedule = rt.settings.memory.consolidation.dream_schedule
     except Exception:
-        pass
+        logger.warning("dream scheduler configuration unavailable; scheduler disabled")
     start_dream_scheduler(get_runtime_dep, get_auth_service, schedule, stop)
 
     yield
@@ -172,13 +224,30 @@ def create_app() -> FastAPI:
         rid = (request.headers.get("X-Request-ID") or "").strip() or new_request_id()
         request_id_var.set(rid)
         start = time.perf_counter()
-        response = await call_next(request)
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        finally:
+            try:
+                from careercrew_core.observability.metrics import get_metrics_registry
+
+                route = request.scope.get("route")
+                route_path = getattr(route, "path", request.url.path)
+                get_metrics_registry().observe_http(
+                    request.method, route_path, status_code,
+                    time.perf_counter() - start,
+                )
+            except Exception:
+                logger.debug("http metrics recording failed", exc_info=True)
+        if _is_share_token_path(request.url.path):
+            response.headers.update(_SHARE_PRIVACY_HEADERS)
         # task-per-request 隔离，不 reset：流式响应体（NDJSON）在 middleware
         # 返回后仍需携带同一 request_id 排查跨 logger 报错。
         response.headers["X-Request-ID"] = rid
         logger.info(
             "%s %s -> %d (%.0f ms)",
-            request.method, request.url.path, response.status_code,
+            request.method, _safe_request_path(request.url.path), response.status_code,
             (time.perf_counter() - start) * 1000,
         )
         return response
@@ -204,6 +273,8 @@ def create_app() -> FastAPI:
     app.include_router(context.router, prefix="/api/context", tags=["context"])
     app.include_router(attachments.router, prefix="/api/chat/attachments", tags=["attachments"])
     app.include_router(agent.router, prefix="/api", tags=["agent"])
+    from careercrew_api.routers import metrics
+    app.include_router(metrics.router, tags=["metrics"])
     from careercrew_api.routers import user_settings
     app.include_router(user_settings.router, prefix="/api", tags=["settings"])
 
@@ -294,7 +365,7 @@ def create_app() -> FastAPI:
         """兜底：未处理异常 → 500 中文提示，完整堆栈打到服务端日志便于排查。"""
         logger.error(
             "Unhandled error on %s %s: %s\n%s",
-            request.method, request.url.path, exc, traceback.format_exc(),
+            request.method, _safe_request_path(request.url.path), exc, traceback.format_exc(),
         )
         return JSONResponse(status_code=500, content={"detail": "服务器内部错误，请稍后重试"})
 

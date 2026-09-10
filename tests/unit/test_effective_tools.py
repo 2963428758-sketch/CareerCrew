@@ -147,6 +147,49 @@ def test_runtime_policy_can_read_without_generate_tools() -> None:
     assert effective == ["rag_query", "memory_search"]
 
 
+def test_runtime_attaches_tool_policy_before_default_agent_tools() -> None:
+    """工具页未被访问时，真实 runtime 的默认工具集也必须读取禁用策略。"""
+    from careercrew_api.runtime import CareerCrewRuntime
+    from careercrew_core.conversation.db import FakeConversationDb
+    from careercrew_core.conversation.store import ConversationStore
+
+    rt = CareerCrewRuntime()
+    rt._initialized = True
+    rt.conversation_store = ConversationStore(FakeConversationDb())
+    rt.settings = SimpleNamespace(
+        tools=SimpleNamespace(
+            registry=SimpleNamespace(internal=["rag_query", "memory_search"], mcp=[]),
+            hitl=SimpleNamespace(requires_confirmation=[]),
+        ),
+    )
+
+    center = rt._ensure_tool_operations_center()
+    assert center is not None
+    center.set_policy("admin", "rag_query", False, "维护")
+
+    assert rt.compute_effective_tools("chat", None) == ["memory_search"]
+
+
+def test_runtime_disables_tools_when_policy_storage_is_unavailable() -> None:
+    from careercrew_api.runtime import CareerCrewRuntime
+
+    rt = CareerCrewRuntime()
+    rt._initialized = True
+    rt.settings = SimpleNamespace(
+        tools=SimpleNamespace(
+            registry=SimpleNamespace(internal=["rag_query"], mcp=[]),
+        ),
+    )
+
+    class UnavailablePolicy:
+        def enabled_registry(self):
+            raise TimeoutError("database unavailable")
+
+    rt.tool_operations_center = UnavailablePolicy()
+
+    assert rt.compute_effective_tools("chat", None) == []
+
+
 def test_agent_factory_does_not_bind_memory_tools_when_master_is_off() -> None:
     """Case 8 的真实装配接缝：即使调用方未传 allowed，也不能绑定 Memory 工具。"""
     from careercrew_api.runtime import CareerCrewRuntime
