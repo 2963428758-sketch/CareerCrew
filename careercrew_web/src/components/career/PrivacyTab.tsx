@@ -61,4 +61,3 @@ export function PrivacyTab({ onToast }: { onToast: (m: string) => void }) {
     </div>
   )
 }
-

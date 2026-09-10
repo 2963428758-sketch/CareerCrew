@@ -168,4 +168,3 @@
 - [x] **Step 5: Use the local browser to verify default masked sharing, public security headers, paged search, template fallback, and personal funnel metrics.**
 - [x] **Step 6: Scan the worktree for secrets, test accounts, raw tokens, rehearsal artifacts, and temporary migrations; remove only artifacts created by this plan.**
 - [x] **Step 7: Append exact commands/results to the verification report and run a final whole-branch review.**
-

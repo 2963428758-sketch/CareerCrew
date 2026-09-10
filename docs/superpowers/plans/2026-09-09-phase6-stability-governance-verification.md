@@ -1,7 +1,7 @@
 # CareerCrew 第六期全局稳定性治理验收记录
 
-日期：2026-09-10  
-分支：`codex/job-preparation-phase1`  
+日期：2026-09-10
+分支：`codex/job-preparation-phase1`
 范围：第六期 P0 稳定性治理；不包含第七、八期功能，不 push、不 merge。
 
 ## 代码交付

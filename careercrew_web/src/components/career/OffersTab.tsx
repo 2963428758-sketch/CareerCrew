@@ -150,4 +150,3 @@ export function OffersTab({ onToast, opportunities }: { onToast: (m: string) => 
 }
 
 // ── 面试复盘（真实录入 + 模拟报告） ──
-

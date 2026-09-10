@@ -125,4 +125,3 @@ export function FollowupsTab({ onToast, opportunities }: { onToast: (m: string) 
     </div>
   )
 }
-

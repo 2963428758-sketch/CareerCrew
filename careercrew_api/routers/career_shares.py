@@ -175,4 +175,3 @@ def datetime_now_utc():
 
     return datetime.now(UTC)
 
-
