@@ -43,6 +43,20 @@ def test_load_settings_ok(tmp_path: Path, valid_config_data: dict) -> None:
     assert settings.tools.hitl.requires_confirmation == ["submit_application", "accept_offer"]
 
 
+def test_conversation_messages_collection_is_registered_in_deployment_configs() -> None:
+    import yaml
+
+    for name in ("settings.yaml", "settings.docker.yaml"):
+        data = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "config" / name).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert data["vector_store"]["collections"]["conversation_messages"] == (
+            "careercrew_workspace_messages"
+        )
+
+
 def test_missing_field_raises_with_path(tmp_path: Path, valid_config_data: dict) -> None:
     del valid_config_data["vector_store"]["backend"]
     with pytest.raises(SettingsError) as exc:

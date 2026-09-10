@@ -35,6 +35,7 @@ vector_store:
   collections:
     knowledge: careercrew_mm
     episodic_memory: careercrew_episodic_v2
+    conversation_messages: careercrew_workspace_messages
 
 rag:
   retrieval:

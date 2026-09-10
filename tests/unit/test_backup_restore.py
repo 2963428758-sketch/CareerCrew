@@ -12,6 +12,38 @@ import requests
 from scripts import backup_restore
 
 
+def test_backup_defaults_cover_conversation_message_vectors() -> None:
+    assert "careercrew_workspace_messages" in backup_restore.DEFAULT_COLLECTIONS
+
+
+def test_qdrant_snapshots_skip_uncreated_optional_workspace_collection(tmp_path: Path, monkeypatch) -> None:
+    class _MissingResponse:
+        status_code = 404
+
+        def raise_for_status(self) -> None:
+            raise requests.HTTPError("not found")
+
+        def json(self):
+            return {"status": {"error": "not found"}}
+
+    class _Session:
+        def get(self, url: str, **kwargs):
+            del kwargs
+            assert url.endswith("/collections/careercrew_workspace_messages")
+            return _MissingResponse()
+
+        def post(self, *args, **kwargs):
+            raise AssertionError("missing optional collection must not create a snapshot")
+
+    monkeypatch.setattr(backup_restore.requests, "Session", _Session)
+
+    assert backup_restore.create_qdrant_snapshots(
+        "http://qdrant.example:6333",
+        ["careercrew_workspace_messages"],
+        tmp_path,
+    ) == []
+
+
 def _fake_dump(config, output_path: Path) -> None:
     output_path.write_bytes(b"synthetic postgres custom dump")
 

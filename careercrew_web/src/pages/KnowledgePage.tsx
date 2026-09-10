@@ -336,7 +336,7 @@ export default function KnowledgePage() {
 
         {/* 右上角知识库管理抽屉 */}
         {panelOpen && (
-          <aside className="absolute inset-y-0 right-0 z-20 w-[400px] overflow-y-auto border-l border-[var(--border-soft)] bg-workspace p-4">
+          <aside className="absolute inset-y-0 right-0 z-20 w-full max-w-[400px] overflow-y-auto border-l border-[var(--border-soft)] bg-workspace p-4">
             <KnowledgePanel onClose={() => setPanelOpen(false)} />
           </aside>
         )}

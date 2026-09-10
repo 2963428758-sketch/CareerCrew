@@ -6,6 +6,7 @@
 - 知识库集合（careercrew_mm）以 owner_user_id 键为准；
 - 情景记忆集合（careercrew_episodic_v2）以 user_id 键为准（既有设计，见
   migrate_knowledge_visibility.py docstring）；
+- 普通会话向量集合以 owner_user_id 键为准；
 - 本脚本额外提供：snapshot、unowned 计数、方案要求的 JSON 迁移报告、
   迁移后自动复跑 dry-run 校验（changed=0 / conflicts=0 / unowned=0）。
 
@@ -214,10 +215,15 @@ def build_client():
 
 
 def resolve_collections(client, cfg, selection: str | None) -> dict[str, str]:
-    """返回要处理的 {collection_name: key_field}。默认（无 --collection）处理两者。"""
+    """返回要处理的 {collection_name: key_field}。默认处理已配置且存在的集合。"""
     known = {
-        cfg.collections["knowledge"]: "owner_user_id",
-        cfg.collections["episodic_memory"]: "user_id",
+        collection: key_field
+        for name, key_field in (
+            ("knowledge", "owner_user_id"),
+            ("episodic_memory", "user_id"),
+            ("conversation_messages", "owner_user_id"),
+        )
+        if (collection := cfg.collections.get(name))
     }
     if selection:
         if selection not in known:

@@ -2,9 +2,9 @@
 
 The conversation store remains the source of truth for messages.  This module
 only stores the user-created links around those messages: bookmarks, bounded
-branches, and action items.  Search deliberately returns a short snippet and a
-transparent ``text_fallback`` mode until an embedding index is available; it
-never turns a vector/search hit into authorization.
+branches, and action items.  Search may use an optional semantic projection,
+but it always maps hits back to the conversation store and keeps the text
+fallback available when the AI/vector layer is unavailable.
 """
 from __future__ import annotations
 
@@ -75,6 +75,7 @@ class WorkspaceTraceability:
             self._pool = self._db._get_pool()
         self._lock = threading.RLock()
         self._fake = self._pool is None
+        self._semantic_search = None
         self._bookmarks: dict[tuple[str, str], dict] = {}
         self._branches: dict[str, dict] = {}
         self._action_items: dict[str, dict] = {}
@@ -108,10 +109,53 @@ class WorkspaceTraceability:
 
     # ── search ──
 
+    def attach_semantic_search(self, backend) -> None:
+        """Attach an optional semantic backend without changing the DB source of truth."""
+        self._semantic_search = backend
+
+    def list_search_messages(self, owner_id: str) -> list[dict]:
+        """Return all source rows needed to refresh the owner's search projection."""
+        if self._fake:
+            conversations = getattr(self._db, "_conversations", {})
+            rows = []
+            for row in getattr(self._db, "_messages", {}).values():
+                if row.get("user_id") != owner_id:
+                    continue
+                item = dict(row)
+                item["thread_title"] = (
+                    conversations.get(str(row.get("thread_id")), {}).get("title")
+                )
+                rows.append(item)
+            return rows
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.thread_id, m.turn_id, m.user_id, m.role, m.content,
+                       m.status, m.created_at, m.completed_at, m.deleted_at, m.metadata,
+                       c.title AS thread_title
+                FROM messages m
+                JOIN conversations c ON c.id = m.thread_id AND c.user_id = m.user_id
+                WHERE m.user_id=%s
+                ORDER BY m.created_at, m.id
+                """,
+                (owner_id,),
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
     def search(self, query: str, owner_id: str, limit: int = 20) -> dict:
         text = _clean_text(query, field="搜索词", limit=200, required=True)
         if not 1 <= limit <= 50:
             raise ValueError("每页数量必须为 1–50")
+        if self._semantic_search is not None:
+            try:
+                return self._semantic_search.search(text, owner_id, limit)
+            except Exception:
+                # Search is a convenience projection.  A broken model/vector
+                # service must not take down the source-backed workspace.
+                pass
+        return self._text_search(text, owner_id, limit)
+
+    def _text_search(self, text: str, owner_id: str, limit: int) -> dict:
         if self._fake:
             rows = [
                 dict(row)

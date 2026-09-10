@@ -69,3 +69,43 @@ def test_branch_cutoff_and_foreign_message_do_not_leak() -> None:
         pass
     else:
         raise AssertionError("foreign message must be hidden")
+
+
+def test_search_prefers_attached_semantic_backend() -> None:
+    store = ConversationStore(FakeConversationDb())
+    seeded = _seed(store)
+    service = WorkspaceTraceability(store)
+
+    class _SemanticBackend:
+        def search(self, query, owner_id, limit):
+            assert (query, owner_id, limit) == ("RAG", "alice", 7)
+            return {
+                "mode": "embedding",
+                "query": query,
+                "items": [{"message_id": seeded["answer"]["id"]}],
+                "total": 1,
+            }
+
+    service.attach_semantic_search(_SemanticBackend())
+
+    result = service.search("RAG", "alice", 7)
+
+    assert result["mode"] == "embedding"
+    assert result["items"][0]["message_id"] == seeded["answer"]["id"]
+
+
+def test_search_falls_back_when_semantic_backend_is_unavailable() -> None:
+    store = ConversationStore(FakeConversationDb())
+    seeded = _seed(store)
+    service = WorkspaceTraceability(store)
+
+    class _BrokenSemanticBackend:
+        def search(self, query, owner_id, limit):
+            raise RuntimeError("qdrant unavailable")
+
+    service.attach_semantic_search(_BrokenSemanticBackend())
+
+    result = service.search("RAG 面试", "alice")
+
+    assert result["mode"] == "text_fallback"
+    assert result["items"][0]["message_id"] == seeded["question"]["id"]

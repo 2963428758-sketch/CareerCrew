@@ -31,7 +31,12 @@ from careercrew_core.pg_pool import normalize_dsn
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BACKUP_ROOT = ROOT / "data" / "backups"
 DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
-DEFAULT_COLLECTIONS = ("careercrew_mm", "careercrew_episodic_v2")
+DEFAULT_COLLECTIONS = (
+    "careercrew_mm",
+    "careercrew_episodic_v2",
+    "careercrew_workspace_messages",
+)
+OPTIONAL_QDRANT_COLLECTIONS = frozenset({"careercrew_workspace_messages"})
 BACKUP_NAME_RE = re.compile(r"^careercrew-(?P<stamp>\d{8}-\d{6})$")
 RESTORE_NAME_RE = re.compile(r"^careercrew_restore_[a-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -204,6 +209,11 @@ def create_qdrant_snapshots(
             info_response = session.get(
                 f"{base_url}/collections/{encoded}", timeout=timeout
             )
+            if info_response.status_code == 404 and collection in OPTIONAL_QDRANT_COLLECTIONS:
+                # Conversation search creates its projection lazily.  A fresh
+                # deployment with no semantic-search request yet has no data
+                # to snapshot for this optional collection.
+                continue
             info = _qdrant_json(info_response, f"collection info {collection}")
             info_result = info.get("result") or {}
             point_count = info_result.get("points_count")

@@ -29,6 +29,9 @@ DEFAULT_REPORT = ROOT / "docs" / "OPS_RELEASE_REHEARSAL.md"
 DATABASE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 PREFIX_NAME = re.compile(r"^careercrew_rehearsal_[a-z0-9_]+$")
 SYNTHETIC_PAYLOAD = "synthetic-release-rehearsal"
+# Keep this aligned with scripts/validate_migrations.py.  The release drill
+# must exercise the current published migration chain, not an old phase head.
+EXPECTED_HEAD = "0016_workspace_owner_integrity"
 
 
 @dataclass(frozen=True)
@@ -278,7 +281,12 @@ def managed_databases(
             raise CommandError("临时数据库清理失败：" + "; ".join(cleanup_errors))
 
 
-def create_failure_migration_tree(source: Path, workspace: Path) -> Path:
+def create_failure_migration_tree(
+    source: Path,
+    workspace: Path,
+    *,
+    down_revision: str = "0008_prod_hardening",
+) -> Path:
     destination = workspace / "migrations"
     shutil.copytree(source, destination)
     versions = destination / "versions"
@@ -287,7 +295,7 @@ def create_failure_migration_tree(source: Path, workspace: Path) -> Path:
         '"""仅用于隔离发布演练的必然失败迁移。"""\n'
         "from alembic import op\n\n"
         'revision = "9999_rehearsal_bad"\n'
-        'down_revision = "0008_prod_hardening"\n'
+        f'down_revision = "{down_revision}"\n'
         "branch_labels = None\n"
         "depends_on = None\n\n"
         "def upgrade() -> None:\n"
@@ -384,7 +392,7 @@ def run_rehearsal(
                 fresh,
                 pg,
                 databases["fresh"],
-                "0008_prod_hardening",
+                EXPECTED_HEAD,
             )
         )
 
@@ -410,7 +418,7 @@ def run_rehearsal(
                 base.returncode == 0
                 and head.returncode == 0
                 and mid == "0002_long_term_memory_records"
-                and final == "0008_prod_hardening",
+                and final == EXPECTED_HEAD,
                 f"mid={mid}, final={final}",
             )
         )
@@ -427,7 +435,9 @@ def run_rehearsal(
         )
         with tempfile.TemporaryDirectory(prefix=f"{run_prefix}_migrations_") as raw_workspace:
             workspace = Path(raw_workspace)
-            create_failure_migration_tree(ROOT / "migrations", workspace)
+            create_failure_migration_tree(
+                ROOT / "migrations", workspace, down_revision=EXPECTED_HEAD,
+            )
             temp_ini = workspace / "alembic.ini"
             create_temporary_alembic_config(
                 ROOT / "alembic.ini",
@@ -437,7 +447,7 @@ def run_rehearsal(
             failed = alembic_upgrade(
                 config,
                 databases["failure"],
-                "head",
+                "9999_rehearsal_bad",
                 ini_path=temp_ini,
             )
             stuck = pg.execute(
@@ -456,7 +466,7 @@ def run_rehearsal(
                 before_process.returncode == 0
                 and failed.returncode != 0
                 and stuck == before == "0007_version_attribution_shares"
-                and recovered == "0008_prod_hardening",
+                and recovered == EXPECTED_HEAD,
                 f"before={before}, after_failure={stuck}, recovered={recovered}",
             )
         )
@@ -500,11 +510,12 @@ def render_report(
         for item in results
     )
     passed = all(item.passed for item in results) and bool(results)
-    return f"""# CareerCrew 第五期发布演练
+    return f"""# CareerCrew 发布演练
 
 - 执行时间：{started_at.astimezone(UTC).isoformat(timespec='seconds')}
 - 运行前缀：`{run_prefix}`
 - PostgreSQL 容器：`{container}`
+- 迁移 head：`{EXPECTED_HEAD}`
 - 受保护源数据库：`{source_database}`（仅从 DSN 派生名称，未读取或修改）
 - 用时：{duration_seconds:.2f} 秒
 - 结论：{'全部通过' if passed else '存在失败项'}

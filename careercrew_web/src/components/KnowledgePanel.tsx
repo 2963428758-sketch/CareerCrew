@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
-import { Upload, BookOpen, Globe, Trash2, X } from "lucide-react"
+import { BookOpen, ChevronDown, Globe, RefreshCw, Settings2, Trash2, Upload, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -25,6 +25,43 @@ interface KnowledgeDoc {
 interface KnowledgeStatus {
   points: number
   docs: KnowledgeDoc[]
+}
+
+interface KnowledgeGovernanceChunk {
+  id: string
+  ordinal: number
+  page?: number | null
+  text?: string
+  index_status?: string
+}
+
+interface KnowledgeGovernanceVersion {
+  id: string
+  version_number: number
+  status: string
+  expires_at?: string | null
+  credibility?: number | null
+  indexed_at?: string | null
+  citation_hits?: number
+  chunks?: KnowledgeGovernanceChunk[]
+}
+
+interface KnowledgeGovernanceDoc {
+  id: string
+  name: string
+  category?: string
+  visibility?: "private" | "public"
+  status: string
+  active_version_id?: string | null
+  expires_at?: string | null
+  credibility?: number | null
+  citation_hits?: number
+  versions: KnowledgeGovernanceVersion[]
+}
+
+interface KnowledgeGovernanceResponse {
+  items: KnowledgeGovernanceDoc[]
+  total: number
 }
 
 interface UploadJob {
@@ -53,6 +90,15 @@ const STAGE_CEILING: Record<string, number> = {
   store: 95,
 }
 
+const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
+  draft: "草稿",
+  indexing: "索引中",
+  active: "生效中",
+  archived: "已归档",
+  failed: "索引失败",
+  expired: "已过期",
+}
+
 /** 知识库管理面板（上传 / 列表 / 删除），可嵌入知识库问答页右上角。 */
 export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
@@ -67,6 +113,11 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
   const [uploadError, setUploadError] = useState("")
   const [job, setJob] = useState<UploadJob | null>(null)
   const [displayPct, setDisplayPct] = useState(0)
+  const [governanceOpen, setGovernanceOpen] = useState(false)
+  const [governanceDocs, setGovernanceDocs] = useState<KnowledgeGovernanceDoc[] | null>(null)
+  const [governanceLoading, setGovernanceLoading] = useState(false)
+  const [governanceError, setGovernanceError] = useState("")
+  const [governanceBusy, setGovernanceBusy] = useState("")
 
   const uploading = !!job && (job.status === "queued" || job.status === "running")
 
@@ -81,6 +132,62 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
       .then((d) => setStatus(d))
       .catch((e) => setError(networkErrorText(e, "网络连接失败，请检查网络后重试")))
       .finally(() => setLoading(false))
+  }
+
+  const loadGovernance = async () => {
+    setGovernanceLoading(true)
+    setGovernanceError("")
+    try {
+      const resp = await apiFetch("/api/knowledge/governance/documents")
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "加载知识治理失败"))
+      const body = await resp.json() as KnowledgeGovernanceResponse
+      setGovernanceDocs(Array.isArray(body.items) ? body.items : [])
+    } catch (e) {
+      setGovernanceError(networkErrorText(e, "网络连接失败，请检查网络后重试"))
+    } finally {
+      setGovernanceLoading(false)
+    }
+  }
+
+  const toggleGovernance = () => {
+    const nextOpen = !governanceOpen
+    setGovernanceOpen(nextOpen)
+    if (nextOpen && governanceDocs === null) void loadGovernance()
+  }
+
+  const saveGovernance = async (doc: KnowledgeGovernanceDoc, values: { expires_at: string | null; credibility: number }) => {
+    setGovernanceBusy(`save:${doc.id}`)
+    setGovernanceError("")
+    try {
+      const resp = await apiFetch(`/api/knowledge/governance/documents/${encodeURIComponent(doc.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      })
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "保存知识治理设置失败"))
+      await loadGovernance()
+    } catch (e) {
+      setGovernanceError(networkErrorText(e, "保存失败，请稍后重试"))
+    } finally {
+      setGovernanceBusy("")
+    }
+  }
+
+  const reindexGovernance = async (doc: KnowledgeGovernanceDoc, version: KnowledgeGovernanceVersion) => {
+    setGovernanceBusy(`reindex:${doc.id}:${version.id}`)
+    setGovernanceError("")
+    try {
+      const resp = await apiFetch(
+        `/api/knowledge/governance/documents/${encodeURIComponent(doc.id)}/versions/${encodeURIComponent(version.id)}/reindex`,
+        { method: "POST" },
+      )
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "重新索引失败"))
+      await loadGovernance()
+    } catch (e) {
+      setGovernanceError(networkErrorText(e, "重新索引失败，请稍后重试"))
+    } finally {
+      setGovernanceBusy("")
+    }
   }
 
   useEffect(() => { refresh() }, [])
@@ -277,6 +384,62 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
 
       <Card>
         <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-[13px] font-medium">知识治理</CardTitle>
+              <p className="mt-1 text-[12px] font-normal text-ink-faint">
+                管理文档版本、分块索引、失效日期、可信度和引用命中；与传统上传列表保持兼容。
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-11 gap-1.5"
+              onClick={toggleGovernance}
+              aria-expanded={governanceOpen}
+              aria-controls="knowledge-governance-panel"
+            >
+              <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+              {governanceOpen ? "收起知识治理" : "打开知识治理"}
+            </Button>
+          </div>
+        </CardHeader>
+        {governanceOpen && (
+          <CardContent id="knowledge-governance-panel" className="space-y-3">
+            {governanceLoading ? (
+              <Skeleton className="h-32 w-full" />
+            ) : governanceError ? (
+              <div className="space-y-2 rounded-[8px] border border-destructive/30 bg-destructive/5 p-3">
+                <p className="text-[13px] text-destructive">知识治理加载失败：{governanceError}</p>
+                <Button type="button" variant="outline" size="sm" className="min-h-11 gap-1.5" onClick={() => void loadGovernance()}>
+                  <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                  重试知识治理
+                </Button>
+              </div>
+            ) : governanceDocs && governanceDocs.length === 0 ? (
+              <p className="rounded-[8px] border border-dashed border-[var(--border-normal)] px-3 py-6 text-center text-[13px] text-ink-faint">
+                暂无进入治理生命周期的文档。传统上传文档不会自动伪装成治理文档。
+              </p>
+            ) : governanceDocs ? (
+              <div className="space-y-2">
+                {governanceDocs.map((doc) => (
+                  <KnowledgeGovernanceRow
+                    key={doc.id}
+                    doc={doc}
+                    busy={governanceBusy}
+                    onSave={saveGovernance}
+                    onReindex={reindexGovernance}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
           <CardTitle className="text-[13px] font-medium">
             库内文档
             {status && <span className="ml-1 font-normal text-ink-faint">（{status.docs.length} 份）</span>}
@@ -387,5 +550,134 @@ function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
         )}
       </div>
     </div>
+  )
+}
+
+function KnowledgeGovernanceRow({
+  doc,
+  busy,
+  onSave,
+  onReindex,
+}: {
+  doc: KnowledgeGovernanceDoc
+  busy: string
+  onSave: (doc: KnowledgeGovernanceDoc, values: { expires_at: string | null; credibility: number }) => Promise<void>
+  onReindex: (doc: KnowledgeGovernanceDoc, version: KnowledgeGovernanceVersion) => Promise<void>
+}) {
+  const [expiresAt, setExpiresAt] = useState(doc.expires_at?.slice(0, 10) ?? "")
+  const [credibility, setCredibility] = useState(String(doc.credibility ?? 1))
+  const parsedCredibility = Number(credibility)
+  const validCredibility = Number.isFinite(parsedCredibility) && parsedCredibility >= 0 && parsedCredibility <= 1
+  const saving = busy === `save:${doc.id}`
+  const versions = doc.versions ?? []
+
+  useEffect(() => {
+    setExpiresAt(doc.expires_at?.slice(0, 10) ?? "")
+    setCredibility(String(doc.credibility ?? 1))
+  }, [doc.credibility, doc.expires_at, doc.id])
+
+  return (
+    <article className="rounded-[8px] border border-[var(--border-soft)] bg-workspace p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex min-w-0 items-start gap-2">
+          <BookOpen className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="truncate text-[13px] font-medium text-ink" title={doc.name}>{doc.name}</p>
+            <p className="mt-1 text-[11px] text-ink-faint">
+              {GOVERNANCE_STATUS_LABELS[doc.status] ?? doc.status} · {versions.length} 个版本 · 引用命中 {doc.citation_hits ?? 0}
+              {doc.category ? ` · ${doc.category}` : ""}
+            </p>
+          </div>
+        </div>
+        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+          {doc.visibility === "public" ? "公共" : "私有"}
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+        <label className="space-y-1 text-[11px] text-ink-soft">
+          <span className="block">可信度（0-1）</span>
+          <input
+            type="number"
+            min="0"
+            max="1"
+            step="0.1"
+            value={credibility}
+            onChange={(event) => setCredibility(event.target.value)}
+            aria-label={`可信度 ${doc.name}`}
+            className="min-h-11 w-full rounded-[7px] border border-input bg-card px-2.5 text-[13px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          />
+        </label>
+        <label className="space-y-1 text-[11px] text-ink-soft">
+          <span className="block">失效日期（留空不修改）</span>
+          <input
+            type="date"
+            value={expiresAt}
+            onChange={(event) => setExpiresAt(event.target.value)}
+            aria-label={`失效日期 ${doc.name}`}
+            className="min-h-11 w-full rounded-[7px] border border-input bg-card px-2.5 text-[13px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          />
+        </label>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="min-h-11 gap-1.5"
+          onClick={() => void onSave(doc, { expires_at: expiresAt || null, credibility: parsedCredibility })}
+          disabled={busy !== "" || !validCredibility}
+          aria-label={`保存治理设置 ${doc.name}`}
+        >
+          <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+          {saving ? "保存中…" : "保存设置"}
+        </Button>
+      </div>
+
+      <details className="mt-3 border-t border-[var(--border-soft)] pt-2.5">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-primary">
+          <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          查看版本与分块
+        </summary>
+        <div className="mt-2 space-y-2">
+          {versions.length === 0 ? (
+            <p className="text-[12px] text-ink-faint">暂无版本记录</p>
+          ) : versions.map((version) => {
+            const reindexing = busy === `reindex:${doc.id}:${version.id}`
+            const chunks = version.chunks ?? []
+            return (
+              <div key={version.id} className="rounded-[7px] bg-surface-2 p-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[12px] font-medium text-ink">
+                    v{version.version_number} · {GOVERNANCE_STATUS_LABELS[version.status] ?? version.status}
+                    <span className="ml-1 font-normal text-ink-faint">· {chunks.length} 个分块 · 引用命中 {version.citation_hits ?? 0}</span>
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="min-h-11 gap-1.5"
+                    onClick={() => void onReindex(doc, version)}
+                    disabled={busy !== ""}
+                    aria-label={`重新索引 v${version.version_number}`}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${reindexing ? "animate-spin" : ""}`} aria-hidden="true" />
+                    {reindexing ? "索引中…" : "重新索引"}
+                  </Button>
+                </div>
+                {chunks.length > 0 && (
+                  <div className="mt-2 space-y-1 border-t border-[var(--border-soft)] pt-2">
+                    {chunks.slice(0, 2).map((chunk) => (
+                      <p key={chunk.id} className="line-clamp-2 text-[12px] leading-relaxed text-ink-faint">
+                        {chunk.page ? `第 ${chunk.page} 页 · ` : ""}{chunk.text || "（空分块）"}
+                      </p>
+                    ))}
+                    {chunks.length > 2 && <p className="text-[11px] text-ink-faint">还有 {chunks.length - 2} 个分块，已折叠预览</p>}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </details>
+    </article>
   )
 }

@@ -1,6 +1,6 @@
 # Phase 7 知识与智能质量闭环验收
 
-更新时间：2026-09-10
+更新时间：2026-09-11
 
 ## 验收范围
 
@@ -10,7 +10,7 @@
 
 | 能力 | 结果 | 证据 |
 |---|---|---|
-| 真实模型评测 | 已实现严格 --require-real、固定 JSONL 数据集、模型/Prompt 实验元数据、回归门禁 | scripts/eval_runner.py、data/eval/README.md、tests/unit/test_eval_runner.py |
+| 真实模型评测 | 已实现严格 --require-real、固定 JSONL 数据集、模型/Prompt 实验元数据、回归门禁；受保护真实调用待 CI/预发布环境 | scripts/eval_runner.py、data/eval/README.md、tests/unit/test_eval_runner.py |
 | 长期记忆纠错 | 已实现确认、修改、暂时忽略、过期、冲突合并、版本冲突和历史事件 | careercrew_core/memory/governance.py、careercrew_api/routers/memory_governance.py |
 | 知识内容治理 | 已实现文档版本、SHA-256 重复检测、分块预览、失效日期、可信度、重新索引状态和引用命中统计 | careercrew_core/knowledge/governance.py、careercrew_api/routers/knowledge_governance.py |
 | 成本治理 | 已实现不可变 Token/费用事件、日/月预算、并发预留、未知价格 fail-closed 和降级建议 | careercrew_core/usage/ledger.py、careercrew_api/routers/usage.py |
@@ -22,17 +22,18 @@
 
 - Phase 7 聚焦测试：记忆、知识、用量、预算、指标、工具及 API 均通过。
 - scripts/validate_migrations.py --static：通过，当前 head 为 0016_workspace_owner_integrity。
-- 前端完整回归：51 个测试文件、204 个测试通过；Workspace 工作台测试 3 个通过。
-- 前端 npm run lint：退出码 0；保留既有 hook/Fast Refresh/MemoryPanel 警告。
+- 前端完整回归：51 个测试文件、212 个测试通过；Workspace 工作台测试 3 个通过。
+- 前端 npm run lint：退出码 0；保留既有 hook/Fast Refresh warning，无 error。
 - 前端 npm run build：退出码 0。
-- git diff --check：退出码 0；仅有 Windows 换行提示。
-- 后端全量测试的最终结果以本次执行记录为准；若 PostgreSQL 未启动，test_apikey_settings_crud_lifecycle 会因连接 localhost:5432 超时而阻塞，不能解释为代码失败。
+- 后端 `python -m pytest tests -q`：退出码 0；仅有本地 Qdrant payload index warning。
+- `scripts/release_rehearsal.py`：退出码 0；临时库 A/B/C/D 四路径通过，当前 migration head 为 0016。
+- 本地 Docker PostgreSQL/Qdrant + BGE-M3 语义冒烟通过；见 [跨会话语义搜索验收记录](2026-09-10-cross-session-semantic-search-verification.md)。
 
 ## 未能在本机完成的验收
 
-1. 真实模型评测：本机没有受保护的供应商凭据/服务，不能把离线 fake adapter 结果当作真实模型质量结论。发布流水线必须使用 --require-real --fail-on-regression。
-2. PostgreSQL/Qdrant live schema：本次不触碰开发数据；没有运行中的 PostgreSQL/Qdrant 服务，因此未执行真实升级、Qdrant 重索引或恢复演练。
-3. 浏览器登录验收：本机当前没有 :8000、:5175、:5432 监听服务，无法进行带真实认证状态的页面验收。
+1. 真实模型评测：本机没有受保护的供应商凭据/发布数据集环境，不能把离线 fake adapter 或本地语义冒烟当作真实模型质量结论。发布流水线必须使用 `--require-real --fail-on-regression`。
+2. 生产 PostgreSQL/Qdrant：本轮已完成本地 Docker/临时库演练，但生产库迁移、重索引、容量、故障切换和恢复仍需在发布环境执行。
+3. 生产备份恢复：脚本和临时合成恢复演练通过；真实生产备份介质的校验、保留周期和跨节点恢复仍需运维环境执行。
 
 ## 安全复核结论
 
@@ -43,4 +44,4 @@
 
 ## 发布判定
 
-第七期代码与离线/聚焦验收可以进入待发布状态；真实模型、live PostgreSQL/Qdrant、浏览器和恢复演练是发布前的环境门禁，不在本机证据中宣称已通过。
+第七期代码、自动化测试、本地 Docker 冒烟和治理 UI 已达到待发布状态；受保护真实模型质量、生产 PostgreSQL/Qdrant、生产备份介质和运维恢复是未完成的发布门禁，不在本报告中宣称已通过。

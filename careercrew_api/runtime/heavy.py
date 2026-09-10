@@ -74,6 +74,7 @@ class HeavyInitMixin:
         self.memory_router = None     # LLM 记忆路由
         self.memory_injector = None   # 自动注入
         self._episodic_vector_store = None
+        self._workspace_semantic_search = None
 
     # ── 重组件初始化 ──
 
@@ -174,6 +175,48 @@ class HeavyInitMixin:
                     f"AI 服务初始化失败，请重启后端后重试（{type(e).__name__}: {e}）"
                 ) from e
 
+    def _ensure_workspace_semantic_search(self, *, message_loader):
+        """Initialize only the embedding/vector projection used by workspace search.
+
+        Workspace search must remain usable when the LLM or reranker is not
+        configured.  The full ``_ensure_heavy`` path is intentionally not
+        called here.
+        """
+        self._ensure_stores()
+        if self._workspace_semantic_search is not None:
+            return self._workspace_semantic_search
+        with self._lock:
+            if self._workspace_semantic_search is not None:
+                return self._workspace_semantic_search
+            if self.settings is None:
+                raise RuntimeInitError("语义搜索配置尚未就绪")
+            from careercrew_ai.embedding import create_embedding
+            from careercrew_ai.vector_store import create_vector_store
+            from careercrew_core.workspace.semantic_search import (
+                ConversationSemanticSearch,
+            )
+
+            embedding = self.embedding
+            if embedding is None:
+                embedding = create_embedding(self.settings)
+                # Reuse the local model if the full AI stack is initialized
+                # later; loading BGE-M3 twice is prohibitively expensive.
+                self.embedding = embedding
+            vector_cfg = self.settings.vector_store
+            collection = (getattr(vector_cfg, "collections", {}) or {}).get(
+                "conversation_messages", "careercrew_workspace_messages"
+            )
+            if vector_cfg.backend == "qdrant":
+                from careercrew_ai.vector_store.qdrant_store import QdrantStore
+
+                vector_store = QdrantStore(self.settings, collection_name=collection)
+            else:
+                vector_store = create_vector_store(self.settings)
+            self._workspace_semantic_search = ConversationSemanticSearch(
+                embedding, vector_store, message_loader,
+            )
+            return self._workspace_semantic_search
+
     def _init_heavy_locked(self) -> None:
         """重组件装配本体（调用方持有 self._lock）。仅装配 AI 栈，DB 存储层复用
         _ensure_stores 的产物，避免同一批连接初始化两遍。"""
@@ -190,8 +233,8 @@ class HeavyInitMixin:
         configure_langsmith(settings)  # 必须先于 create_llm/任何 LLM 调用
 
         try:
-            embedding = create_embedding(settings)
-            store = create_vector_store(settings)
+            embedding = self.embedding or create_embedding(settings)
+            store = self.store or create_vector_store(settings)
         except Exception as e:
             if "DataDirLocked" in type(e).__name__ or "DataDirLocked" in str(e):
                 raise RuntimeInitError(

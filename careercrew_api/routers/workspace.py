@@ -134,8 +134,19 @@ def search_workspace(
     limit: int = Query(20, ge=1, le=50),
     rt: CareerCrewRuntime = Depends(get_runtime_dep),
 ) -> dict:
+    service = _workspace(rt)
+    ensure_semantic = getattr(rt, "_ensure_workspace_semantic_search", None)
+    if callable(ensure_semantic):
+        try:
+            semantic = ensure_semantic(message_loader=service.list_search_messages)
+        except Exception:
+            # The source-backed search remains the safe availability fallback
+            # when the local model or Qdrant is unavailable.
+            semantic = None
+        if semantic is not None:
+            service.attach_semantic_search(semantic)
     try:
-        return _workspace(rt).search(q, user["id"], limit)
+        return service.search(q, user["id"], limit)
     except ValueError as exc:
         raise _bad_request(exc) from exc
 

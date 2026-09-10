@@ -81,6 +81,11 @@ class QdrantStore(BaseVectorStore):
                 multivector_config=MultiVectorConfig(comparator=MultiVectorComparator.MAX_SIM),
             )
 
+        payload_fields = (
+            "doc", "type", "page", "source", "category", "user_id",
+            "owner_user_id", "visibility", "image_path", "record_type",
+            "message_id", "thread_id", "role", "status",
+        )
         if self._client.collection_exists(self._collection):
             # 存量集合补加 text_colbert（旧点无该向量，需重新摄取才有精排数据）
             if colbert_params:
@@ -90,17 +95,19 @@ class QdrantStore(BaseVectorStore):
                     )
                 except Exception:
                     pass  # 已存在/版本不支持等，忽略
-            return
-        vectors_config: dict[str, VectorParams] = {
-            "text_dense": VectorParams(size=self._dim, distance=Distance.COSINE),
-            **colbert_params,
-        }
-        self._client.create_collection(
-            collection_name=self._collection,
-            vectors_config=vectors_config,
-            sparse_vectors_config={"text_sparse": SparseVectorParams()},
-        )
-        for field in ("doc", "type", "page", "source", "category", "user_id", "owner_user_id", "visibility", "image_path"):
+        else:
+            vectors_config: dict[str, VectorParams] = {
+                "text_dense": VectorParams(size=self._dim, distance=Distance.COSINE),
+                **colbert_params,
+            }
+            self._client.create_collection(
+                collection_name=self._collection,
+                vectors_config=vectors_config,
+                sparse_vectors_config={"text_sparse": SparseVectorParams()},
+            )
+        # Also backfill indexes for existing collections.  This keeps newly
+        # introduced owner/type filters efficient without changing points.
+        for field in payload_fields:
             try:
                 self._client.create_payload_index(
                     self._collection, field_name=field,

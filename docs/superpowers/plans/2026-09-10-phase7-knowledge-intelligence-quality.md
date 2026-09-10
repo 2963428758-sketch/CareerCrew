@@ -36,12 +36,12 @@
 - Consumes the fixed JSONL case dataset and current `careercrew_ai.llm.create_llm` / runtime adapter.
 - Produces validated case loading, actual model collection for supported case kinds, experiment metadata, per-case consult bounds, normalized bad-case scoring, `--require-real` failure semantics, and a non-swallowing release/nightly CI split.
 
-- [ ] Write tests for schema validation, real adapter injection, metadata, per-case bounds, bad-case normalization, and strict-vs-optional CLI exit codes.
-- [ ] Run the focused tests red.
-- [ ] Implement the adapter against the existing production LLM/Agent boundary; keep a fake adapter injectable in unit tests.
-- [ ] Add an immutable dataset README/version contract and reject malformed or duplicate case IDs.
-- [ ] Update CI so optional nightly observation is explicitly `--allow-skip`, while protected release/manual evaluation uses `--require-real --fail-on-regression` and uploads its report.
-- [ ] Run focused tests and offline gate; record the real-model environment limitation if no protected key is available locally.
+- [x] Write tests for schema validation, real adapter injection, metadata, per-case bounds, bad-case normalization, and strict-vs-optional CLI exit codes.
+- [x] Run the focused tests red.
+- [x] Implement the adapter against the existing production LLM/Agent boundary; keep a fake adapter injectable in unit tests.
+- [x] Add an immutable dataset README/version contract and reject malformed or duplicate case IDs.
+- [x] Update CI so optional nightly observation is explicitly `--allow-skip`, while protected release/manual evaluation uses `--require-real --fail-on-regression` and uploads its report.
+- [x] Run focused tests and offline gate; record the real-model environment limitation if no protected key is available locally.
 
 ### Task 2: Add migration 0009 and long-term-memory correction workflow
 
@@ -57,10 +57,10 @@
 - Produces `PATCH /api/memory/records/{id}` actions `confirm|edit|ignore|expire`, `POST .../{id}/merge`, `GET .../{id}/history`, status filtering, optimistic locking, immutable events, and owner-scoped responses.
 - Migration adds `memory_record_events` and any minimal knowledge/usage tables that later tasks explicitly consume; it does not alter 0008.
 
-- [ ] Test owner isolation and 409 version conflicts first.
-- [ ] Add action state transitions, sources/relations snapshots, and history ordering.
-- [ ] Ensure default memory search excludes ignored/expired/superseded/deleted records.
-- [ ] Add UI controls in an isolated MemoryPanel slice only after API acceptance; cover success, conflict, and history rendering.
+- [x] Test owner isolation and 409 version conflicts first.
+- [x] Add action state transitions, sources/relations snapshots, and history ordering.
+- [x] Ensure default memory search excludes ignored/expired/superseded/deleted records.
+- [x] Add UI controls in an isolated MemoryPanel slice only after API acceptance; cover success, conflict, and history rendering.
 
 ### Task 3: Add knowledge-document version and indexing governance
 
@@ -75,10 +75,10 @@
 **Interfaces:**
 - Produces owner-scoped document/version/chunk details, duplicate detection by raw SHA-256, expiry/credibility updates, whole-version reindex jobs with atomic active switch, and citation-hit counters.
 
-- [ ] Test duplicate privacy, version chain, chunk preview, expiry filtering, reindex failure preservation, and citation idempotency.
-- [ ] Implement relational governance state with Qdrant references rather than replacing current retrieval in one step.
-- [ ] Add the smallest UI that exposes version/status/expiry/credibility/chunks/reindex progress without changing current upload behavior.
-- [ ] Run existing knowledge visibility/owner tests plus new governance tests.
+- [x] Test duplicate privacy, version chain, chunk preview, expiry filtering, reindex failure preservation, and citation idempotency.
+- [x] Implement relational governance state with Qdrant references rather than replacing current retrieval in one step.
+- [x] Add the smallest UI that exposes version/status/expiry/credibility/chunks/reindex progress without changing current upload behavior.
+- [x] Run existing knowledge visibility/owner tests plus new governance tests.
 
 ### Task 4: Add usage ledger, budgets, tool governance, and Prometheus metrics
 
@@ -94,10 +94,10 @@
 **Interfaces:**
 - Produces immutable token/cost events, user/module summaries, daily/monthly budgets, conservative reservation and explicit downgrade reasons, plus `/metrics` with HTTP/LLM/RAG/upload/tool counters and latency histograms.
 
-- [ ] Test pricing-version math, unknown prices, owner scope, budget boundary/concurrency behavior, and sensitive-label rejection.
-- [ ] Integrate usage recording at one stable Agent/model boundary before expanding to every route.
-- [ ] Expose admin-only policy changes and user-scoped summaries; no raw event body in responses.
-- [ ] Add low-cardinality Prometheus metrics and scrape smoke tests.
+- [x] Test pricing-version math, unknown prices, owner scope, budget boundary/concurrency behavior, and sensitive-label rejection.
+- [x] Integrate usage recording at one stable Agent/model boundary before expanding to every route.
+- [x] Expose admin-only policy changes and user-scoped summaries; no raw event body in responses.
+- [x] Add low-cardinality Prometheus metrics and scrape smoke tests.
 
 ### Task 5: Phase 7 integration, review, and release evidence
 
@@ -106,11 +106,11 @@
 - Modify: `docs/CAREER_PRODUCT_ROADMAP.md` only after implementation evidence exists
 - Create focused test/report artifacts as required by the SDD ledger
 
-- [ ] Run focused suites for every task, then the full backend suite and frontend lint/test/build if UI changed.
-- [ ] Run static migration validation and verify the new head/schema on an isolated test database when available.
-- [ ] Review sensitive logging/tenant boundaries and manually inspect API schemas.
+- [x] Run focused suites for every task, then the full backend suite and frontend lint/test/build if UI changed.
+- [x] Run static migration validation and verify the new head/schema on an isolated test database when available.
+- [x] Review sensitive logging/tenant boundaries and manually inspect API schemas.
 - [ ] Dispatch a final broad code review; resolve or explicitly park findings with ledger rulings.
-- [ ] Write a verification report that clearly marks local real-model evaluation as blocked when protected external credentials/services are unavailable.
+- [x] Write a verification report that clearly marks local real-model evaluation as blocked when protected external credentials/services are unavailable.
 
 ---
 

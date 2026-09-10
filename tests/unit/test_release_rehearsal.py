@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts import release_rehearsal as rehearsal
+from scripts import validate_migrations
 
 
 def test_database_config_parses_encoded_credentials_and_builds_target_url() -> None:
@@ -158,6 +159,28 @@ def test_failure_migration_is_created_only_in_temporary_copy(tmp_path: Path) -> 
     )
     assert (copied_versions / "9999_rehearsal_bad.py").is_file()
     assert sorted(path.name for path in versions.iterdir()) == ["0008.py"]
+
+
+def test_rehearsal_head_matches_migration_validator() -> None:
+    assert rehearsal.EXPECTED_HEAD == validate_migrations.EXPECTED_HEAD
+
+
+def test_failure_migration_can_be_anchored_to_current_head(tmp_path: Path) -> None:
+    source = tmp_path / "source-migrations"
+    versions = source / "versions"
+    versions.mkdir(parents=True)
+    (source / "env.py").write_text("# alembic environment\n", encoding="utf-8")
+    (versions / "0016.py").write_text(
+        'revision = "0016_workspace_owner_integrity"\n', encoding="utf-8"
+    )
+    workspace = tmp_path / "workspace"
+
+    copied_versions = rehearsal.create_failure_migration_tree(
+        source, workspace, down_revision=rehearsal.EXPECTED_HEAD,
+    )
+
+    bad = (copied_versions / "9999_rehearsal_bad.py").read_text(encoding="utf-8")
+    assert 'down_revision = "0016_workspace_owner_integrity"' in bad
 
 
 def test_report_records_real_restore_probe_and_environment() -> None:

@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { MemoryPanel } from "@/components/data/MemoryPanel"
 
 const apiFetch = vi.hoisted(() => vi.fn())
 vi.mock("@/lib/auth", () => ({ apiFetch }))
 
 describe("MemoryPanel", () => {
+  beforeEach(() => {
+    apiFetch.mockReset()
+  })
+
   it("按事实和关键事件分组，且通过游标继续加载", async () => {
     apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
       items: [
@@ -51,5 +55,122 @@ describe("MemoryPanel", () => {
 
     expect(await screen.findByText(/记忆服务返回了网页，请刷新页面/))
       .toBeTruthy()
+  })
+
+  it("当前记忆为空时仍能打开已忽略或过期记录筛选", async () => {
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [], next_cursor: null, total: 0,
+    }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [{ kind: "fact", id: "ignored-memory", type: "profile", status: "ignored", description: "暂时忽略的目标" }],
+      next_cursor: null, total: 1,
+    }), { status: 200 }))
+
+    render(<MemoryPanel />)
+    fireEvent.click(await screen.findByRole("button", { name: "查看已忽略/过期" }))
+
+    await waitFor(() => expect(screen.getByText("暂时忽略的目标")).toBeTruthy())
+    expect(String(apiFetch.mock.calls[1][0])).toContain("status=all")
+  })
+
+  it("对有版本的记忆提供确认、修改、历史和合并入口", async () => {
+    const firstId = "550e8400-e29b-41d4-a716-446655440001"
+    const secondId = "550e8400-e29b-41d4-a716-446655440002"
+    const rows = [
+      { kind: "fact", id: firstId, type: "profile", version: 2, status: "active", description: "目标岗位是 AI 工程师", content: "目标岗位是 AI 工程师" },
+      { kind: "fact", id: secondId, type: "profile", version: 1, status: "active", description: "偏好远程办公", content: "偏好远程办公" },
+    ]
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ items: rows, next_cursor: null, total: 2 }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ record: { ...rows[0], version: 3 }, status: "updated" }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ items: rows, next_cursor: null, total: 2 }), { status: 200 }))
+
+    render(<MemoryPanel />)
+
+    expect((await screen.findAllByRole("button", { name: "确认正确" })).length).toBe(2)
+    fireEvent.click(screen.getAllByRole("button", { name: "确认正确" })[0])
+    await waitFor(() => expect(apiFetch.mock.calls.some(([url, init]) =>
+      String(url).includes(`/api/memory/records/${firstId}`)
+      && (init as RequestInit).method === "PATCH"
+      && JSON.parse(String((init as RequestInit).body)).action === "confirm"
+      && JSON.parse(String((init as RequestInit).body)).row_version === 2,
+    )).toBe(true))
+  })
+
+  it("打开治理历史并在版本冲突时提示刷新", async () => {
+    const id = "550e8400-e29b-41d4-a716-446655440003"
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [{ kind: "fact", id, type: "profile", version: 1, status: "active", description: "目标岗位", content: "目标岗位" }],
+      next_cursor: null, total: 1,
+    }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      record: { id, version: 1 }, events: [{ action: "edit", created_at: "2026-09-10T10:00:00Z" }],
+    }), { status: 200 }))
+
+    render(<MemoryPanel />)
+    fireEvent.click(await screen.findByRole("button", { name: "查看变更历史" }))
+    expect(await screen.findByText(/修改/)).toBeTruthy()
+  })
+
+  it("支持内联修改和忽略治理动作", async () => {
+    const id = "550e8400-e29b-41d4-a716-446655440004"
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [{ kind: "fact", id, type: "profile", version: 4, status: "active", description: "旧目标", content: "旧目标" }],
+      next_cursor: null, total: 1,
+    }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [{ kind: "fact", id, type: "profile", version: 5, status: "active", description: "新目标", content: "新目标" }],
+      next_cursor: null, total: 1,
+    }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ items: [], next_cursor: null, total: 0 }), { status: 200 }))
+
+    render(<MemoryPanel />)
+    fireEvent.click(await screen.findByRole("button", { name: "修改" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "修改后的记忆" }), { target: { value: "新目标" } })
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }))
+
+    await waitFor(() => expect(apiFetch.mock.calls.some(([url, init]) =>
+      String(url).includes(`/api/memory/records/${id}`)
+      && (init as RequestInit).method === "PATCH"
+      && JSON.parse(String((init as RequestInit).body)).action === "edit"
+      && JSON.parse(String((init as RequestInit).body)).display_text === "新目标",
+    )).toBe(true))
+
+    fireEvent.click(await screen.findByRole("button", { name: "暂时忽略" }))
+    await waitFor(() => expect(apiFetch.mock.calls.some(([url, init]) =>
+      String(url).includes(`/api/memory/records/${id}`)
+      && (init as RequestInit).method === "PATCH"
+      && JSON.parse(String((init as RequestInit).body)).action === "ignore"
+      && JSON.parse(String((init as RequestInit).body)).row_version === 5,
+    )).toBe(true))
+  })
+
+  it("合并时携带两个版本号，409 时提示刷新", async () => {
+    const firstId = "550e8400-e29b-41d4-a716-446655440005"
+    const secondId = "550e8400-e29b-41d4-a716-446655440006"
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [
+        { kind: "fact", id: firstId, type: "profile", version: 2, status: "active", description: "第一条" },
+        { kind: "fact", id: secondId, type: "profile", version: 3, status: "active", description: "第二条" },
+      ], next_cursor: null, total: 2,
+    }), { status: 200 }))
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ detail: "记忆已更新，请刷新后重试" }), { status: 409 }))
+
+    render(<MemoryPanel />)
+    expect((await screen.findAllByRole("button", { name: "合并" })).length).toBe(2)
+    fireEvent.click(screen.getAllByRole("button", { name: "合并" })[0])
+
+    expect((await screen.findByRole("alert")).textContent).toContain("记忆已更新，请刷新后重试")
+    const mergeRequest = apiFetch.mock.calls.find(([url, init]) =>
+      String(url).includes(`/api/memory/records/${firstId}/merge`)
+      && (init as RequestInit).method === "POST",
+    )
+    if (!mergeRequest) throw new Error("merge request was not sent")
+    expect(JSON.parse(String((mergeRequest[1] as RequestInit).body))).toMatchObject({
+      other_memory_id: secondId,
+      row_version: 2,
+      other_row_version: 3,
+    })
   })
 })

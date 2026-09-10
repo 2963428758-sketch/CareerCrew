@@ -24,6 +24,26 @@ from verify_qdrant_ownership import (  # noqa: E402
 )
 
 
+def test_workspace_message_collection_uses_owner_scope() -> None:
+    from types import SimpleNamespace
+
+    from verify_qdrant_ownership import resolve_collections
+
+    class _CollectionsClient:
+        def collection_exists(self, name):
+            return name == "careercrew_workspace_messages"
+
+    cfg = SimpleNamespace(collections={
+        "knowledge": "careercrew_mm",
+        "episodic_memory": "careercrew_episodic_v2",
+        "conversation_messages": "careercrew_workspace_messages",
+    })
+
+    assert resolve_collections(_CollectionsClient(), cfg, None) == {
+        "careercrew_workspace_messages": "owner_user_id",
+    }
+
+
 class FakePoint:
     def __init__(self, id, payload):
         self.id = id
