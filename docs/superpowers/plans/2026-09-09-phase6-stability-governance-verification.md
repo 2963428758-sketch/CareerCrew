@@ -40,7 +40,7 @@
 
 - 生成目录：`%TEMP%\\careercrew-real-backup-4f55806b59944769b1c7a0bd58c9ebdf\\careercrew-20260910-020000`。
 - manifest：4 个 artifact、2 个 Qdrant collection、保留期 30 天；manifest SHA-256 为 `4a78260434bd91355cc4b9b91f15dc110a87a8a929878beaa92a5ca50f7bc73b8`。
-- `verify` 通过；使用 `postgresql+psycopg://` DSN 且自动解析本机 Qdrant 容器完成恢复，目标库名包含时间戳和随机后缀，PostgreSQL restore exit 为 0。
+- `verify` 通过；使用 `postgresql+psycopg://` DSN 且自动解析本机 Qdrant 容器完成恢复，实际目标为 `careercrew_restore_20260910100000_a13585c4e1e9bbf2`，PostgreSQL restore exit 为 0。
 - 演练结束后临时 PostgreSQL 数据库为 0 个，临时 Qdrant collection 为 0 个，`/qdrant/snapshots` 下无遗留 snapshot，容器 `/tmp` 下无遗留 dump。
 - 恢复演练优先读取 `docker compose ps -q qdrant` 的实际容器 ID；非 Compose 本机服务再回退到精确名称 `qdrant`，不依赖 `<project>-qdrant-1` 字面名称。
 - 原有 `data/backups/careercrew-pre-0008-20260909-101905.dump` 未触碰。生成的临时备份根保留在系统 Temp 中供复核，未写入仓库。
