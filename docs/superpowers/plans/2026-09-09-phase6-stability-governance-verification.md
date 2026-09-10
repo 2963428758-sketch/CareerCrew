@@ -6,7 +6,7 @@
 
 ## 代码交付
 
-本期代码交付链以 `4226e91 fix: close phase six restore safety gaps` 收口，验收记录由 `ba8a605` 和 `db59b9a` 固化。主要交付包括：
+本期代码交付链以 `4226e91 fix: close phase six restore safety gaps` 收口，随后通过验收文档提交固化。主要交付包括：
 
 - 浏览器 CDP 路由注册到主应用，三条路由均要求登录并限制 loopback 来源；非 loopback 在 CDP 探测或启动前被拒绝。
 - 恢复后端基线：百炼模型期望、知识来源默认阈值和 Qdrant 访问过滤形态。
