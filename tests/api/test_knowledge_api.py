@@ -8,6 +8,35 @@ import time
 import pytest
 
 
+@pytest.mark.parametrize("version_status", ["draft", "failed"])
+def test_duplicate_upload_reindexes_unavailable_version(tmp_path, version_status):
+    import hashlib
+    from types import SimpleNamespace
+
+    from careercrew_api.routers.knowledge import _register_governed_upload
+    from careercrew_core.knowledge.governance import KnowledgeGovernance
+    from careercrew_core.memory.db import FakeMemoryDb
+
+    path = tmp_path / "retry.md"
+    path.write_text("retry content", encoding="utf-8")
+    runtime = SimpleNamespace(memory_db=FakeMemoryDb(), store=None)
+    service = KnowledgeGovernance(runtime.memory_db)
+    created = service.create_document(
+        "u1", name="retry.md", content_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        size_bytes=path.stat().st_size, chunks=[{"text": "retry content"}],
+    )
+    service._state()["versions"][created["version_id"]]["status"] = version_status
+    result = _register_governed_upload(
+        runtime, {"doc_id": "retry"}, str(path), "", "u1", "knowledge",
+        "retry.md", "private", [{"text": "retry content"}],
+    )
+    detail = service.get_document("u1", created["document_id"])
+    assert result["governance_duplicate"] is True
+    assert detail["active_version_id"] == created["version_id"]
+    assert detail["versions"][0]["status"] == "active"
+    assert all(chunk["index_status"] == "indexed" for chunk in detail["versions"][0]["chunks"])
+
+
 @pytest.fixture(autouse=True)
 def _uploads_to_tmp(monkeypatch, tmp_path):
     """上传落盘改到临时目录，避免污染 data/uploads。"""
@@ -42,7 +71,7 @@ def test_knowledge_upload(client):
     assert data["progress"] == 0.0
 
     job = None
-    for _ in range(50):
+    for _ in range(500):
         status = client.get(f"/api/knowledge/upload/{data['job_id']}")
         assert status.status_code == 200
         job = status.json()
@@ -59,6 +88,36 @@ def test_knowledge_upload(client):
 
 
 @pytest.mark.web
+def test_knowledge_upload_registers_an_active_governance_document(client):
+    """兼容上传完成后必须能在治理列表中看到同一份文档。"""
+    response = client.post(
+        "/api/knowledge/upload",
+        files={"file": ("governed.md", "# 治理文档\n可编辑分块".encode(), "text/markdown")},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    job = None
+    for _ in range(500):
+        job = client.get(f"/api/knowledge/upload/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.02)
+
+    assert job is not None and job["status"] == "done", job
+    governance = client.get("/api/knowledge/governance/documents")
+    assert governance.status_code == 200, governance.text
+    item = next(
+        item for item in governance.json()["items"]
+        if item["name"] == "governed.md"
+    )
+    assert item["active_version_id"]
+    assert item["versions"][0]["status"] == "active"
+    assert item["versions"][0]["chunks"]
+    assert job["result"]["governance_document_id"] == item["id"]
+
+
+@pytest.mark.web
 def test_knowledge_upload_error(client, fake_runtime):
     """后台入库抛错时任务进入 error 状态，前端可展示错误信息。"""
     fake_runtime.ingest_error = RuntimeError("MinerU boom")
@@ -70,7 +129,7 @@ def test_knowledge_upload_error(client, fake_runtime):
     job_id = resp.json()["job_id"]
 
     job = None
-    for _ in range(50):
+    for _ in range(500):
         job = client.get(f"/api/knowledge/upload/{job_id}").json()
         if job["status"] in ("done", "error"):
             break

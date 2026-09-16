@@ -130,9 +130,14 @@ def test_classify_orphan():
     assert _classify_point({"type": "x"}, "user_id") == "orphan"
 
 
-def test_classify_owned_by_owner_when_episodic_user_id_absent():
-    # episodic 点带 owner_user_id（前一轮回填）也算 owned
-    assert _classify_point({"owner_user_id": "u_001"}, "user_id") == "owned"
+def test_classify_episodic_uses_only_user_id():
+    # episodic 的主归属字段是 user_id；错误字段不能伪装成已归属。
+    assert _classify_point({"owner_user_id": "u_001"}, "user_id") == "orphan"
+
+
+def test_classify_blank_primary_owner_as_orphan():
+    assert _classify_point({"owner_user_id": ""}, "owner_user_id") == "orphan"
+    assert _classify_point({"user_id": "  "}, "user_id") == "orphan"
 
 
 # ── dry-run / apply 语义 ──
@@ -190,6 +195,22 @@ def test_verify_conflict_with_non_default_owner():
     assert pts[0].payload["owner_user_id"] == "u_001"
 
 
+def test_verify_episodic_writes_user_id_and_detects_wrong_owner_field():
+    pts = [
+        FakePoint("p1", {"owner_user_id": "u_001"}),
+        FakePoint("p2", {}),
+    ]
+    client = FakeClient({"c": pts})
+
+    result = verify_collection(
+        client, "c", "user_id", apply=True, default_owner="u_001"
+    )
+
+    assert result == (2, 2, 2, 0, 0, 0)
+    assert pts[0].payload == {"owner_user_id": "u_001", "user_id": "u_001"}
+    assert pts[1].payload == {"user_id": "u_001"}
+
+
 def test_verify_apply_set_payload_failure_counts_unresolved():
     # apply 时 set_payload 抛异常 → 计入 unresolved 而非 changed，且继续跑完
     pts = [FakePoint("p1", {"owner_user_id": "u_999"}), FakePoint("p2", {})]
@@ -220,6 +241,17 @@ def test_snapshot_collection_success():
     name = snapshot_collection(client, "c")
     assert name is not None
     assert client.create_snapshot_calls == ["c"]
+
+
+def test_dry_run_does_not_create_snapshots_or_write_payloads():
+    from verify_qdrant_ownership import run
+
+    client = FakeClient({"c": [_mk({"owner_user_id": "owner"})]})
+    report, warnings = run(client, {"c": "owner_user_id"}, apply=False, default_owner=ORPHAN_OWNER)
+    assert report["scanned"] == 1
+    assert client.create_snapshot_calls == []
+    assert client.set_payload_calls == []
+    assert warnings == []
 
 
 def test_snapshot_collection_failure_returns_none():

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Iterable
-
+from typing import Any
 
 TRANSCRIPT_TYPES = frozenset({"user_message", "agent_response"})
+_EVAL_USER_PATTERN = re.compile(r"^eval_[A-Za-z0-9][A-Za-z0-9_-]{2,62}$")
 
 
 def now_iso() -> str:
@@ -417,6 +419,149 @@ class LongTermMemoryRepository:
              json.dumps(data["skipped"]), json.dumps(data["retrieved_memory_ids"]),
              json.dumps(data["injected_memory_ids"]), json.dumps(data["written_memory_ids"])),
         ))
+
+    def cleanup_eval_tenant(self, user_id: str) -> dict[str, int]:
+        """清理受保护评测租户产生的记忆数据。
+
+        评测租户必须是 ``eval_`` 命名空间；这里不复用面向用户账号删除的
+        ``delete_all_for_user``，避免评测代码意外获得普通账号的全量删除能力。
+        记忆治理事件是 append-only：若租户已有治理事件，只把记录标为 deleted，
+        保留审计链；没有审计事件的评测记录才物理删除。调用方负责先清理 Qdrant
+        向量点，避免数据库真相与向量副本出现可检索残留。
+        """
+        tenant = str(user_id or "").strip()
+        if not _EVAL_USER_PATTERN.fullmatch(tenant):
+            raise ValueError("cleanup_eval_tenant 只允许 eval_ 专用租户")
+
+        if self._fake:
+            state = self._fake_state()
+            record_ids = {
+                record_id for record_id, record in state["records"].items()
+                if record.get("user_id") == tenant
+            }
+            relation_ids = []
+            for relation_id, relation in state["relations"].items():
+                if (
+                    relation.get("from_memory_id") in record_ids
+                    or relation.get("to_memory_id") in record_ids
+                ):
+                    relation_ids.append(relation_id)
+            for relation_id in relation_ids:
+                del state["relations"][relation_id]
+            source_count = 0
+            for memory_id in record_ids:
+                source_count += len(state["sources"].pop(memory_id, []))
+            outbox_ids = [
+                outbox_id for outbox_id, row in state["outbox"].items()
+                if row.get("user_id") == tenant
+            ]
+            trace_ids = [
+                trace_id for trace_id, row in state["traces"].items()
+                if row.get("user_id") == tenant
+            ]
+            for key in outbox_ids:
+                del state["outbox"][key]
+            for key in trace_ids:
+                del state["traces"][key]
+            for record_id in record_ids:
+                del state["records"][record_id]
+
+            # The runtime still mirrors facts/events to the legacy compatibility
+            # tables. Remove only this dedicated tenant from those structures.
+            legacy_counts = {"episodic": 0, "facts": 0, "policy": 0, "threads": 0}
+            for key in list(getattr(self._db, "_episodic", {})):
+                if key[0] == tenant:
+                    del self._db._episodic[key]
+                    legacy_counts["episodic"] += 1
+            for key in list(getattr(self._db, "_facts", {})):
+                if key[0] == tenant:
+                    del self._db._facts[key]
+                    legacy_counts["facts"] += 1
+            if tenant in getattr(self._db, "_policies", {}):
+                del self._db._policies[tenant]
+                legacy_counts["policy"] = 1
+            for key in list(getattr(self._db, "_threads", {})):
+                if key[0] == tenant:
+                    del self._db._threads[key]
+                    legacy_counts["threads"] += 1
+            return {
+                "records_deleted": len(record_ids),
+                "records_soft_deleted": 0,
+                "outbox_deleted": len(outbox_ids),
+                "traces_deleted": len(trace_ids),
+                "relations_deleted": len(relation_ids),
+                "sources_deleted": source_count,
+                **legacy_counts,
+                "audit_events_retained": 0,
+                "outbox_remaining": 0,
+                "records_remaining": 0,
+            }
+
+        def _cleanup(conn):
+            # Remove queue/trace rows first so no worker can recreate deleted
+            # vectors after the evaluation process exits.
+            outbox = conn.execute(
+                "DELETE FROM memory_vector_outbox WHERE user_id=%s", (tenant,)
+            ).rowcount or 0
+            traces = conn.execute(
+                "DELETE FROM agent_run_memory_traces WHERE user_id=%s", (tenant,)
+            ).rowcount or 0
+            episodic = conn.execute(
+                "DELETE FROM episodic_events WHERE user_id=%s", (tenant,)
+            ).rowcount or 0
+            facts = conn.execute(
+                "DELETE FROM semantic_facts WHERE user_id=%s", (tenant,)
+            ).rowcount or 0
+            policy = conn.execute(
+                "DELETE FROM user_memory_policy WHERE user_id=%s", (tenant,)
+            ).rowcount or 0
+            threads = conn.execute(
+                "DELETE FROM threads WHERE user_id=%s", (tenant,)
+            ).rowcount or 0
+            audit_events = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_record_events mre "
+                "JOIN memory_records mr ON mr.id=mre.memory_id "
+                "WHERE mr.user_id=%s", (tenant,)
+            ).fetchone()["count"]
+            record_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_records WHERE user_id=%s", (tenant,)
+            ).fetchone()["count"]
+            if audit_events:
+                soft_deleted = conn.execute(
+                    "UPDATE memory_records SET status='deleted',updated_at=now(),"
+                    "row_version=row_version+1 WHERE user_id=%s AND status<>'deleted'",
+                    (tenant,),
+                ).rowcount or 0
+                deleted = 0
+            else:
+                deleted = conn.execute(
+                    "DELETE FROM memory_records WHERE user_id=%s", (tenant,)
+                ).rowcount or 0
+                soft_deleted = 0
+            remaining = conn.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM memory_vector_outbox WHERE user_id=%s) AS outbox_remaining, "
+                "(SELECT COUNT(*) FROM memory_records WHERE user_id=%s AND status<>'deleted') AS records_remaining",
+                (tenant, tenant),
+            ).fetchone()
+            return {
+                "records_deleted": deleted,
+                "records_soft_deleted": soft_deleted,
+                "outbox_deleted": outbox,
+                "traces_deleted": traces,
+                "relations_deleted": 0,
+                "sources_deleted": 0,
+                "episodic": episodic,
+                "facts": facts,
+                "policy": policy,
+                "threads": threads,
+                "audit_events_retained": int(audit_events or 0),
+                "records_seen": int(record_count or 0),
+                "outbox_remaining": int(remaining["outbox_remaining"] or 0),
+                "records_remaining": int(remaining["records_remaining"] or 0),
+            }
+
+        return self._pg(_cleanup)
 
     def apply_backfill(self, report: BackfillReport) -> dict[str, int]:
         created = existing = 0

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from careercrew_core.state.settings import Settings
 
 ACCESS_USER_KEY = "__access_user"
+GOVERNANCE_ACTIVE_KEY = "__governance_active"
 
 
 def _matches(metadata: dict, filters: dict) -> bool:
@@ -29,6 +30,11 @@ def _matches(metadata: dict, filters: dict) -> bool:
             )
             if not visible:
                 return False
+            continue
+        if k == GOVERNANCE_ACTIVE_KEY:
+            if bool(v) and metadata.get("record_type") == "knowledge_governance":
+                if metadata.get("governance_status") != "active":
+                    return False
             continue
         if metadata.get(k) != v:
             return False

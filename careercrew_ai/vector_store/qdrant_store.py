@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from careercrew_ai.vector_store.base_vector_store import (
     ACCESS_USER_KEY,
+    GOVERNANCE_ACTIVE_KEY,
     BaseVectorStore,
     QueryResult,
     VectorRecord,
@@ -85,6 +86,8 @@ class QdrantStore(BaseVectorStore):
             "doc", "type", "page", "source", "category", "user_id",
             "owner_user_id", "visibility", "image_path", "record_type",
             "message_id", "thread_id", "role", "status",
+            "governance_document_id", "governance_version_id",
+            "governance_chunk_id", "governance_status",
         )
         if self._client.collection_exists(self._collection):
             # 存量集合补加 text_colbert（旧点无该向量，需重新摄取才有精排数据）
@@ -147,12 +150,27 @@ class QdrantStore(BaseVectorStore):
             return None
         must = []
         access_should = None
+        governance_should = None
         for k, v in filters.items():
             if k == ACCESS_USER_KEY:
                 access_should = [
                     FieldCondition(key="visibility", match=MatchValue(value="public")),
                     FieldCondition(key="owner_user_id", match=MatchValue(value=str(v))),
                 ]
+                continue
+            if k == GOVERNANCE_ACTIVE_KEY:
+                if bool(v):
+                    # Legacy non-governed points remain valid.  Governed points
+                    # are visible only after the relational version is active
+                    # and the vector payload has been cut over.
+                    governance_should = [
+                        Filter(must_not=[FieldCondition(
+                            key="record_type", match=MatchValue(value="knowledge_governance"),
+                        )]),
+                        FieldCondition(
+                            key="governance_status", match=MatchValue(value="active"),
+                        ),
+                    ]
                 continue
             if isinstance(v, list):
                 must.append(FieldCondition(key=k, match=MatchAny(any=list(v))))
@@ -164,13 +182,24 @@ class QdrantStore(BaseVectorStore):
         # 因此：有其它 must 时把「public OR 本人 owner」作为嵌套 Filter（min_should=1）
         # 并入 must，保证它和 doc 白名单做 AND；仅有访问条件时保持原样走 should。
         if access_should:
-            if must:
+            if must or governance_should:
                 must.append(Filter(
                     should=access_should,
                     min_should=MinShould(conditions=access_should, min_count=1),
                 ))
-            else:
+            elif not governance_should:
                 return Filter(should=access_should)
+        if governance_should:
+            if must:
+                must.append(Filter(
+                    should=governance_should,
+                    min_should=MinShould(conditions=governance_should, min_count=1),
+                ))
+            elif not access_should:
+                return Filter(
+                    should=governance_should,
+                    min_should=MinShould(conditions=governance_should, min_count=1),
+                )
         return Filter(must=must) if must else None
 
     @staticmethod
@@ -331,13 +360,15 @@ class QdrantStore(BaseVectorStore):
         return len(qids)
 
     def delete_by_ids(self, ids: list[str]) -> int:
-        """按业务 record id 精确删除；Memory 删除不依赖可变 payload。"""
+        """按业务 record id 精确删除。
+
+        业务 id 存在 payload ``_id``，物理 id 还包含租户命名空间；因此不能
+        把业务 id 直接作为 Qdrant point id。需要租户隔离时调用方应优先使用
+        ``delete_by_metadata`` 传入 user_id/owner_user_id。
+        """
         if not ids:
             return 0
-        from qdrant_client.models import PointIdsList
-
-        self._client.delete(self._collection, points_selector=PointIdsList(points=ids))
-        return len(ids)
+        return self.delete_by_metadata({"_id": list(dict.fromkeys(ids))})
 
     def set_payload_by_filter(self, payload: dict, filters: dict) -> int:
         """按过滤条件更新 payload（值为 None 表示删除该键）；返回命中点数。"""

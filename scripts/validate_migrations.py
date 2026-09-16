@@ -23,7 +23,7 @@ from careercrew_core.pg_pool import normalize_dsn
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = ROOT / "migrations" / "versions"
 CHECKSUM_MANIFEST = ROOT / "migrations" / "checksums.json"
-EXPECTED_HEAD = "0016_workspace_owner_integrity"
+EXPECTED_HEAD = "0018_eval_case_updated_at"
 
 EXPECTED_TABLES = frozenset(
     {
@@ -61,7 +61,10 @@ EXPECTED_KNOWLEDGE_COLUMNS: Mapping[str, frozenset[str]] = {
         {"owner_id", "name", "visibility", "status", "active_version_id", "expires_at", "credibility"}
     ),
     "knowledge_document_versions": frozenset(
-        {"document_id", "version_number", "content_sha256", "size_bytes", "status", "indexed_at"}
+        {
+            "document_id", "version_number", "content_sha256", "size_bytes",
+            "source_content_sha256", "source_size_bytes", "status", "indexed_at",
+        }
     ),
     "knowledge_document_chunks": frozenset(
         {"version_id", "ordinal", "page", "text", "text_hash", "index_status", "qdrant_point_id"}

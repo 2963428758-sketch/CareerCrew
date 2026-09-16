@@ -170,8 +170,8 @@ def test_failure_migration_can_be_anchored_to_current_head(tmp_path: Path) -> No
     versions = source / "versions"
     versions.mkdir(parents=True)
     (source / "env.py").write_text("# alembic environment\n", encoding="utf-8")
-    (versions / "0016.py").write_text(
-        'revision = "0016_workspace_owner_integrity"\n', encoding="utf-8"
+    (versions / "0017.py").write_text(
+        'revision = "0018_eval_case_updated_at"\n', encoding="utf-8"
     )
     workspace = tmp_path / "workspace"
 
@@ -180,7 +180,7 @@ def test_failure_migration_can_be_anchored_to_current_head(tmp_path: Path) -> No
     )
 
     bad = (copied_versions / "9999_rehearsal_bad.py").read_text(encoding="utf-8")
-    assert 'down_revision = "0016_workspace_owner_integrity"' in bad
+    assert 'down_revision = "0018_eval_case_updated_at"' in bad
 
 
 def test_report_records_real_restore_probe_and_environment() -> None:

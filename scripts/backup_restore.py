@@ -18,6 +18,7 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -69,6 +70,11 @@ class SnapshotArtifact:
 
 def parse_database_url(value: str) -> DatabaseConfig:
     """Parse a PostgreSQL DSN without exposing its password in the result repr."""
+
+    if any(os.environ.get(key) for key in (
+        "PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGSERVICE", "PGSERVICEFILE", "PGOPTIONS",
+    )):
+        raise BackupValidationError("inherited PostgreSQL routing overrides are unsupported")
 
     if not isinstance(value, str) or not value.strip():
         raise BackupValidationError("DATABASE_URL is required")
@@ -189,25 +195,40 @@ def _qdrant_json(response: requests.Response, operation: str) -> dict[str, Any]:
     return value
 
 
+def _qdrant_headers(
+    api_key: str | None = None, *, allow_environment: bool = True,
+) -> dict[str, str]:
+    """Build Qdrant auth headers without placing the key in a URL or argv."""
+
+    key = str(
+        api_key
+        if api_key is not None
+        else (os.getenv("QDRANT_API_KEY", "") if allow_environment else "")
+    ).strip()
+    return {"api-key": key} if key else {}
+
+
 def create_qdrant_snapshots(
     qdrant_url: str,
     collections: Sequence[str],
     output_dir: Path,
     *,
     timeout: float = 30.0,
+    api_key: str | None = None,
 ) -> list[SnapshotArtifact]:
     """Create, download, and clean up one Qdrant snapshot per collection."""
 
     base_url = qdrant_url.rstrip("/")
     snapshots: list[SnapshotArtifact] = []
     session = requests.Session()
+    headers = _qdrant_headers(api_key)
     for collection in collections:
         if not COLLECTION_RE.fullmatch(collection):
             raise BackupValidationError(f"unsafe Qdrant collection name: {collection!r}")
         encoded = quote(collection, safe="")
         try:
             info_response = session.get(
-                f"{base_url}/collections/{encoded}", timeout=timeout
+                f"{base_url}/collections/{encoded}", headers=headers, timeout=timeout
             )
             if info_response.status_code == 404 and collection in OPTIONAL_QDRANT_COLLECTIONS:
                 # Conversation search creates its projection lazily.  A fresh
@@ -218,7 +239,7 @@ def create_qdrant_snapshots(
             info_result = info.get("result") or {}
             point_count = info_result.get("points_count")
             create_response = session.post(
-                f"{base_url}/collections/{encoded}/snapshots", timeout=timeout
+                f"{base_url}/collections/{encoded}/snapshots", headers=headers, timeout=timeout
             )
             created = _qdrant_json(create_response, f"snapshot create {collection}")
             created_result = created.get("result") or {}
@@ -230,7 +251,7 @@ def create_qdrant_snapshots(
             local_path.parent.mkdir(parents=True, exist_ok=True)
             download_response = session.get(
                 f"{base_url}/collections/{encoded}/snapshots/{quote(snapshot_name, safe='')}",
-                timeout=timeout,
+                headers=headers, timeout=timeout,
             )
             try:
                 download_response.raise_for_status()
@@ -241,7 +262,7 @@ def create_qdrant_snapshots(
                 try:
                     session.delete(
                         f"{base_url}/collections/{encoded}/snapshots/{quote(snapshot_name, safe='')}",
-                        timeout=timeout,
+                        headers=headers, timeout=timeout,
                     )
                 except requests.RequestException:
                     # The downloaded artifact remains valid; an operator can
@@ -279,15 +300,20 @@ def archive_data_sources(
     output_path: Path,
     uploads_dir: Path,
     parsed_dir: Path,
-) -> None:
+) -> list[dict[str, Any]]:
     """Archive only uploads and parsed data with fixed safe archive prefixes."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest: list[dict[str, Any]] = []
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for source, prefix in ((Path(uploads_dir), "data/uploads"), (Path(parsed_dir), "data/parsed")):
             for path in _iter_source_files(source):
                 relative = path.relative_to(source.resolve()).as_posix()
-                archive.write(path, f"{prefix}/{relative}")
+                archive_name = f"{prefix}/{relative}"
+                archive.write(path, archive_name)
+                size, sha256 = _artifact_digest(path)
+                manifest.append({"path": archive_name, "size": size, "sha256": sha256})
+    return manifest
 
 
 def _artifact_digest(path: Path) -> tuple[int, str]:
@@ -379,7 +405,7 @@ def create_backup(
         dump_path = run_dir / "postgres.dump"
         pg_dump_runner(config, dump_path)
         files_path = run_dir / "files.zip"
-        archive_data_sources(files_path, Path(uploads_dir), Path(parsed_dir))
+        files_manifest = archive_data_sources(files_path, Path(uploads_dir), Path(parsed_dir))
         snapshots = qdrant_snapshotter(qdrant_url, collections, run_dir)
 
         artifact_paths = [dump_path, files_path] + [snapshot.path for snapshot in snapshots]
@@ -391,7 +417,7 @@ def create_backup(
             kind = "postgres" if path == dump_path else "files" if path == files_path else "qdrant_snapshot"
             artifacts.append({"kind": kind, "path": _relative_artifact(run_dir, path), "size": size, "sha256": sha256})
         manifest = {
-            "format": "careercrew-backup-v1",
+            "format": "careercrew-backup-v2",
             "created_at": timestamp.isoformat(),
             "database": {
                 "host": config.host,
@@ -409,6 +435,7 @@ def create_backup(
                 for snapshot in snapshots
             ],
             "retention_days": retention_days,
+            "files": files_manifest,
             "artifacts": artifacts,
         }
         manifest_path = run_dir / "manifest.json"
@@ -445,7 +472,11 @@ def _validate_zip_members(zip_path: Path) -> None:
             bad_member = archive.testzip()
             if bad_member is not None:
                 raise BackupValidationError(f"files archive is corrupt: {bad_member}")
-            for member in archive.infolist():
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            if len(set(names)) != len(names):
+                raise BackupValidationError("files archive contains duplicate members")
+            for member in members:
                 posix = PurePosixPath(member.filename)
                 windows = PureWindowsPath(member.filename)
                 if (
@@ -455,6 +486,60 @@ def _validate_zip_members(zip_path: Path) -> None:
                     or ".." in windows.parts
                 ):
                     raise BackupValidationError("files archive contains a path traversal")
+    except zipfile.BadZipFile as exc:
+        raise BackupValidationError("files archive is corrupt") from exc
+
+
+def _validate_file_manifest_archive(files_path: Path, manifest: Mapping[str, Any]) -> None:
+    """Verify every archived upload/parsed file against its independent digest."""
+
+    entries = manifest.get("files")
+    if not isinstance(entries, list):
+        raise BackupValidationError("backup file manifest is missing")
+    expected: dict[str, tuple[int, str]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            raise BackupValidationError("backup file manifest entry is invalid")
+        relative = item.get("path")
+        size = item.get("size")
+        sha256 = item.get("sha256")
+        if (
+            not isinstance(relative, str)
+            or not (relative.startswith("data/uploads/") or relative.startswith("data/parsed/"))
+            or "\\" in relative
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(sha256, str)
+            or not SHA256_RE.fullmatch(sha256)
+            or relative in expected
+        ):
+            raise BackupValidationError("backup file manifest entry is invalid")
+        expected[relative] = (size, sha256)
+    try:
+        with zipfile.ZipFile(files_path) as archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            if len({member.filename for member in members}) != len(members):
+                raise BackupValidationError("files archive contains duplicate members")
+            actual_members = {
+                member.filename for member in members
+            }
+            if actual_members != set(expected):
+                raise BackupValidationError("backup file manifest and archive members differ")
+            for relative, (expected_size, expected_hash) in expected.items():
+                member = archive.getinfo(relative)
+                digest = hashlib.sha256()
+                size = 0
+                with archive.open(member) as source:
+                    for block in iter(lambda: source.read(1024 * 1024), b""):
+                        size += len(block)
+                        digest.update(block)
+                if size != expected_size:
+                    raise BackupValidationError(f"backup file size mismatch: {relative}")
+                if digest.hexdigest() != expected_hash:
+                    raise BackupValidationError(f"backup file sha256 mismatch: {relative}")
+    except KeyError as exc:
+        raise BackupValidationError("backup file manifest references a missing archive member") from exc
     except zipfile.BadZipFile as exc:
         raise BackupValidationError("files archive is corrupt") from exc
 
@@ -474,7 +559,10 @@ def verify_backup(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BackupValidationError("backup manifest cannot be read") from exc
-    if not isinstance(manifest, dict) or manifest.get("format") != "careercrew-backup-v1":
+    if not isinstance(manifest, dict) or manifest.get("format") not in {
+        "careercrew-backup-v1",
+        "careercrew-backup-v2",
+    }:
         raise BackupValidationError("backup manifest format is invalid")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -547,6 +635,8 @@ def verify_backup(
     if qdrant_manifest_paths != qdrant_artifact_paths:
         raise BackupValidationError("Qdrant manifest and hashed artifact sets differ")
     _validate_zip_members(files_artifact)
+    if manifest.get("format") == "careercrew-backup-v2":
+        _validate_file_manifest_archive(files_artifact, manifest)
     if check_pg_restore:
         pg_restore = shutil.which("pg_restore")
         if pg_restore:
@@ -681,24 +771,9 @@ def _validate_docker_target(value: str) -> str:
 
 
 def resolve_qdrant_container(explicit: str | None = None) -> str:
-    """Resolve the Compose Qdrant container, with a validated explicit fallback."""
+    """Resolve a running Qdrant container, preferring an explicit target."""
 
     requested = _validate_docker_target(explicit) if explicit and explicit.strip() else None
-    try:
-        compose_process = subprocess.run(  # noqa: S603 -- fixed docker compose argv
-            ["docker", "compose", "ps", "-q", "qdrant"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        compose_process = None
-    if compose_process is not None and compose_process.returncode == 0:
-        compose_target = next((line.strip() for line in compose_process.stdout.splitlines() if line.strip()), "")
-        if compose_target:
-            return _validate_docker_target(compose_target)
-
     if requested:
         try:
             inspect_process = subprocess.run(  # noqa: S603 -- explicit validated docker target
@@ -714,25 +789,42 @@ def resolve_qdrant_container(explicit: str | None = None) -> str:
             inspected = inspect_process.stdout.strip().split("|", 1)
             if len(inspected) == 2 and inspected[0] and inspected[1].lower() == "true":
                 return requested
-    else:
-        try:
-            legacy_process = subprocess.run(  # noqa: S603 -- fixed exact-name compatibility fallback
-                ["docker", "ps", "--filter", "name=^qdrant$", "--format", "{{.ID}}"],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            legacy_process = None
-        if legacy_process is not None and legacy_process.returncode == 0:
-            legacy_target = next((line.strip() for line in legacy_process.stdout.splitlines() if line.strip()), "")
-            if legacy_target:
-                return _validate_docker_target(legacy_target)
+        raise BackupValidationError("Qdrant container could not be resolved")
+
+    try:
+        compose_process = subprocess.run(  # noqa: S603 -- fixed docker compose argv
+            ["docker", "compose", "ps", "-q", "qdrant"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        compose_process = None
+    if compose_process is not None and compose_process.returncode == 0:
+        compose_target = next((line.strip() for line in compose_process.stdout.splitlines() if line.strip()), "")
+        if compose_target:
+            return _validate_docker_target(compose_target)
+
+    try:
+        legacy_process = subprocess.run(  # noqa: S603 -- fixed exact-name compatibility fallback
+            ["docker", "ps", "--filter", "name=^qdrant$", "--format", "{{.ID}}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        legacy_process = None
+    if legacy_process is not None and legacy_process.returncode == 0:
+        legacy_target = next((line.strip() for line in legacy_process.stdout.splitlines() if line.strip()), "")
+        if legacy_target:
+            return _validate_docker_target(legacy_target)
     raise BackupValidationError("Qdrant container could not be resolved")
 
 
-def _extract_files_to_temp(files_path: Path) -> None:
+@contextmanager
+def _extract_files_to_temp(files_path: Path):
     with tempfile.TemporaryDirectory(prefix="careercrew-restore-") as temp_dir:
         target = Path(temp_dir)
         with zipfile.ZipFile(files_path) as archive:
@@ -744,31 +836,208 @@ def _extract_files_to_temp(files_path: Path) -> None:
                 relative.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(member) as source, relative.open("wb") as destination:
                     shutil.copyfileobj(source, destination)
+        yield target
+
+
+def _verify_restored_file_manifest(extracted_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify that the restore target contains exactly the backed-up files."""
+
+    entries = manifest.get("files")
+    if not isinstance(entries, list):
+        raise BackupValidationError("restore requires a per-file backup manifest")
+    expected: dict[str, tuple[int, str]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            raise BackupValidationError("restore file manifest entry is invalid")
+        relative = item.get("path")
+        size = item.get("size")
+        sha256 = item.get("sha256")
+        if (
+            not isinstance(relative, str)
+            or "\\" in relative
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(sha256, str)
+            or not SHA256_RE.fullmatch(sha256)
+            or relative in expected
+        ):
+            raise BackupValidationError("restore file manifest entry is invalid")
+        expected[relative] = (size, sha256)
+
+    actual_paths = {
+        path.relative_to(extracted_root).as_posix()
+        for path in extracted_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_paths != set(expected):
+        raise BackupValidationError("restored files and backup manifest differ")
+    for relative, (expected_size, expected_hash) in expected.items():
+        path = _safe_backup_artifact(extracted_root, relative)
+        actual_size, actual_hash = _artifact_digest(path)
+        if actual_size != expected_size:
+            raise BackupValidationError(f"restored file size mismatch: {relative}")
+        if actual_hash != expected_hash:
+            raise BackupValidationError(f"restored file sha256 mismatch: {relative}")
+    return {
+        "expected_files": len(expected),
+        "verified_files": len(expected),
+        "sha256_verified": True,
+    }
+
+
+def _verify_restored_postgres(target_url: str) -> None:
+    """Run a connectivity canary and the current schema invariants on a restore target."""
+
+    try:
+        import psycopg
+
+        from scripts.validate_migrations import validate_schema_invariants
+
+        with psycopg.connect(normalize_dsn(target_url)) as connection:
+            connection.execute("SELECT 1")
+            validate_schema_invariants(connection)
+    except BackupValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - convert driver/schema details to safe drill error
+        raise BackupValidationError(
+            f"restored PostgreSQL schema verification failed: {_compact_error(str(exc))}"
+        ) from exc
+
+
+def _fetch_canary_count(cursor: Any, query: str) -> int:
+    cursor.execute(query)
+    row = cursor.fetchone()
+    try:
+        value = int(row[0])
+    except (TypeError, ValueError, IndexError, KeyError) as exc:
+        raise BackupValidationError("restored PostgreSQL canary returned an invalid count") from exc
+    if value < 0:
+        raise BackupValidationError("restored PostgreSQL canary returned a negative count")
+    return value
+
+
+def _verify_restored_database_canary(target_url: str) -> dict[str, Any]:
+    """Check representative rows and cross-table relationships on the restored DB."""
+
+    table_queries = {
+        "knowledge_documents": "SELECT COUNT(*) FROM knowledge_documents",
+        "knowledge_document_versions": "SELECT COUNT(*) FROM knowledge_document_versions",
+        "knowledge_document_chunks": "SELECT COUNT(*) FROM knowledge_document_chunks",
+        "memory_records": "SELECT COUNT(*) FROM memory_records",
+    }
+    relationship_queries = {
+        "knowledge_versions_without_document": (
+            "SELECT COUNT(*) FROM knowledge_document_versions v "
+            "LEFT JOIN knowledge_documents d ON d.id=v.document_id WHERE d.id IS NULL"
+        ),
+        "knowledge_chunks_without_version": (
+            "SELECT COUNT(*) FROM knowledge_document_chunks c "
+            "LEFT JOIN knowledge_document_versions v ON v.id=c.version_id WHERE v.id IS NULL"
+        ),
+        "knowledge_citations_without_chunk": (
+            "SELECT COUNT(*) FROM knowledge_citation_events e "
+            "LEFT JOIN knowledge_document_chunks c ON c.id=e.chunk_id WHERE c.id IS NULL"
+        ),
+        "knowledge_active_version_missing": (
+            "SELECT COUNT(*) FROM knowledge_documents d "
+            "LEFT JOIN knowledge_document_versions v ON v.id=d.active_version_id "
+            "WHERE d.active_version_id IS NOT NULL AND v.id IS NULL"
+        ),
+        "memory_sources_without_record": (
+            "SELECT COUNT(*) FROM memory_sources s "
+            "LEFT JOIN memory_records r ON r.id=s.memory_id WHERE r.id IS NULL"
+        ),
+        "memory_relations_without_record": (
+            "SELECT COUNT(*) FROM memory_relations mr "
+            "LEFT JOIN memory_records source ON source.id=mr.from_memory_id "
+            "LEFT JOIN memory_records target ON target.id=mr.to_memory_id "
+            "WHERE source.id IS NULL OR target.id IS NULL"
+        ),
+    }
+    try:
+        import psycopg
+
+        with psycopg.connect(normalize_dsn(target_url)) as connection:
+            cursor = connection.cursor()
+            tables = {
+                name: _fetch_canary_count(cursor, query)
+                for name, query in table_queries.items()
+            }
+            relationships = {
+                name: _fetch_canary_count(cursor, query)
+                for name, query in relationship_queries.items()
+            }
+    except BackupValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - convert driver/schema details to safe drill error
+        raise BackupValidationError(
+            f"restored PostgreSQL application canary failed: {_compact_error(str(exc))}"
+        ) from exc
+    violations = sum(relationships.values())
+    if violations:
+        raise BackupValidationError(
+            f"restored PostgreSQL application relationships failed: {violations} orphan references"
+        )
+    return {
+        "table_counts": tables,
+        "relationship_violations": relationships,
+        "canary_passed": True,
+    }
+
+
+def _verify_restored_application(
+    target_url: str,
+    extracted_root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    database_canary: Callable[[str], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run both file-manifest and application relationship canaries."""
+
+    files = _verify_restored_file_manifest(extracted_root, manifest)
+    database = (database_canary or _verify_restored_database_canary)(target_url)
+    if not isinstance(database, Mapping):
+        raise BackupValidationError("restored PostgreSQL application canary returned invalid evidence")
+    return {"files": files, "database": dict(database)}
 
 
 def restore_qdrant_snapshots(
     backup_dir: Path,
     manifest: Mapping[str, Any],
     qdrant_url: str,
-    qdrant_container: str,
+    qdrant_container: str | None,
     restore_stamp: str,
+    *,
+    qdrant_api_key: str | None = None,
 ) -> None:
-    """Recover snapshots into temporary collections and remove them in finally."""
+    """Recover snapshots into temporary collections and remove them in finally.
+
+    A local Docker container uses the file-backed recovery endpoint for
+    backwards compatibility.  A remote/managed Qdrant uses the authenticated
+    snapshot-upload endpoint instead, so a production restore drill does not
+    depend on Docker being present on the operator workstation.
+    """
 
     qdrant_entries = manifest.get("qdrant") or []
     if not isinstance(qdrant_entries, list):
         raise BackupValidationError("backup Qdrant manifest is invalid")
-    qdrant_container = _validate_docker_target(qdrant_container)
+    container = (
+        _validate_docker_target(qdrant_container)
+        if qdrant_container and qdrant_container.strip()
+        else None
+    )
     base_url = qdrant_url.rstrip("/")
+    headers = _qdrant_headers(qdrant_api_key, allow_environment=False)
     snapshot_directory = "/qdrant/snapshots"
     temporary: list[tuple[str, str]] = []
     copied_remote_names: list[str] = []
     cleanup_errors: list[str] = []
     try:
-        if qdrant_entries:
+        if qdrant_entries and container:
             try:
                 prepare_process = subprocess.run(  # noqa: S603 -- container/name are explicit operator inputs
-                    ["docker", "exec", qdrant_container, "mkdir", "-p", snapshot_directory],
+                    ["docker", "exec", container, "mkdir", "-p", snapshot_directory],
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
@@ -788,39 +1057,75 @@ def restore_qdrant_snapshots(
             snapshot_path = _safe_backup_artifact(backup_dir, relative)
             remote_name = _safe_filename(f"careercrew_restore_{restore_stamp}_{snapshot_path.name}", "restore.snapshot")
             target_collection = _safe_filename(f"{collection}__restore__{restore_stamp}", "restore")[:200]
-            copied_remote_names.append(remote_name)
-            copy_process = subprocess.run(  # noqa: S603 -- container/name are explicit operator inputs
-                ["docker", "cp", str(snapshot_path), f"{qdrant_container}:{snapshot_directory}/{remote_name}"],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if copy_process.returncode != 0:
-                raise BackupValidationError("Qdrant snapshot copy to container failed")
             encoded = quote(target_collection, safe="")
             # Register before recovery: a timeout or non-2xx response can
             # happen after Qdrant has already created the target collection.
             temporary.append((target_collection, remote_name))
-            response = requests.put(
-                f"{base_url}/collections/{encoded}/snapshots/recover",
-                json={"location": f"file://{snapshot_directory}/{remote_name}"},
-                timeout=60,
-            )
+            if container:
+                copied_remote_names.append(remote_name)
+                copy_process = subprocess.run(  # noqa: S603 -- container/name are explicit operator inputs
+                    ["docker", "cp", str(snapshot_path), f"{container}:{snapshot_directory}/{remote_name}"],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if copy_process.returncode != 0:
+                    raise BackupValidationError("Qdrant snapshot copy to container failed")
+                try:
+                    response = requests.put(
+                        f"{base_url}/collections/{encoded}/snapshots/recover",
+                        headers=headers,
+                        json={"location": f"file://{snapshot_directory}/{remote_name}"},
+                        timeout=60,
+                    )
+                except requests.RequestException as exc:
+                    raise BackupValidationError("Qdrant snapshot recovery request failed") from exc
+            else:
+                try:
+                    with snapshot_path.open("rb") as snapshot:
+                        response = requests.post(
+                            f"{base_url}/collections/{encoded}/snapshots/upload?wait=true",
+                            headers=headers,
+                            files={
+                                "snapshot": (
+                                    snapshot_path.name,
+                                    snapshot,
+                                    "application/octet-stream",
+                                )
+                            },
+                            timeout=120,
+                        )
+                except (OSError, requests.RequestException) as exc:
+                    raise BackupValidationError("Qdrant snapshot upload failed") from exc
             _qdrant_json(response, f"snapshot recovery {collection}")
-            info = _qdrant_json(
-                requests.get(f"{base_url}/collections/{encoded}", timeout=30),
-                f"restored collection info {collection}",
-            )
-            actual = (info.get("result") or {}).get("points_count")
+            try:
+                info_response = requests.get(
+                    f"{base_url}/collections/{encoded}", headers=headers, timeout=30,
+                )
+            except requests.RequestException as exc:
+                raise BackupValidationError("Qdrant restored collection info request failed") from exc
+            info = _qdrant_json(info_response, f"restored collection info {collection}")
+            result = info.get("result")
+            actual = result.get("points_count") if isinstance(result, dict) else None
             expected = entry.get("point_count")
-            if expected is not None and int(actual or 0) != int(expected):
-                raise BackupValidationError(f"Qdrant point count mismatch for {collection}")
+            if expected is not None:
+                try:
+                    actual_count = int(actual)
+                    expected_count = int(expected)
+                except (TypeError, ValueError) as exc:
+                    raise BackupValidationError(
+                        f"Qdrant point count is invalid for {collection}"
+                    ) from exc
+                if actual_count != expected_count:
+                    raise BackupValidationError(f"Qdrant point count mismatch for {collection}")
     finally:
         for collection, _remote_name in temporary:
             try:
                 response = requests.delete(
-                    f"{base_url}/collections/{quote(collection, safe='')}", timeout=30
+                    f"{base_url}/collections/{quote(collection, safe='')}",
+                    headers=headers,
+                    timeout=30,
                 )
                 if response.status_code != 404:
                     response.raise_for_status()
@@ -832,7 +1137,7 @@ def restore_qdrant_snapshots(
                     [
                         "docker",
                         "exec",
-                        qdrant_container,
+                        container,
                         "rm",
                         "-f",
                         f"{snapshot_directory}/{remote_name}",
@@ -861,8 +1166,10 @@ def restore_drill(
     database_url: str,
     qdrant_url: str | None = None,
     qdrant_container: str | None = None,
+    qdrant_api_key: str | None = None,
     now: datetime | None = None,
-) -> str:
+    application_canary: Callable[[str, Path, Mapping[str, Any]], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Restore into generated temporary targets and clean all targets in finally."""
 
     backup_dir = Path(backup_dir).expanduser().resolve()
@@ -888,23 +1195,43 @@ def restore_drill(
     try:
         _execute_admin(admin_url, f'CREATE DATABASE "{target_database}"')
         restore_postgres_dump(dump_path, target_database, config)
-        try:
-            import psycopg
-
-            with psycopg.connect(normalize_dsn(target_url)) as connection:
-                connection.execute("SELECT 1")
-        except Exception as exc:  # noqa: BLE001 - operator-safe drill failure
-            raise BackupValidationError(f"restored PostgreSQL verification failed: {_compact_error(str(exc))}") from exc
-        _extract_files_to_temp(files_path)
-        if manifest.get("qdrant"):
-            restore_qdrant_snapshots(
-                backup_dir,
+        _verify_restored_postgres(target_url)
+        with _extract_files_to_temp(files_path) as extracted_root:
+            application_result = _verify_restored_application(
+                target_url,
+                extracted_root,
                 manifest,
-                qdrant_url or os.getenv("QDRANT_URL", DEFAULT_QDRANT_URL),
-                resolve_qdrant_container(qdrant_container),
-                restore_stamp,
+                database_canary=(
+                    (lambda restored_url: application_canary(
+                        restored_url, extracted_root, manifest,
+                    ))
+                    if application_canary is not None
+                    else None
+                ),
             )
-        return target_database
+            if manifest.get("qdrant"):
+                requested_container = qdrant_container or ""
+                resolved_container = (
+                    resolve_qdrant_container(requested_container)
+                    if requested_container.strip()
+                    else None
+                )
+                restore_url = str(qdrant_url or "").strip()
+                if not restore_url:
+                    raise BackupValidationError("restore Qdrant URL is required")
+                restore_qdrant_snapshots(
+                    backup_dir,
+                    manifest,
+                    restore_url,
+                    resolved_container,
+                    restore_stamp,
+                    qdrant_api_key=qdrant_api_key,
+                )
+        return {
+            "temporary_database": target_database,
+            "cleaned": True,
+            "application_canary": application_result,
+        }
     finally:
         if cleanup_required:
             try:
@@ -939,9 +1266,9 @@ def main(argv: list[str] | None = None) -> int:
 
     drill_parser = subparsers.add_parser("restore-drill", help="restore into temporary targets and clean them up")
     drill_parser.add_argument("backup_dir")
-    drill_parser.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
-    drill_parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", DEFAULT_QDRANT_URL))
-    drill_parser.add_argument("--qdrant-container", default=os.getenv("QDRANT_CONTAINER"))
+    drill_parser.add_argument("--database-url", default=os.getenv("RESTORE_DATABASE_URL", ""))
+    drill_parser.add_argument("--qdrant-url", default=os.getenv("RESTORE_QDRANT_URL", ""))
+    drill_parser.add_argument("--qdrant-container", default=os.getenv("RESTORE_QDRANT_CONTAINER"))
 
     args = parser.parse_args(argv)
     try:
@@ -958,12 +1285,14 @@ def main(argv: list[str] | None = None) -> int:
             verify_backup(args.backup_dir)
             print("backup verification: OK")
         else:
-            target = restore_drill(
+            result = restore_drill(
                 args.backup_dir,
                 database_url=args.database_url or "",
                 qdrant_url=args.qdrant_url,
                 qdrant_container=args.qdrant_container,
+                qdrant_api_key=os.getenv("RESTORE_QDRANT_API_KEY"),
             )
+            target = result.get("temporary_database") if isinstance(result, Mapping) else result
             print(f"restore drill: OK ({target} cleaned)")
     except BackupValidationError as exc:
         print(f"backup operation failed: {_compact_error(str(exc))}", file=sys.stderr)

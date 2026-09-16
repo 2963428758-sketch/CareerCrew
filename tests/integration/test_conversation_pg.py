@@ -427,6 +427,7 @@ def test_quality_review_postgres_persists_events_and_audits(store_and_db):
     store, db = store_and_db
     uid = "u_review_pg"
     _conv, _turn, _user, assistant, _run = _begin_chat_turn(store, uid)
+    store.set_message_content(uid, assistant["id"], "reviewable answer")
     feedback = store.put_feedback(
         uid, assistant["id"], rating="negative", reason="tool_failure",
         comment="private comment", share_context=True,
@@ -455,7 +456,7 @@ def test_quality_review_postgres_persists_events_and_audits(store_and_db):
     assert all("private comment" not in str(a[1]) for a in audits)
 
     with pytest.raises(ValueError):
-        store.update_quality_review("reviewer-1", feedback["id"], status="promoted_to_eval")
+        store.update_quality_review("reviewer-1", feedback["id"], status="promoted_to_eval", root_cause="tool", note=None)
 
 def test_quality_metrics_postgres_matches_fake_semantics(store_and_db):
     """Dashboard aggregates on real SQL: coverage, latency percentiles, trend, alert."""
@@ -464,8 +465,10 @@ def test_quality_metrics_postgres_matches_fake_semantics(store_and_db):
     _conv, _turn, _user, good, _run = _begin_chat_turn(store, uid)
     _conv, _turn, _user, bad, _run = _begin_chat_turn(store, uid)
     store.finish_run(uid, _run["id"], "completed", latency_ms=800, input_tokens=20, output_tokens=40)
-    store.put_feedback(uid, good["id"], rating="positive")
-    store.put_feedback(uid, bad["id"], rating="negative", reason="tool_failure")
+    store.set_message_content(uid, good["id"], "helpful answer")
+    store.set_message_content(uid, bad["id"], "failed answer")
+    store.put_feedback(uid, good["id"], rating="positive", reason=None, comment=None, share_context=False)
+    store.put_feedback(uid, bad["id"], rating="negative", reason="tool_failure", comment=None, share_context=False)
     metrics = store.compute_quality_metrics({})
     assert metrics["runs"] == 2
     assert metrics["positive_count"] == 1 and metrics["negative_count"] == 1
@@ -479,6 +482,7 @@ def test_eval_case_lifecycle_postgres(store_and_db):
     store, db = store_and_db
     uid = "u_eval_pg"
     _conv, _turn, _user, message, _run = _begin_chat_turn(store, uid)
+    store.set_message_content(uid, message["id"], "answer for evaluation")
     store.finish_run(uid, _run["id"], "completed", latency_ms=100, input_tokens=5, output_tokens=9)
     store.put_feedback(uid, message["id"], rating="negative", reason="tool_failure",
                        comment=None, share_context=True)

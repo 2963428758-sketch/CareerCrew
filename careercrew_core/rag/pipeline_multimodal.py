@@ -118,6 +118,7 @@ class MultimodalIngestionPipeline:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        chunk_sink: Callable[[list[dict]], None] | None = None,
     ) -> int:
         """纯文本入库（根 run careercrew.ingest，Contextualizer 逐 chunk LLM 不刷配额）。"""
         return traced_call(
@@ -126,6 +127,7 @@ class MultimodalIngestionPipeline:
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
             text=text, source=source, metadata=metadata, progress_cb=progress_cb, category=category,
+            chunk_sink=chunk_sink,
         )
 
     def _ingest_text_impl(
@@ -135,10 +137,16 @@ class MultimodalIngestionPipeline:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        chunk_sink: Callable[[list[dict]], None] | None = None,
     ) -> int:
         """纯文本路径：切分 -> contextualize -> BGE-M3 -> upsert（无视觉向量）。"""
         chunks = self._chunker.chunk(text, source=source, metadata=metadata)
         doc_id = Path(source).stem if source else "doc"
+        if chunk_sink:
+            chunk_sink([
+                {"text": chunk.text, "page": chunk.metadata.get("page")}
+                for chunk in chunks
+            ])
         texts_to_embed: list[str] = []
         for c in chunks:
             if self._ctx_enabled(category):
@@ -184,6 +192,7 @@ class MultimodalIngestionPipeline:
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
         output_dir: str | Path | None = None,
+        chunk_sink: Callable[[list[dict]], None] | None = None,
     ) -> int:
         """文件入库（根 run careercrew.ingest）；output_dir 按用户/文档隔离解析产物。"""
         return traced_call(
@@ -192,7 +201,7 @@ class MultimodalIngestionPipeline:
             run_type="chain",
             run_metadata={"endpoint": "ingest"},
             path=path, metadata=metadata, progress_cb=progress_cb, category=category,
-            output_dir=output_dir,
+            output_dir=output_dir, chunk_sink=chunk_sink,
         )
 
     def _ingest_file_impl(
@@ -202,6 +211,7 @@ class MultimodalIngestionPipeline:
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
         output_dir: str | Path | None = None,
+        chunk_sink: Callable[[list[dict]], None] | None = None,
     ) -> int:
         """文件入库：md/txt 走文本路径；其余走 MinerU 多模态路径。"""
         p = Path(path)
@@ -210,11 +220,15 @@ class MultimodalIngestionPipeline:
             meta = {**doc.metadata, **(metadata or {})}
             return self.ingest_text(
                 doc.text, source=str(p), metadata=meta, progress_cb=progress_cb, category=category,
+                chunk_sink=chunk_sink,
             )
         parsed = self.parse_file(p, output_dir, progress_cb=progress_cb)
         if progress_cb:
             progress_cb("vectorize", 0.6)
-        return self._ingest_parsed(parsed, metadata, progress_cb=progress_cb, category=category)
+        return self._ingest_parsed(
+            parsed, metadata, progress_cb=progress_cb, category=category,
+            chunk_sink=chunk_sink,
+        )
 
     def parse_file(
         self,
@@ -236,6 +250,7 @@ class MultimodalIngestionPipeline:
         metadata: dict | None = None,
         progress_cb: Callable[[str, float], None] | None = None,
         category: str = "",
+        chunk_sink: Callable[[list[dict]], None] | None = None,
     ) -> int:
         meta = metadata or {}
         base_meta = {
@@ -312,6 +327,11 @@ class MultimodalIngestionPipeline:
                 )
 
         records = [r for r in records if len(r.dense) > 0]
+        if chunk_sink:
+            chunk_sink([
+                {"text": record.text, "page": record.metadata.get("page")}
+                for record in records
+            ])
         if records:
             if progress_cb:
                 progress_cb("store", 0.95)

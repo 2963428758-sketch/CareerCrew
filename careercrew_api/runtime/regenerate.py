@@ -115,7 +115,17 @@ class RegenerateMixin:
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=content, sources=sources, jobs=jobs, turn=ctx)
+        return StreamResult(
+            content=content,
+            sources=sources,
+            jobs=jobs,
+            turn=ctx,
+            retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+            input_tokens=obs["input_tokens"],
+            output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"],
+        )
 
     def validate_regenerate(self, message_id: str, user_id: str):
         """regenerate 前置校验（供路由同步 404/409 映射与 run 复用）。

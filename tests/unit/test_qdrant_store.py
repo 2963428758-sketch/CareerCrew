@@ -136,6 +136,44 @@ def test_access_filter_alone_still_uses_should(valid_config_data):
     assert {fc.key for fc in flt.should} == {"visibility", "owner_user_id"}
 
 
+def test_governance_active_filter_excludes_archived_governance_points(valid_config_data):
+    store = _store(valid_config_data, collection="governance-active-filter")
+    store.upsert([
+        VectorRecord(
+            id="legacy-p1", dense=[0.1] * 1024, text="legacy",
+            metadata={"doc": "legacy", "owner_user_id": "u1", "visibility": "private"},
+        ),
+        VectorRecord(
+            id="governed-active", dense=[0.1] * 1024, text="active",
+            metadata={
+                "doc": "governance:doc", "owner_user_id": "u1", "visibility": "private",
+                "record_type": "knowledge_governance", "governance_status": "active",
+            },
+        ),
+        VectorRecord(
+            id="governed-old", dense=[0.1] * 1024, text="old",
+            metadata={
+                "doc": "governance:doc", "owner_user_id": "u1", "visibility": "private",
+                "record_type": "knowledge_governance", "governance_status": "retiring",
+            },
+        ),
+        VectorRecord(
+            id="governed-legacy", dense=[0.1] * 1024, text="old without status",
+            metadata={
+                "doc": "governance:doc", "owner_user_id": "u1", "visibility": "private",
+                "record_type": "knowledge_governance",
+            },
+        ),
+    ])
+
+    hits = store.query(
+        [0.1] * 1024, top_k=10,
+        filters={"__access_user": "u1", "__governance_active": True},
+    )
+
+    assert {hit.id for hit in hits} == {"legacy-p1", "governed-active"}
+
+
 def test_forced_doc_from_other_user_is_excluded(valid_config_data):
     """端到端：强制上下文 doc 属于他人 private，即便 doc id 在白名单内也不返回。"""
     store = _store(valid_config_data)

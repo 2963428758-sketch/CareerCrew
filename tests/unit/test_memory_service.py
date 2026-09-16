@@ -82,11 +82,11 @@ def test_memory_list_is_latest_first_and_never_returns_transcript_rows() -> None
 def test_delete_removes_the_matching_vector_point() -> None:
     class VectorSpy:
         def __init__(self) -> None:
-            self.deleted: list[str] = []
+            self.deleted: list[dict[str, str]] = []
 
-        def delete_by_ids(self, ids: list[str]) -> int:
-            self.deleted.extend(ids)
-            return len(ids)
+        def delete_by_metadata(self, filters: dict[str, str]) -> int:
+            self.deleted.append(dict(filters))
+            return 1
 
     service, db = _service()
     vector = VectorSpy()
@@ -96,7 +96,34 @@ def test_delete_removes_the_matching_vector_point() -> None:
     removed = service.delete("u1", kind="event", entry_id="event-1")
 
     assert removed == 1
-    assert vector.deleted == ["event-1"]
+    assert vector.deleted == [{"user_id": "u1", "memory_id": "event-1"}]
+
+
+def test_delete_never_uses_unscoped_vector_id_for_an_event() -> None:
+    class VectorSpy:
+        def __init__(self) -> None:
+            self.delete_by_ids_called = False
+            self.filters: list[dict[str, str]] = []
+
+        def delete_by_ids(self, _ids: list[str]) -> int:
+            self.delete_by_ids_called = True
+            raise AssertionError("event deletion must be tenant-scoped")
+
+        def delete_by_metadata(self, filters: dict[str, str]) -> int:
+            self.filters.append(dict(filters))
+            return 1
+
+    service, db = _service()
+    vector = VectorSpy()
+    service._vector_store = vector
+    db.insert_episodic(
+        "u1", "t1", "event-2", None, "offer", {"company": "Example"},
+        "2026-08-03T00:00:00+00:00",
+    )
+
+    assert service.delete("u1", kind="event", entry_id="event-2") == 1
+    assert vector.delete_by_ids_called is False
+    assert vector.filters == [{"user_id": "u1", "memory_id": "event-2"}]
 
 
 def test_service_mirrors_explicit_facts_with_source_lineage() -> None:

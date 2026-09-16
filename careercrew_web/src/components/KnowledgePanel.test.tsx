@@ -70,7 +70,7 @@ describe("KnowledgePanel visibility", () => {
               expires_at: null,
               credibility: 0.8,
               citation_hits: 7,
-              chunks: [{ id: "chunk-1", ordinal: 0, text: "STAR 方法" }],
+              chunks: [{ id: "chunk-1", ordinal: 0, text: "STAR 方法", updated_at: "2026-09-11T00:00:00+00:00" }],
             }],
           }],
         }), { status: 200 })
@@ -150,5 +150,85 @@ describe("KnowledgePanel visibility", () => {
     expect(await screen.findByText("索引中…")).toBeTruthy()
     releaseReindex(new Response(JSON.stringify({ detail: "重新索引失败" }), { status: 503 }))
     expect(await screen.findByText(/知识治理加载失败：重新索引失败/)).toBeTruthy()
+  })
+
+  it("支持编辑单个分块并在保存后显示待索引状态，取消不会发送请求", async () => {
+    const documentId = "550e8400-e29b-41d4-a716-446655440030"
+    const versionId = "550e8400-e29b-41d4-a716-446655440031"
+    const chunkId = "550e8400-e29b-41d4-a716-446655440032"
+    let edited = false
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/knowledge") return new Response(JSON.stringify(STATUS), { status: 200 })
+      if (url === "/api/knowledge/governance/documents") {
+        return new Response(JSON.stringify({ items: [{
+          id: documentId, name: "可编辑文档", status: edited ? "active" : "active", visibility: "private", credibility: 1,
+          citation_hits: 0, versions: [{ id: versionId, version_number: 1, status: edited ? "draft" : "active", chunks: [{
+            id: chunkId, ordinal: 0, page: edited ? 2 : 1, text: edited ? "更新后的分块" : "原始分块", index_status: edited ? "pending" : "indexed", updated_at: "2026-09-11T00:00:00+00:00",
+          }] }],
+        }], total: 1 }), { status: 200 })
+      }
+      if (url.endsWith(`/chunks/${chunkId}`) && init?.method === "PATCH") {
+        edited = true
+        return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    render(<KnowledgePanel />)
+    await screen.findByText("mine_file.pdf")
+    fireEvent.click(screen.getByRole("button", { name: "打开知识治理" }))
+    await screen.findByText("可编辑文档")
+    fireEvent.click(screen.getByText("查看版本与分块"))
+
+    fireEvent.click(screen.getByRole("button", { name: `编辑分块 ${chunkId}` }))
+    fireEvent.change(screen.getByLabelText(`分块文本 ${chunkId}`), { target: { value: "取消的内容" } })
+    fireEvent.click(screen.getByRole("button", { name: `取消编辑分块 ${chunkId}` }))
+    expect(screen.queryByLabelText(`分块文本 ${chunkId}`)).toBeNull()
+    expect(apiFetchMock.mock.calls.some(([url, request]) => url.endsWith(`/chunks/${chunkId}`) && (request as RequestInit).method === "PATCH")).toBe(false)
+
+    fireEvent.click(screen.getByRole("button", { name: `编辑分块 ${chunkId}` }))
+    fireEvent.change(screen.getByLabelText(`分块文本 ${chunkId}`), { target: { value: "更新后的分块" } })
+    fireEvent.change(screen.getByLabelText(`分块页码 ${chunkId}`), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: `保存分块 ${chunkId}` }))
+
+    await waitFor(() => expect(apiFetchMock.mock.calls.some(([url, request]) =>
+      url.endsWith(`/chunks/${chunkId}`)
+      && (request as RequestInit).method === "PATCH"
+      && JSON.parse(String((request as RequestInit).body)).text === "更新后的分块"
+      && JSON.parse(String((request as RequestInit).body)).page === 2
+      && JSON.parse(String((request as RequestInit).body)).updated_at === "2026-09-11T00:00:00+00:00",
+    )).toBe(true))
+    expect(await screen.findByText(/待索引/)).toBeTruthy()
+  })
+
+  it("分块保存失败时显示可操作错误", async () => {
+    const documentId = "550e8400-e29b-41d4-a716-446655440040"
+    const versionId = "550e8400-e29b-41d4-a716-446655440041"
+    const chunkId = "550e8400-e29b-41d4-a716-446655440042"
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/knowledge") return new Response(JSON.stringify(STATUS), { status: 200 })
+      if (url === "/api/knowledge/governance/documents") {
+        return new Response(JSON.stringify({ items: [{
+          id: documentId, name: "冲突文档", status: "active", visibility: "private", credibility: 1,
+          citation_hits: 0, versions: [{ id: versionId, version_number: 1, status: "active", chunks: [{ id: chunkId, ordinal: 0, page: 1, text: "原始" }] }],
+        }], total: 1 }), { status: 200 })
+      }
+      if (url.endsWith(`/chunks/${chunkId}`) && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ detail: "内容已更新，请刷新后重试" }), { status: 409 })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    render(<KnowledgePanel />)
+    await screen.findByText("mine_file.pdf")
+    fireEvent.click(screen.getByRole("button", { name: "打开知识治理" }))
+    await screen.findByText("冲突文档")
+    fireEvent.click(screen.getByText("查看版本与分块"))
+    fireEvent.click(screen.getByRole("button", { name: `编辑分块 ${chunkId}` }))
+    fireEvent.change(screen.getByLabelText(`分块文本 ${chunkId}`), { target: { value: "冲突内容" } })
+    fireEvent.click(screen.getByRole("button", { name: `保存分块 ${chunkId}` }))
+
+    expect(await screen.findByText(/知识治理加载失败：内容已更新，请刷新后重试/)).toBeTruthy()
+    expect((screen.getByLabelText(`分块文本 ${chunkId}`) as HTMLTextAreaElement).value).toBe("冲突内容")
   })
 })

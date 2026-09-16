@@ -14,5 +14,7 @@
   "0013_consultation_workspace.py": "f1035e945611c890032a738f77ac790dda4d6c508658f9b2ba33ce3f4ebef8d6",
   "0014_resume_workspace.py": "f991279911886da7e8f780d486416fe85ea5821d68ef56335bff6abbf4a8864e",
   "0015_tool_operations.py": "c08df72139029b5ad4bc8df7040b9313597d0f908b7b3dd1e9447c258902db02",
-  "0016_workspace_owner_integrity.py": "04dd39267d3f689e2193391ae5ddc489f0cf80e18026b109234e2bb24b1b71bc"
+  "0016_workspace_owner_integrity.py": "04dd39267d3f689e2193391ae5ddc489f0cf80e18026b109234e2bb24b1b71bc",
+  "0017_knowledge_source_identity.py": "085556a3397e82e3783b8473b98f605e00f460d6126604e103198391a88c1acb",
+  "0018_eval_case_updated_at.py": "641c141263fb55c527733a3bec4dfb1f515b02cf801173ad98edc8936feebf3e"
 }

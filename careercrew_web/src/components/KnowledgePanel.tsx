@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
-import { BookOpen, ChevronDown, Globe, RefreshCw, Settings2, Trash2, Upload, X } from "lucide-react"
+import { BookOpen, ChevronDown, Edit3, Globe, RefreshCw, Save, Settings2, Trash2, Upload, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -33,6 +33,13 @@ interface KnowledgeGovernanceChunk {
   page?: number | null
   text?: string
   index_status?: string
+  updated_at?: string | null
+}
+
+interface KnowledgeChunkPatch {
+  text: string
+  page: number | null
+  updated_at?: string | null
 }
 
 interface KnowledgeGovernanceVersion {
@@ -48,6 +55,7 @@ interface KnowledgeGovernanceVersion {
 
 interface KnowledgeGovernanceDoc {
   id: string
+  owner_id?: string
   name: string
   category?: string
   visibility?: "private" | "public"
@@ -99,6 +107,12 @@ const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
   expired: "已过期",
 }
 
+const INDEX_STATUS_LABELS: Record<string, string> = {
+  pending: "待索引",
+  indexed: "已索引",
+  failed: "索引失败",
+}
+
 /** 知识库管理面板（上传 / 列表 / 删除），可嵌入知识库问答页右上角。 */
 export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
   const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
@@ -142,8 +156,10 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
       if (!resp.ok) throw new Error(await apiErrorText(resp, "加载知识治理失败"))
       const body = await resp.json() as KnowledgeGovernanceResponse
       setGovernanceDocs(Array.isArray(body.items) ? body.items : [])
+      return true
     } catch (e) {
       setGovernanceError(networkErrorText(e, "网络连接失败，请检查网络后重试"))
+      return false
     } finally {
       setGovernanceLoading(false)
     }
@@ -185,6 +201,33 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
       await loadGovernance()
     } catch (e) {
       setGovernanceError(networkErrorText(e, "重新索引失败，请稍后重试"))
+    } finally {
+      setGovernanceBusy("")
+    }
+  }
+
+  const saveGovernanceChunk = async (
+    doc: KnowledgeGovernanceDoc,
+    version: KnowledgeGovernanceVersion,
+    chunk: KnowledgeGovernanceChunk,
+    values: KnowledgeChunkPatch,
+  ): Promise<boolean> => {
+    setGovernanceBusy(`chunk:${doc.id}:${version.id}:${chunk.id}`)
+    setGovernanceError("")
+    try {
+      const resp = await apiFetch(
+        `/api/knowledge/governance/documents/${encodeURIComponent(doc.id)}/versions/${encodeURIComponent(version.id)}/chunks/${encodeURIComponent(chunk.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values),
+        },
+      )
+      if (!resp.ok) throw new Error(await apiErrorText(resp, "保存分块失败"))
+      return await loadGovernance()
+    } catch (e) {
+      setGovernanceError(networkErrorText(e, "保存分块失败，请刷新后重试"))
+      return false
     } finally {
       setGovernanceBusy("")
     }
@@ -407,8 +450,37 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
         </CardHeader>
         {governanceOpen && (
           <CardContent id="knowledge-governance-panel" className="space-y-3">
-            {governanceLoading ? (
+            {governanceLoading && !governanceDocs ? (
               <Skeleton className="h-32 w-full" />
+            ) : governanceDocs ? (
+              <div className="space-y-2">
+                {governanceError && (
+                  <div className="space-y-2 rounded-[8px] border border-destructive/30 bg-destructive/5 p-3">
+                    <p className="text-[13px] text-destructive">知识治理加载失败：{governanceError}</p>
+                    <Button type="button" variant="outline" size="sm" className="min-h-11 gap-1.5" onClick={() => void loadGovernance()}>
+                      <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                      重试知识治理
+                    </Button>
+                  </div>
+                )}
+                {governanceDocs.length === 0 ? (
+                  <p className="rounded-[8px] border border-dashed border-[var(--border-normal)] px-3 py-6 text-center text-[13px] text-ink-faint">
+                    暂无进入治理生命周期的文档。传统上传文档不会自动伪装成治理文档。
+                  </p>
+                ) : (
+                  governanceDocs.map((doc) => (
+                    <KnowledgeGovernanceRow
+                      key={doc.id}
+                      doc={doc}
+                      busy={governanceBusy}
+                      canGovern={isAdmin || doc.owner_id === me}
+                      onSave={saveGovernance}
+                      onReindex={reindexGovernance}
+                      onChunkSave={saveGovernanceChunk}
+                    />
+                  ))
+                )}
+              </div>
             ) : governanceError ? (
               <div className="space-y-2 rounded-[8px] border border-destructive/30 bg-destructive/5 p-3">
                 <p className="text-[13px] text-destructive">知识治理加载失败：{governanceError}</p>
@@ -416,22 +488,6 @@ export default function KnowledgePanel({ onClose }: { onClose?: () => void }) {
                   <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
                   重试知识治理
                 </Button>
-              </div>
-            ) : governanceDocs && governanceDocs.length === 0 ? (
-              <p className="rounded-[8px] border border-dashed border-[var(--border-normal)] px-3 py-6 text-center text-[13px] text-ink-faint">
-                暂无进入治理生命周期的文档。传统上传文档不会自动伪装成治理文档。
-              </p>
-            ) : governanceDocs ? (
-              <div className="space-y-2">
-                {governanceDocs.map((doc) => (
-                  <KnowledgeGovernanceRow
-                    key={doc.id}
-                    doc={doc}
-                    busy={governanceBusy}
-                    onSave={saveGovernance}
-                    onReindex={reindexGovernance}
-                  />
-                ))}
               </div>
             ) : null}
           </CardContent>
@@ -556,13 +612,17 @@ function DocRow({ doc, me, isAdmin, onDelete, onTogglePublish }: {
 function KnowledgeGovernanceRow({
   doc,
   busy,
+  canGovern,
   onSave,
   onReindex,
+  onChunkSave,
 }: {
   doc: KnowledgeGovernanceDoc
   busy: string
+  canGovern: boolean
   onSave: (doc: KnowledgeGovernanceDoc, values: { expires_at: string | null; credibility: number }) => Promise<void>
   onReindex: (doc: KnowledgeGovernanceDoc, version: KnowledgeGovernanceVersion) => Promise<void>
+  onChunkSave: (doc: KnowledgeGovernanceDoc, version: KnowledgeGovernanceVersion, chunk: KnowledgeGovernanceChunk, values: KnowledgeChunkPatch) => Promise<boolean>
 }) {
   const [expiresAt, setExpiresAt] = useState(doc.expires_at?.slice(0, 10) ?? "")
   const [credibility, setCredibility] = useState(String(doc.credibility ?? 1))
@@ -570,11 +630,34 @@ function KnowledgeGovernanceRow({
   const validCredibility = Number.isFinite(parsedCredibility) && parsedCredibility >= 0 && parsedCredibility <= 1
   const saving = busy === `save:${doc.id}`
   const versions = doc.versions ?? []
+  const [editingChunk, setEditingChunk] = useState<{ id: string; text: string; page: string } | null>(null)
+  const [expandedVersions, setExpandedVersions] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     setExpiresAt(doc.expires_at?.slice(0, 10) ?? "")
     setCredibility(String(doc.credibility ?? 1))
   }, [doc.credibility, doc.expires_at, doc.id])
+
+  const startChunkEdit = (chunk: KnowledgeGovernanceChunk) => {
+    setEditingChunk({
+      id: chunk.id,
+      text: chunk.text || "",
+      page: chunk.page == null ? "" : String(chunk.page),
+    })
+  }
+
+  const saveChunk = async (version: KnowledgeGovernanceVersion, chunk: KnowledgeGovernanceChunk) => {
+    if (!editingChunk || editingChunk.id !== chunk.id) return
+    const pageText = editingChunk.page.trim()
+    const page = pageText ? Number(pageText) : null
+    if (!editingChunk.text.trim() || (page !== null && (!Number.isInteger(page) || page < 1))) return
+    const saved = await onChunkSave(doc, version, chunk, {
+      text: editingChunk.text,
+      page,
+      updated_at: chunk.updated_at ?? null,
+    })
+    if (saved) setEditingChunk(null)
+  }
 
   return (
     <article className="rounded-[8px] border border-[var(--border-soft)] bg-workspace p-3">
@@ -604,6 +687,7 @@ function KnowledgeGovernanceRow({
             step="0.1"
             value={credibility}
             onChange={(event) => setCredibility(event.target.value)}
+            disabled={!canGovern}
             aria-label={`可信度 ${doc.name}`}
             className="min-h-11 w-full rounded-[7px] border border-input bg-card px-2.5 text-[13px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           />
@@ -614,6 +698,7 @@ function KnowledgeGovernanceRow({
             type="date"
             value={expiresAt}
             onChange={(event) => setExpiresAt(event.target.value)}
+            disabled={!canGovern}
             aria-label={`失效日期 ${doc.name}`}
             className="min-h-11 w-full rounded-[7px] border border-input bg-card px-2.5 text-[13px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           />
@@ -624,7 +709,7 @@ function KnowledgeGovernanceRow({
           size="sm"
           className="min-h-11 gap-1.5"
           onClick={() => void onSave(doc, { expires_at: expiresAt || null, credibility: parsedCredibility })}
-          disabled={busy !== "" || !validCredibility}
+          disabled={!canGovern || busy !== "" || !validCredibility}
           aria-label={`保存治理设置 ${doc.name}`}
         >
           <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -643,6 +728,8 @@ function KnowledgeGovernanceRow({
           ) : versions.map((version) => {
             const reindexing = busy === `reindex:${doc.id}:${version.id}`
             const chunks = version.chunks ?? []
+            const showAllChunks = expandedVersions[version.id] === true
+            const visibleChunks = showAllChunks ? chunks : chunks.slice(0, 2)
             return (
               <div key={version.id} className="rounded-[7px] bg-surface-2 p-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -656,7 +743,7 @@ function KnowledgeGovernanceRow({
                     size="sm"
                     className="min-h-11 gap-1.5"
                     onClick={() => void onReindex(doc, version)}
-                    disabled={busy !== ""}
+                    disabled={!canGovern || busy !== "" || editingChunk !== null}
                     aria-label={`重新索引 v${version.version_number}`}
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${reindexing ? "animate-spin" : ""}`} aria-hidden="true" />
@@ -665,12 +752,97 @@ function KnowledgeGovernanceRow({
                 </div>
                 {chunks.length > 0 && (
                   <div className="mt-2 space-y-1 border-t border-[var(--border-soft)] pt-2">
-                    {chunks.slice(0, 2).map((chunk) => (
-                      <p key={chunk.id} className="line-clamp-2 text-[12px] leading-relaxed text-ink-faint">
-                        {chunk.page ? `第 ${chunk.page} 页 · ` : ""}{chunk.text || "（空分块）"}
-                      </p>
-                    ))}
-                    {chunks.length > 2 && <p className="text-[11px] text-ink-faint">还有 {chunks.length - 2} 个分块，已折叠预览</p>}
+                    {visibleChunks.map((chunk) => {
+                      const editing = editingChunk?.id === chunk.id
+                      const chunkBusy = busy === `chunk:${doc.id}:${version.id}:${chunk.id}`
+                      const pageText = editingChunk?.page.trim() || ""
+                      const pageValue = pageText ? Number(pageText) : null
+                      const validPage = pageValue === null || (Number.isInteger(pageValue) && pageValue >= 1)
+                      return (
+                        <div key={chunk.id} className="space-y-1.5 rounded-[6px] border border-transparent py-1">
+                          {editing ? (
+                            <>
+                              <label className="block text-[11px] font-medium text-ink-soft" htmlFor={`knowledge-chunk-text-${chunk.id}`}>分块文本</label>
+                              <textarea
+                                id={`knowledge-chunk-text-${chunk.id}`}
+                                value={editingChunk?.text || ""}
+                                onChange={(event) => setEditingChunk((current) => current ? { ...current, text: event.target.value } : current)}
+                                rows={4}
+                                maxLength={50_000}
+                                className="w-full resize-y rounded-[7px] border border-input bg-workspace p-2 text-[13px] leading-relaxed text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                                aria-label={`分块文本 ${chunk.id}`}
+                              />
+                              <label className="block text-[11px] font-medium text-ink-soft" htmlFor={`knowledge-chunk-page-${chunk.id}`}>页码（可留空）</label>
+                              <input
+                                id={`knowledge-chunk-page-${chunk.id}`}
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={editingChunk?.page || ""}
+                                onChange={(event) => setEditingChunk((current) => current ? { ...current, page: event.target.value } : current)}
+                                className="min-h-11 w-full rounded-[7px] border border-input bg-workspace px-2.5 text-[13px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                                aria-label={`分块页码 ${chunk.id}`}
+                              />
+                              <div className="flex flex-wrap gap-1.5">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="min-h-11 gap-1.5"
+                                  onClick={() => void saveChunk(version, chunk)}
+                                  disabled={busy !== "" || !editingChunk?.text.trim() || !validPage}
+                                  aria-label={`保存分块 ${chunk.id}`}
+                                >
+                                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {chunkBusy ? "保存中…" : "保存分块"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="min-h-11 gap-1.5"
+                                  onClick={() => setEditingChunk(null)}
+                                  disabled={busy !== ""}
+                                  aria-label={`取消编辑分块 ${chunk.id}`}
+                                >
+                                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                                  取消
+                                </Button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="flex flex-wrap items-start justify-between gap-1.5">
+                              <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-ink-faint">
+                                {chunk.page ? `第 ${chunk.page} 页 · ` : ""}{chunk.text || "（空分块）"}
+                                {chunk.index_status && <span className="ml-1 text-[11px] text-ink-faint">· {INDEX_STATUS_LABELS[chunk.index_status] ?? chunk.index_status}</span>}
+                              </p>
+                              {canGovern && (
+                                <button
+                                  type="button"
+                                  className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-[7px] border border-[var(--border-soft)] px-2.5 text-[12px] text-ink-soft transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+                                  onClick={() => startChunkEdit(chunk)}
+                                  disabled={busy !== ""}
+                                  aria-label={`编辑分块 ${chunk.id}`}
+                                >
+                                  <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
+                                  编辑
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {chunks.length > 2 && (
+                      <button
+                        type="button"
+                        className="min-h-11 text-[11px] font-medium text-primary"
+                        onClick={() => setExpandedVersions((current) => ({ ...current, [version.id]: !showAllChunks }))}
+                        aria-expanded={showAllChunks}
+                      >
+                        {showAllChunks ? "收起分块" : `查看全部 ${chunks.length} 个分块`}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

@@ -493,6 +493,7 @@ class PostgresConversationDb(ConversationDb):
                 "created_at TIMESTAMPTZ NOT NULL, "
                 "approved_at TIMESTAMPTZ)"
             )
+            conn.execute("ALTER TABLE eval_cases ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_eval_cases_status "
                 "ON eval_cases(status, created_at)"
@@ -1294,6 +1295,9 @@ class PostgresConversationDb(ConversationDb):
         if row is None:
             return None
         out = dict(row)
+        for field in ("id", "source_feedback_id"):
+            if out.get(field) is not None:
+                out[field] = str(out[field])
         out["context"] = out.pop("context_json")
         return out
 

@@ -11,12 +11,12 @@
 | 检查 | 结果 | 证据 |
 |---|---|---|
 | 语义索引与 owner/type 过滤 | 通过，聚焦 22 passed | `tests/unit/test_workspace_semantic_search.py`、`tests/unit/test_runtime_workspace_semantic_search.py`、`tests/unit/test_workspace_traceability.py`、`tests/unit/test_qdrant_store.py` |
-| 后端全量 | 退出码 0 | `python -m pytest tests -q` |
-| 前端回归 | 51 个测试文件、212 个测试通过 | `careercrew_web/npm run test` |
-| 迁移静态校验 | 通过 | `scripts/validate_migrations.py --static`，head=`0016_workspace_owner_integrity` |
+| 后端聚焦 | 通过；仓库全量仅剩 1 个本机 PostgreSQL 环境失败 | `python -m pytest tests/unit/test_release_acceptance.py tests/unit/test_backup_restore.py tests/unit/test_eval_runner.py tests/unit/test_memory_records.py -q` |
+| 前端回归 | 51 个测试文件、214 个测试通过 | `careercrew_web/npm run test` |
+| 迁移静态校验 | 通过 | `scripts/validate_migrations.py --static`，head=`0017_knowledge_source_identity` |
 | 发布恢复演练 | 退出码 0 | `scripts/release_rehearsal.py`，临时库 A/B/C/D 四路径通过 |
 
-后端全量仅保留一个本地环境 warning：本地 Qdrant 实现不支持 payload index；真实 Qdrant 服务路径已在 Docker 冒烟中使用。
+后端全量本轮退出码为 1，唯一失败为 `tests/api/test_user_settings_api.py::test_apikey_settings_crud_lifecycle`，原因是本机 `localhost:5432` PostgreSQL 不可用；不能据此宣称后端全绿。Qdrant 真实服务路径和本地 Docker 冒烟也未在本轮重跑。
 
 ## 真实本地语义冒烟
 

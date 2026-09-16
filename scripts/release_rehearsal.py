@@ -31,7 +31,7 @@ PREFIX_NAME = re.compile(r"^careercrew_rehearsal_[a-z0-9_]+$")
 SYNTHETIC_PAYLOAD = "synthetic-release-rehearsal"
 # Keep this aligned with scripts/validate_migrations.py.  The release drill
 # must exercise the current published migration chain, not an old phase head.
-EXPECTED_HEAD = "0016_workspace_owner_integrity"
+EXPECTED_HEAD = "0018_eval_case_updated_at"
 
 
 @dataclass(frozen=True)

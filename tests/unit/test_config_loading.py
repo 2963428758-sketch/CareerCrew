@@ -75,6 +75,38 @@ def test_env_var_substitution(tmp_path: Path, valid_config_data: dict, monkeypat
     assert settings.rerank.api_key == "sk-from-env"
 
 
+def test_protected_environment_does_not_let_dotenv_override_runtime_inputs(
+    tmp_path: Path,
+    valid_config_data: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import careercrew_core.state.settings as settings_module
+
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        settings_module,
+        "load_dotenv",
+        lambda **kwargs: calls.append(bool(kwargs["override"])),
+    )
+    monkeypatch.setenv("CAREERCREW_ENV", "production")
+    load_settings(_write_config(tmp_path, valid_config_data))
+
+    assert calls == [False]
+
+
+def test_env_substitution_supports_safe_defaults(
+    tmp_path: Path,
+    valid_config_data: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid_config_data["vector_store"]["url"] = "${UNSET_QDRANT_URL:-http://localhost:6333}"
+    monkeypatch.delenv("UNSET_QDRANT_URL", raising=False)
+
+    settings = load_settings(_write_config(tmp_path, valid_config_data))
+
+    assert settings.vector_store.url == "http://localhost:6333"
+
+
 def test_missing_api_key_fail_fast(tmp_path: Path, valid_config_data: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     valid_config_data["llm"]["api_key"] = "${DEFINITELY_UNSET_VAR}"
     valid_config_data["rerank"]["api_key"] = "${DEFINITELY_UNSET_VAR}"

@@ -162,7 +162,16 @@ class StreamingMixin:
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=result, jobs=jobs, turn=ctx)
+        return StreamResult(
+            content=result,
+            jobs=jobs,
+            turn=ctx,
+            retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+            input_tokens=obs["input_tokens"],
+            output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"],
+        )
 
     def run_resume_stream(self, thread_id: str, user_id: str, jd_text: str,
                           cb: Callable[[str], None] | None = None,
@@ -271,7 +280,15 @@ class StreamingMixin:
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=result, turn=ctx)
+        return StreamResult(
+            content=result,
+            turn=ctx,
+            retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+            input_tokens=obs["input_tokens"],
+            output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"],
+        )
 
     def run_planner_chat_stream(self, thread_id: str, user_id: str, intent: str,
                                 cb: Callable[[str], None] | None = None,
@@ -384,7 +401,15 @@ class StreamingMixin:
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=result, turn=ctx)
+        return StreamResult(
+            content=result,
+            turn=ctx,
+            retrievals=obs["retrievals"],
+            tool_calls=obs["tool_calls"],
+            input_tokens=obs["input_tokens"],
+            output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"],
+        )
 
     def run_knowledge_ask_stream(self, question: str, user_id: str, thread_id: str = "knowledge",
                                  cb: Callable[[str], None] | None = None,
@@ -562,6 +587,15 @@ class StreamingMixin:
         )
         if cancel_check:
             cancel_check()
-        return StreamResult(content=content, sources=capped, turn=ctx)
+        return StreamResult(
+            content=content,
+            sources=capped,
+            turn=ctx,
+            retrievals=retrievals,
+            tool_calls=obs["tool_calls"],
+            input_tokens=obs["input_tokens"],
+            output_tokens=obs["output_tokens"],
+            total_tokens=obs["total_tokens"],
+        )
 
     # ── regenerate（§2.3 / §19 / §34 / §38）──

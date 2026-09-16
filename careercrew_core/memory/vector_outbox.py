@@ -1,6 +1,7 @@
 """长期记忆向量 outbox worker 与纯函数对账。"""
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 
@@ -13,12 +14,21 @@ def reconcile_vector_ids(active_memory_ids: set[str], indexed_memory_ids: set[st
 
 
 def drain_vector_outbox(repository, indexer: Any, *, limit: int = 50) -> dict[str, int]:
-    """执行一批任务。indexer 提供 upsert_memory(record) / delete_memory(id)。"""
+    """执行一批任务。删除任务必须把 user_id 传给支持租户过滤的 indexer。"""
     processed = failed = 0
     for task in repository.claim_vector_outbox(limit=limit):
         try:
             if task["operation"] == "delete":
-                indexer.delete_memory(task["memory_id"])
+                delete_memory = indexer.delete_memory
+                params = inspect.signature(delete_memory).parameters
+                if "user_id" in params or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+                ):
+                    delete_memory(task["memory_id"], user_id=task.get("user_id"))
+                else:
+                    # 兼容尚未升级的外部 indexer；内置 indexer 始终走上面的
+                    # 租户过滤路径，不能回退到 Qdrant 物理 ID 删除。
+                    delete_memory(task["memory_id"])
             else:
                 record = repository.get(task["memory_id"])
                 if record is not None and record.get("status") == "active":
@@ -52,6 +62,9 @@ class MemoryRecordVectorIndexer:
             },
         )])
 
-    def delete_memory(self, memory_id: str) -> None:
+    def delete_memory(self, memory_id: str, *, user_id: str | None = None) -> None:
         # 物理点 ID 与 Qdrant 的租户命名空间映射有关，按稳定 payload 删除最安全。
-        self._store.delete_by_metadata({"memory_id": memory_id})
+        filters = {"memory_id": memory_id}
+        if user_id:
+            filters["user_id"] = user_id
+        self._store.delete_by_metadata(filters)

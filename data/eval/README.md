@@ -24,12 +24,27 @@ python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail
 # Intentional, human-reviewed offline baseline update
 python scripts/eval_runner.py --offline --update-baseline
 
-# Optional real-model observation: only unavailable configuration/dependencies may skip
-python scripts/eval_runner.py --real --allow-skip --report reports/real-eval.json
+# Optional product-runtime observation: only unavailable configuration/dependencies may skip
+CAREERCREW_EVAL_RUNTIME=1 CAREERCREW_EVAL_RUN_ID=nightly_20260911 \
+  CAREERCREW_EVAL_USER_ID=eval_nightly_20260911 \
+  CAREERCREW_EVAL_TENANT_ATTESTATION=eval_nightly_20260911:nightly_20260911:provisioned \
+  CAREERCREW_EVAL_TENANT_ATTESTATION_URL=https://<protected-provisioner>/v1/eval-tenants/attest \
+  CAREERCREW_EVAL_TENANT_ATTESTATION_TOKEN=<protected-token> \
+  CAREERCREW_EVAL_TENANT_ATTESTATION_NONCE=<provisioning-nonce> \
+  CAREERCREW_EVAL_DISABLE_REMOTE_TRACING=1 \
+  python scripts/eval_runner.py --real --runtime --allow-skip --report reports/real-eval.json
 
-# Protected release gate: missing environment, collection errors, case failures, or regressions fail
-python scripts/eval_runner.py --real --require-real --compare data/eval/baseline.json --fail-on-regression --report reports/real-eval-release.json
+# Protected release gate: inject the dedicated eval tenant and runtime endpoints
+# from the CI protected environment; missing environment, collection errors,
+# case failures, cleanup failures, or regressions fail.
+python scripts/eval_runner.py --real --runtime --require-real --compare data/eval/baseline.json --fail-on-regression --report reports/real-eval-release.json
 ```
+
+`--model-probe` is a provider-connectivity diagnostic only. It does not run
+CareerCrew's product runtime and is never valid with `--require-real`.
+With `--require-real`, the runner also requires a protected provisioning
+authority receipt matching the dedicated user, run ID, nonce, and a future
+expiry; the local `provisioned` string is only a structural guard.
 
 Do not edit this dataset to make a failing run pass. Dataset or baseline changes
 require human review, a new documented version, and an intentional baseline

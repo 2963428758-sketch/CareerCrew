@@ -15,7 +15,6 @@ from careercrew_core.memory.policy import MemoryPolicyStore
 from careercrew_core.memory.semantic import ALLOWED_FIELDS, SemanticFactStore
 from careercrew_core.memory.types import MemoryEntry, SemanticFact, UserModel
 
-
 _TRANSCRIPT_TYPES = frozenset({"user_message", "agent_response"})
 # 仅保留可跨会话复用的、已验证的职业里程碑。自由文本 note、会话开始等
 # 低价值记录应走 Conversation，而不是污染长期事件流。
@@ -322,17 +321,17 @@ class MemoryService:
                 user_id, entry_id=entry_id, thread_id=thread_id, type=category or None,
             )
             if self._vector_store is not None:
-                if entry_id and hasattr(self._vector_store, "delete_by_ids"):
-                    self._vector_store.delete_by_ids([entry_id])
-                else:
-                    filters: dict[str, Any] = {"user_id": user_id}
-                    if entry_id:
-                        filters["memory_id"] = entry_id
-                    if thread_id:
-                        filters["thread_id"] = thread_id
-                    if category:
-                        filters["type"] = category
-                    self._vector_store.delete_by_metadata(filters)
+                # Qdrant 的物理 point id 是租户命名空间 UUID，不能把业务
+                # entry_id 直接交给 delete_by_ids；始终以 user_id + payload
+                # memory_id 做精确过滤，避免误删同名/跨租户点。
+                filters: dict[str, Any] = {"user_id": user_id}
+                if entry_id:
+                    filters["memory_id"] = entry_id
+                if thread_id:
+                    filters["thread_id"] = thread_id
+                if category:
+                    filters["type"] = category
+                self._vector_store.delete_by_metadata(filters)
             if entry_id and category:
                 key = f"event:{category}:{entry_id}"
                 record = self.records.find_active(user_id, key)

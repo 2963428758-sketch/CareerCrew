@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -249,9 +248,10 @@ class ToolsAgentsMixin:
         # 强制上下文（T3.4 §15.3）：mentions 命中的 knowledge 文档叠加 doc 白名单，
         # 与 auto RAG 共用 rag_query 接缝（knowledge/planner/matcher 等均适用）。
         def _rag_filters(base: dict) -> dict:
+            filters = {**base, "__governance_active": True}
             if forced_doc_ids:
-                return {**base, "doc": list(forced_doc_ids)}
-            return base
+                filters["doc"] = list(forced_doc_ids)
+            return filters
 
         # M5 CRAG：rag.retrieval.crag 开启时为 rag_query 注入评估器
         # （incorrect -> LLM 重写查询重检一轮）；默认 None 行为不变。

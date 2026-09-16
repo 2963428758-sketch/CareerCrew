@@ -1,6 +1,6 @@
 # CareerCrew 自动备份与恢复演练
 
-备份任务覆盖 PostgreSQL、Qdrant 向量集合以及 `data/uploads`、`data/parsed`。每次运行写入一个带 UTC 时间戳的目录，并生成 `manifest.json`；清单记录每个 dump、snapshot 和压缩包的大小与 SHA-256。默认保留 30 天。
+备份任务覆盖 PostgreSQL、Qdrant 向量集合以及 `data/uploads`、`data/parsed`。每次运行写入一个带 UTC 时间戳的目录，并生成 `careercrew-backup-v2` `manifest.json`；清单记录每个 dump、snapshot、压缩包以及压缩包内每个上传/解析文件的大小与 SHA-256。默认保留 30 天。
 
 ## 配置
 
@@ -10,10 +10,13 @@
 |---|---|---|
 | `DATABASE_URL` | — | PostgreSQL 连接串，备份程序从中派生主机、端口、用户和密码 |
 | `QDRANT_URL` | `http://127.0.0.1:6333` | Qdrant API 地址 |
-| `QDRANT_COLLECTIONS` | `careercrew_mm,careercrew_episodic_v2` | 要创建 snapshot 的集合 |
+| `QDRANT_COLLECTIONS` | `careercrew_mm,careercrew_episodic_v2,careercrew_workspace_messages` | 要创建 snapshot 的集合；`careercrew_workspace_messages` 尚未创建时会安全跳过 |
 | `BACKUP_ROOT` | `data/backups` | 备份输出目录 |
 | `BACKUP_RETENTION_DAYS` | `30` | 自动清理周期 |
-| `QDRANT_CONTAINER` | — | `restore-drill` 恢复 Qdrant 时的容器名 |
+| `RESTORE_DATABASE_URL` | — | `restore-drill` 的隔离 PostgreSQL 目标；不会回退到源库 |
+| `RESTORE_QDRANT_URL` | — | `restore-drill` 的隔离 Qdrant 地址；有 Qdrant artifact 时必填 |
+| `RESTORE_QDRANT_CONTAINER` | — | 仅 Docker 文件恢复时使用的隔离 Qdrant 容器名；不设置则使用 snapshot upload API |
+| `RESTORE_QDRANT_API_KEY` | — | 访问隔离恢复 Qdrant 的密钥；不会回退到源端密钥 |
 
 备份主机需要 `pg_dump`；验证若系统存在 `pg_restore` 会执行 `pg_restore --list`。创建 Qdrant snapshot 需要对应 API 可用。
 
@@ -52,13 +55,15 @@ python scripts/backup_restore.py verify data/backups/careercrew-20260909-020000
 恢复演练只使用自动生成的临时目标，不覆盖源库、源向量集合或源文件：
 
 ```powershell
-# 先把 DATABASE_URL 放入仓库根目录 .env 或任务运行环境，不作为命令行参数传入
+# 把隔离 RESTORE_DATABASE_URL 放入任务运行环境，不作为命令行参数传入
 python scripts/backup_restore.py restore-drill `
   data/backups/careercrew-20260909-020000 `
-  --qdrant-container qdrant
+  --qdrant-url $env:RESTORE_QDRANT_URL
 ```
 
-演练会先验证清单和所有 artifact，再创建形如 `careercrew_restore_<UTC timestamp>` 的临时 PostgreSQL 数据库，恢复 dump 并执行 `SELECT 1`；文件压缩包只解压到临时目录。指定 `--qdrant-container` 时，snapshot 会恢复到带 `__restore__` 后缀的临时集合并核对点数。数据库、临时集合和容器内 snapshot 文件都会在成功或失败路径尝试清理。
+演练会先验证清单和所有 artifact，再创建形如 `careercrew_restore_<UTC timestamp>` 的临时 PostgreSQL 数据库，恢复 dump 并执行 schema invariant、代表性表计数和跨表关系 canary；文件压缩包解压到临时目录后逐个核对清单中的路径、大小与 SHA-256。指定 `--qdrant-container` 时，snapshot 会恢复到带 `__restore__` 后缀的临时集合并核对点数；不指定容器名时使用 Qdrant 的 snapshot upload API，可对托管 Qdrant 做隔离恢复。数据库、临时集合和容器内 snapshot 文件都会在成功或失败路径尝试清理。
+
+发布验收通过 `RESTORE_DATABASE_URL`、`RESTORE_QDRANT_URL` 和 `RESTORE_QDRANT_API_KEY` 指向隔离恢复目标；生产源端点和恢复端点必须分离，恢复密钥也不得复用源端密钥配置。只有使用 Docker 文件恢复时才设置 `RESTORE_QDRANT_CONTAINER`。
 
 演练成功输出临时目标已清理；失败返回非零退出码。发现清理异常时，应先暂停应用并人工确认临时目标，再重新执行清理。
 
@@ -69,4 +74,4 @@ python scripts/backup_restore.py restore-drill `
 - 真正灾难恢复时先停止应用，选择已通过 `verify` 的备份，按演练方式恢复到隔离目标并核对用户数、知识库点数和上传文件，再由管理员安排切换。
 - 备份目录应位于独立磁盘或由主机级备份系统再次保护；本脚本不上传到远端对象存储。
 
-认证库、会话、记忆、线程、审计和业务表均在 `DATABASE_URL` 指向的 PostgreSQL dump 中；Qdrant 集合名称由 `QDRANT_COLLECTIONS` 明确控制。
+认证库、会话、记忆、线程、审计和业务表均在 `DATABASE_URL` 指向的 PostgreSQL dump 中；Qdrant 集合名称由 `QDRANT_COLLECTIONS` 明确控制。备份脚本只负责生成并校验本地 artifact，不负责上传对象存储；生产验收还必须提供与实际 `manifest.json` SHA-256 绑定的加密、异地、不可变介质证据，并完成隔离目标恢复演练。

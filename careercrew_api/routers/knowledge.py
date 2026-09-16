@@ -1,7 +1,10 @@
 """知识库路由：异步上传入库（任务 + 进度查询）/ 列表 / 删除 / 问答（多模态 RAG）。"""
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
+import mimetypes
 import threading
 import time
 import uuid
@@ -84,6 +87,139 @@ def _new_job(filename: str, user_id: str) -> str:
     return job_id
 
 
+def _fallback_governance_chunks(rt: CareerCrewRuntime, path: str,
+                                output_dir: str = "") -> list[dict]:
+    """Build governance chunks when an injected/legacy runtime has no sink."""
+    source = Path(path)
+    settings = getattr(rt, "settings", None)
+    rag = getattr(settings, "rag", None)
+    chunking = getattr(rag, "chunking", None)
+    chunk_size = int(getattr(chunking, "chunk_size", 800) or 800)
+    if source.suffix.lower() in {".md", ".markdown", ".txt"}:
+        text = source.read_text(encoding="utf-8")
+        return _plain_governance_chunks(text, chunk_size)
+
+    pipeline = getattr(rt, "ingest_pipeline", None)
+    if pipeline is not None and callable(getattr(pipeline, "parse_file", None)):
+        parsed = pipeline.parse_file(source, output_dir or None)
+        chunks = [
+            {"text": page.markdown, "page": page.page_no}
+            for page in sorted(parsed.pages, key=lambda item: item.page_no)
+            if str(page.markdown or "").strip()
+        ]
+        if not chunks:
+            chunks = [
+                {"text": obj.text, "page": obj.page_no}
+                for obj in parsed.objects if str(obj.text or "").strip()
+            ]
+        return chunks
+
+    loader = getattr(rt, "load_document", None)
+    text = loader(str(source), output_dir=output_dir or None) if callable(loader) else ""
+    return _plain_governance_chunks(str(text or ""), chunk_size)
+
+
+def _plain_governance_chunks(text: str, chunk_size: int) -> list[dict]:
+    """Small fallback splitter for duck-typed/legacy runtimes.
+
+    The real runtime supplies exact pipeline chunks through ``chunk_sink``;
+    this path intentionally avoids importing the heavy LangChain splitter for
+    test doubles and older runtime adapters.
+    """
+    normalized = str(text or "").strip()
+    if not normalized:
+        return []
+    limit = max(min(int(chunk_size or 800), 50_000), 1)
+    return [
+        {"text": normalized[start:start + limit], "page": None}
+        for start in range(0, len(normalized), limit)
+    ]
+
+
+def _register_governed_upload(
+    rt: CareerCrewRuntime,
+    result: dict,
+    save_path: str,
+    output_dir: str,
+    user_id: str,
+    category: str,
+    doc_name: str,
+    visibility: str,
+    captured_chunks: list[dict] | None,
+) -> dict:
+    """Register a completed compatibility upload in the governance layer.
+
+    The legacy projection is written first for backward compatibility.  The
+    governance version is then indexed and activated; only after that succeeds
+    are the legacy points removed, so a successful job has one authoritative
+    retrievable projection.
+    """
+    from careercrew_core.knowledge.governance import KnowledgeGovernance
+
+    db = getattr(rt, "knowledge_db", None) or getattr(rt, "memory_db", None)
+    if db is None:
+        raise RuntimeError("知识治理数据库不可用")
+    chunks = captured_chunks if captured_chunks else _fallback_governance_chunks(
+        rt, save_path, output_dir,
+    )
+    if not chunks:
+        raise ValueError("文档未解析出可治理的有效分块")
+    path = Path(save_path)
+    raw = path.read_bytes()
+    source_hash = hashlib.sha256(raw).hexdigest()
+    mime_type = mimetypes.guess_type(doc_name or path.name)[0] or "application/octet-stream"
+    is_admin = visibility == "public"
+    governance = KnowledgeGovernance(db, vector_store=getattr(rt, "store", None))
+    created = governance.create_document(
+        user_id,
+        name=doc_name or path.name,
+        content_sha256=source_hash,
+        size_bytes=len(raw),
+        category=category or "knowledge",
+        visibility=visibility,
+        mime_type=mime_type,
+        chunks=chunks,
+        is_admin=is_admin,
+    )
+    document_id = str(created["document_id"])
+    version_id = str(created["version_id"])
+    document = governance.get_document(user_id, document_id, is_admin=is_admin)
+    version = next(v for v in document["versions"] if str(v["id"]) == version_id)
+    if not created.get("duplicate") or version["status"] != "active" or str(document.get("active_version_id")) != version_id:
+        if governance._fake:
+            governance.reindex(user_id, document_id, version_id, is_admin=is_admin)
+        else:
+            ensure_heavy = getattr(rt, "_ensure_heavy", None)
+            if callable(ensure_heavy):
+                ensure_heavy()
+            governance.vector_store = getattr(rt, "store", None)
+            document = governance.get_document(user_id, document_id, is_admin=is_admin)
+            from careercrew_api.routers.knowledge_governance import _live_governance_indexer
+
+            indexer = _live_governance_indexer(
+                rt, document, document_id, version_id, user_id,
+            )
+            governance.reindex(
+                user_id, document_id, version_id, indexer=indexer,
+                is_admin=is_admin,
+            )
+
+    # The old upload has a different logical doc id.  Remove only this tenant's
+    # compatibility points after the governed version is active.
+    store = getattr(rt, "store", None)
+    if store is not None and callable(getattr(store, "delete_by_metadata", None)):
+        store.delete_by_metadata({
+            "owner_user_id": user_id,
+            "doc": str(result.get("doc_id") or path.stem),
+        })
+    return {
+        **result,
+        "governance_document_id": document_id,
+        "governance_version_id": version_id,
+        "governance_duplicate": bool(created.get("duplicate")),
+    }
+
+
 def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
                     user_id: str, category: str = "", doc_name: str = "",
                     output_dir: str = "", visibility: str = "private") -> None:
@@ -117,10 +253,23 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
         if job is not None:
             job["status"] = "running"
     with maintain_upload_lease(store, job_id, user_id, "knowledge_ingest"):
+        ingest_result: dict | None = None
         try:
-            result = rt.ingest_document(
-                save_path, user_id=user_id, progress_cb=cb, category=category,
-                output_dir=output_dir or None, doc_name=doc_name, visibility=visibility,
+            captured_chunks: list[dict] | None = []
+            ingest_kwargs = {
+                "user_id": user_id, "progress_cb": cb, "category": category,
+                "output_dir": output_dir or None, "doc_name": doc_name,
+                "visibility": visibility,
+            }
+            parameters = inspect.signature(rt.ingest_document).parameters
+            if "chunk_sink" in parameters:
+                ingest_kwargs["chunk_sink"] = captured_chunks.extend
+            else:
+                captured_chunks = None
+            ingest_result = rt.ingest_document(save_path, **ingest_kwargs)
+            result = _register_governed_upload(
+                rt, ingest_result, save_path, output_dir, user_id, category,
+                doc_name, visibility, captured_chunks,
             )
             with _jobs_lock:
                 job = _jobs.get(job_id)
@@ -139,6 +288,14 @@ def _run_ingest_job(rt: CareerCrewRuntime, job_id: str, save_path: str,
             except Exception:
                 pass
         except Exception as e:  # noqa: BLE001 - 用户可见的解析/入库错误统一收口
+            if ingest_result and getattr(rt, "store", None) is not None:
+                try:
+                    rt.store.delete_by_metadata({
+                        "owner_user_id": user_id,
+                        "doc": str(ingest_result.get("doc_id") or Path(save_path).stem),
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
             with _jobs_lock:
                 job = _jobs.get(job_id)
                 if job is not None:

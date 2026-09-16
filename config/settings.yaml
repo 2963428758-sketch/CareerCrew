@@ -14,7 +14,7 @@ llm:
 embedding:
   provider: bge_m3_local         # bge_m3_local | openai
   model: BAAI/bge-m3
-  model_path: F:/AI_models/BAAI--bge-m3/snapshots/master
+  model_path: "${CAREERCREW_EMBEDDING_MODEL_PATH:-F:/AI_models/BAAI--bge-m3/snapshots/master}"
   use_fp16: false                # CPU 跑关闭 fp16；device=cuda 时建议改 true
   batch_size: 12
   device: cpu                    # cpu（默认，避免显存叠加 OOM）| cuda（有卡机型提速明显）
@@ -30,8 +30,8 @@ rerank:
 # ── 向量库（Qdrant 唯一后端） ──
 vector_store:
   backend: qdrant
-  url: http://localhost:6333
-  api_key: ""
+  url: "${QDRANT_URL:-http://localhost:6333}"
+  api_key: "${QDRANT_API_KEY}"
   colbert_multivector: false    # M7：ColBERT 原生 multivector（服务端 MAX_SIM），
                                 # 需与 rag.retrieval.colbert_rerank 同开；存量集合自动补加向量字段，
                                 # 旧数据需重新摄取才有精排效果

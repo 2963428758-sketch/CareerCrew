@@ -15,7 +15,7 @@ llm:
 embedding:
   provider: bge_m3_local
   model: BAAI/bge-m3
-  model_path: /models/bge-m3        # compose 挂载宿主机 ./models/bge-m3
+  model_path: "${CAREERCREW_EMBEDDING_MODEL_PATH:-/models/bge-m3}"  # compose 挂载宿主机 ./models/bge-m3
   use_fp16: false
   batch_size: 12
   device: cpu                       # cpu（默认，避免显存叠加 OOM）| cuda（有卡机型提速明显）
@@ -30,7 +30,7 @@ rerank:
 vector_store:
   backend: qdrant
   url: http://qdrant:6333           # compose 服务名
-  api_key: ""
+  api_key: "${QDRANT_API_KEY}"
   colbert_multivector: false        # M7：与 rag.retrieval.colbert_rerank 同开（见主配置注释）
   collections:
     knowledge: careercrew_mm

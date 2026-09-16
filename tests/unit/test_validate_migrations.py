@@ -245,7 +245,7 @@ def _valid_schema_rows() -> dict[str, list[tuple]]:
         )
     ]
     return {
-        "alembic_version": [("0016_workspace_owner_integrity",)],
+        "alembic_version": [("0018_eval_case_updated_at",)],
         "information_schema.tables": tables,
         "information_schema.columns": columns,
         "pg_extension": [("pg_trgm",)],

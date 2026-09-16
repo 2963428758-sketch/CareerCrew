@@ -1,6 +1,6 @@
 """Qdrant owner 迁移校验 + snapshot + 迁移报告（Phase 0 / T0.2）。
 
-方案 §5.1 迁移规则：无 owner 的历史私有数据 → owner_user_id = u_001。
+方案 §5.1 迁移规则：无主归属键的历史私有数据 → 对应集合的主归属键 = u_001。
 
 与 scripts/migrate_knowledge_visibility.py 的分工：
 - 知识库集合（careercrew_mm）以 owner_user_id 键为准；
@@ -11,10 +11,10 @@
   迁移后自动复跑 dry-run 校验（changed=0 / conflicts=0 / unowned=0）。
 
 要点：
-- 默认 dry-run（不写数据）；--apply 才回填 owner_user_id=u_001。
-- unowned = 既无 owner_user_id 也无 user_id 的孤儿点。
-- changed = 本次会写入 owner_user_id 的点数（仅孤儿点，apply 模式生效时计）。
-- conflicts = owner_user_id 已存在但值与 default-owner 不一致的点数，绝不覆盖。
+- 默认 dry-run（不写数据）；--apply 才回填集合声明主 ownership 键为 u_001。
+- unowned = 集合声明的主 ownership 键缺失、为空或不是有效非空字符串的孤儿点。
+- changed = 本次会写入集合声明主 ownership 键的点数（仅孤儿点，apply 模式生效时计）。
+- conflicts = 集合声明主 ownership 键已存在但值与 default-owner 不一致的点数，绝不覆盖。
 - unresolved = 扫描到但在 apply 时写入失败的孤儿点数（区别于 conflicts）。
 - apply 时先对每个集合 snapshot；snapshot 失败则中止（dry-run 仅告警继续）。
 - 迁移后（--apply）自动复跑 dry-run，changed/conflicts/unowned 非 0 则 exit 1。
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +34,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ORPHAN_OWNER = "u_001"
 
 # 集合名 -> 判定 owned 的主键（knowledge 用 owner_user_id，episodic 用 user_id）。
-# 孤儿判定：两个键都不存在。回填统一写 owner_user_id。
+# 孤儿判定只看集合声明的主 ownership 键。回填写回同一个主键，避免
+# episodic 集合把 owner_user_id 当成 user_id 使用。
 COLLECTION_KEY_FIELD = {
     "careercrew_mm": "owner_user_id",
     "careercrew_episodic_v2": "user_id",
@@ -50,11 +52,11 @@ def _now_iso() -> str:
 def _classify_point(payload: dict | None, key_field: str) -> str:
     """对单点分类：owned | orphan。key_field 指明该集合的主 ownership 键。
 
-    考虑两个键：只要任一键存在即视为 owned（前一轮回填 owner_user_id 的 episodic
-    点也算 owned）；两键皆无才视为 orphan。
+    只接受非空字符串主键；错误字段、空字符串和空白字符串都不能证明归属。
     """
     p = payload or {}
-    if p.get("owner_user_id") is not None or p.get("user_id") is not None:
+    owner = p.get(key_field)
+    if isinstance(owner, str) and owner.strip():
         return "owned"
     return "orphan"
 
@@ -88,20 +90,20 @@ def verify_collection(client, collection: str, key_field: str, *,
         scanned += 1
         payload = row["payload"]
         if row["kind"] == "owned":
-            # owned 但 owner_user_id 存在且与默认不一时视为冲突（不覆盖）
-            owner = payload.get("owner_user_id")
+            # 主 ownership 键存在但与默认不一时视为冲突（不覆盖）。
+            owner = payload.get(key_field)
             if owner is not None and owner != default_owner:
                 conflicts += 1
             else:
                 skipped += 1
             continue
-        # orphan：两键皆无 → 回填 owner_user_id
+        # orphan：主 ownership 键缺失/为空 → 回填同一个主键。
         unowned += 1
         if apply:
             try:
                 client.set_payload(
                     collection,
-                    payload={"owner_user_id": default_owner},
+                    payload={key_field: default_owner},
                     points=[row["id"]],
                 )
             except Exception:
@@ -174,9 +176,9 @@ def run(client, collections: dict[str, str], *, apply: bool,
     warnings: list[str] = []
 
     for collection, key_field in collections.items():
-        name = snapshot_collection(client, collection)
+        name = snapshot_collection(client, collection) if apply else None
         snapshot_ids[collection] = name
-        if name is None:
+        if apply and name is None:
             msg = f"snapshot 失败：{collection}"
             if apply:
                 raise RuntimeError(f"{msg}（apply 模式中止）")
@@ -201,7 +203,7 @@ def run(client, collections: dict[str, str], *, apply: bool,
     return report, warnings
 
 
-def build_client():
+def build_client(qdrant_url: str | None = None):
     sys.path.insert(0, str(PROJECT_ROOT))
     from qdrant_client import QdrantClient
 
@@ -209,9 +211,11 @@ def build_client():
 
     settings = load_settings()
     cfg = settings.vector_store
-    if (cfg.url or "").strip() == ":memory:":
+    url = (qdrant_url or os.getenv("QDRANT_URL", "") or cfg.url or "").strip()
+    if url == ":memory:":
         raise SystemExit("不能在 :memory: 后端上执行真实校验/迁移")
-    return QdrantClient(url=cfg.url, api_key=cfg.api_key or None), cfg
+    api_key = (os.getenv("QDRANT_API_KEY", "") or cfg.api_key or "").strip()
+    return QdrantClient(url=url, api_key=api_key or None), cfg
 
 
 def resolve_collections(client, cfg, selection: str | None) -> dict[str, str]:
@@ -235,13 +239,14 @@ def resolve_collections(client, cfg, selection: str | None) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", ""), help="覆盖 settings 中的 Qdrant URL")
     parser.add_argument("--collection", default="", help="仅处理指定集合（默认两个都处理）")
     parser.add_argument("--default-owner", default=ORPHAN_OWNER)
     parser.add_argument("--apply", action="store_true", help="默认 dry-run；--apply 才回填")
     parser.add_argument("--report", default="", help="JSON 报告路径；默认写入 data/migrations/ 时间戳文件")
     args = parser.parse_args(argv)
 
-    client, cfg = build_client()
+    client, cfg = build_client(args.qdrant_url or None)
     collections = resolve_collections(client, cfg, args.collection or None)
     if not collections:
         raise SystemExit("没有可处理的集合")

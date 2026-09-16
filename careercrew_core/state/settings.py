@@ -6,7 +6,7 @@
 
 设计：
 - 不做网络/IO，只读配置文件 + 环境变量；首次调用探活留到 A4（create_llm）。
-- ${VAR} 占位用正则递归替换，仅作用于字符串值，保留其他类型。
+- ${VAR} / ${VAR:-default} 占位用正则递归替换，仅作用于字符串值，保留其他类型。
 - pydantic v2 嵌套模型：ValidationError 的 loc 即字段路径，格式化为可读错误。
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ DEFAULT_CONFIG_PATH = (
     Path(_settings_override) if _settings_override else PROJECT_ROOT / "config" / "settings.yaml"
 )
 
-# ${VAR} 环境变量占位（仅 A-Za-z_ 开头的标识符）
-_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# ${VAR} / ${VAR:-default} 环境变量占位（仅 A-Za-z_ 开头的标识符）
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 # 向量库后端合法取值（多模态 RAG 全面替换后仅剩 Qdrant）
 _VALID_VECTOR_BACKENDS = {"qdrant"}
@@ -325,7 +325,10 @@ class Settings(BaseModel):
 def _substitute_env(value: Any) -> Any:
     """递归替换字符串值中的 ${VAR} 为 os.environ[VAR]（未设置则替换为空串）。"""
     if isinstance(value, str):
-        return _ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        return _ENV_PATTERN.sub(
+            lambda m: os.environ.get(m.group(1), m.group(2) or ""),
+            value,
+        )
     if isinstance(value, dict):
         return {k: _substitute_env(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -449,10 +452,14 @@ def validate_settings(settings: Settings) -> None:
 def load_settings(path: str | Path | None = None) -> Settings:
     """加载并校验配置。fail-fast：文件缺失 / 字段缺失 / 语义非法均抛 SettingsError。
 
-    override=True：项目根 .env 是本地配置的唯一权威来源，
-    覆盖 Shell/系统遗留的同名环境变量（避免历史旧值串配置）。
+    开发环境中项目根 .env 是本地配置的权威来源；生产环境与受保护评测
+    保留进程注入的值，避免工作区 .env 覆盖真实目标端点或密钥。
     """
-    load_dotenv(override=True)  # 读取 .env（已 gitignore），注入 DASHSCOPE_API_KEY 等
+    protected_env = (
+        os.environ.get("CAREERCREW_ENV", "").strip().lower() == "production"
+        or os.environ.get("CAREERCREW_EVAL_RUNTIME", "").strip() == "1"
+    )
+    load_dotenv(override=not protected_env)  # .env 仅作为开发环境便捷注入
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
         raise SettingsError(f"配置文件不存在: {config_path}")
@@ -479,7 +486,11 @@ def load_auth_settings(path: str | Path | None = None) -> AuthSettings:
     LLM、向量库等所有配置在 import 时可用。环境变量 CAREERCREW_ENV 明确覆盖
     YAML 的 auth.environment，方便生产部署与隔离测试。
     """
-    load_dotenv(override=True)  # .env 为权威来源，覆盖 Shell/系统遗留同名变量
+    protected_env = (
+        os.environ.get("CAREERCREW_ENV", "").strip().lower() == "production"
+        or os.environ.get("CAREERCREW_EVAL_RUNTIME", "").strip() == "1"
+    )
+    load_dotenv(override=not protected_env)  # 生产/受保护评测不得被工作区 .env 覆盖
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
         raise SettingsError(f"配置文件不存在: {config_path}")

@@ -151,6 +151,15 @@ def test_configure_preloads_masked_client(valid_settings, monkeypatch) -> None:
         _reset()
 
 
+def test_protected_eval_can_disable_remote_trace_retention(valid_settings, monkeypatch) -> None:
+    monkeypatch.setenv("CAREERCREW_EVAL_DISABLE_REMOTE_TRACING", "1")
+    configure_langsmith(valid_settings)
+
+    assert tracing_enabled() is False
+    assert os.environ.get("LANGCHAIN_TRACING_V2") == "false"
+    assert os.environ.get("LANGSMITH_TRACING") == "false"
+
+
 def test_langchain_tracer_reuses_cached_client(monkeypatch) -> None:
     """LangChainTracer(client=None) 会复用 get_cached_client 的进程级单例。"""
     fake_client = object()

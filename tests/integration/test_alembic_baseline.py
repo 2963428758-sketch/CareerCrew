@@ -130,6 +130,11 @@ def test_alembic_baseline_matches_lazy_ddl() -> None:
 
         src_cols, src_cons = _schema_fingerprint(src_dsn)
         dst_cols, dst_cons = _schema_fingerprint(dst_dsn)
+        # Migration-only modules have no lazy bootstrap. Compare the complete
+        # schema of the stores exercised here, not unrelated migration tables.
+        runtime_tables = {row[0] for row in src_cols}
+        dst_cols = {row for row in dst_cols if row[0] in runtime_tables}
+        dst_cons = {row for row in dst_cons if row[0] in runtime_tables}
 
         missing_in_baseline = src_cols - dst_cols
         extra_in_baseline = dst_cols - src_cols

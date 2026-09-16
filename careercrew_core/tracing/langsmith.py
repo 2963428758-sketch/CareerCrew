@@ -73,6 +73,13 @@ def configure_langsmith(settings) -> None:
     """配置 LangSmith：校验 key、设环境变量、预置带 anonymizer 的缓存 client。"""
     global _ENABLED
     cfg = settings.langsmith
+    if os.environ.get("CAREERCREW_EVAL_DISABLE_REMOTE_TRACING") == "1":
+        # Protected runtime evaluation keeps prompts, answers, and PII inside
+        # the isolated runner unless an external trace-retention proof exists.
+        _ENABLED = False
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        os.environ["LANGSMITH_TRACING"] = "false"
+        return
     if not cfg.enabled:
         _ENABLED = False
         return

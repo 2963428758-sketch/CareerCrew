@@ -68,6 +68,7 @@ class KnowledgeDocsMixin:
         output_dir: str | None = None,
         doc_name: str = "",
         visibility: str = "private",
+        chunk_sink: Callable[[list[dict]], None] | None = None,
     ) -> dict:
         """知识库入库（多模态管线：md 走文本，PDF/图片走 MinerU）。
 
@@ -100,7 +101,7 @@ class KnowledgeDocsMixin:
         }
         n = self.ingest_pipeline.ingest_file(
             p, metadata=owner_metadata, progress_cb=progress_cb, category=category,
-            output_dir=output_dir,
+            output_dir=output_dir, chunk_sink=chunk_sink,
         )
         return {"doc_id": p.stem, "doc_name": doc_name or p.name, "points": n, "path": str(p)}
 
@@ -121,6 +122,13 @@ class KnowledgeDocsMixin:
         )
         if has_public and is_admin:
             deleted += self.store.delete_by_metadata({"doc": doc_id, "visibility": "public"})
+        # Governed documents use a UUID-backed logical id and therefore do not
+        # necessarily share the legacy payload.doc value.  Clean their
+        # projection as well when the compatibility endpoint deletes them.
+        deleted += self.store.delete_by_metadata({
+            "record_type": "knowledge_governance",
+            "governance_document_id": doc_id,
+        })
         # 向量点已删，磁盘上的原件与解析产物一并清掉（尽力而为，失败不影响删除结果）
         self._cleanup_knowledge_files(visible)
         return deleted, False
@@ -168,12 +176,26 @@ class KnowledgeDocsMixin:
 
     def publish_document(self, user_id: str, doc_id: str) -> int:
         self._ensure_heavy()
+        if doc_id.startswith("governance:"):
+            from careercrew_core.knowledge.governance import KnowledgeGovernance
+
+            db = getattr(self, "knowledge_db", None) or self.memory_db
+            return KnowledgeGovernance(db, vector_store=self.store).publish_document(
+                user_id, doc_id.removeprefix("governance:")
+            )
         return self.store.set_payload_by_filter(
             {"visibility": "public"}, {"owner_user_id": user_id, "doc": doc_id}
         )
 
     def unpublish_document(self, user_id: str, doc_id: str) -> int:
         self._ensure_heavy()
+        if doc_id.startswith("governance:"):
+            from careercrew_core.knowledge.governance import KnowledgeGovernance
+
+            db = getattr(self, "knowledge_db", None) or self.memory_db
+            return KnowledgeGovernance(db, vector_store=self.store).unpublish_document(
+                user_id, doc_id.removeprefix("governance:")
+            )
         return self.store.set_payload_by_filter(
             {"visibility": "private"}, {"owner_user_id": user_id, "doc": doc_id}
         )
@@ -186,11 +208,12 @@ class KnowledgeDocsMixin:
 
     @staticmethod
     def _knowledge_scope_filters(user_id: str, scope: str) -> dict:
+        governance = {"__governance_active": True}
         if scope == "public":
-            return {"visibility": "public"}
+            return {**governance, "visibility": "public"}
         if scope == "private":
-            return {"owner_user_id": user_id}
-        return {"__access_user": user_id}
+            return {**governance, "owner_user_id": user_id}
+        return {**governance, "__access_user": user_id}
 
     def knowledge_asset_owned(self, user_id: str, path: str) -> bool:
         """Verify an image source is visible to this tenant (own private or public)."""

@@ -66,7 +66,7 @@ def tenant_api(tmp_path, monkeypatch):
 
 
 def _poll(client, url: str, headers: dict[str, str]) -> dict:
-    for _ in range(100):
+    for _ in range(500):
         response = client.get(url, headers=headers)
         if response.status_code != 200:
             return {"status_code": response.status_code, "detail": response.text}

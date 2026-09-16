@@ -53,6 +53,26 @@ def _seed(store: QdrantStore) -> None:
     ])
 
 
+def test_unpublish_revokes_governance_reads_and_survives_reindex(valid_config_data):
+    from careercrew_core.knowledge.governance import KnowledgeGovernance, KnowledgeNotFoundError
+    from careercrew_core.memory.db import FakeMemoryDb
+
+    rt, store = _runtime_with_real_store(valid_config_data)
+    rt.memory_db = FakeMemoryDb()
+    service = KnowledgeGovernance(rt.memory_db)
+    created = service.create_document("u_A", name="public", content_sha256="a" * 64,
+        size_bytes=1, visibility="public", is_admin=True, chunks=[{"text": "public text"}])
+    service.reindex("u_A", created["document_id"], created["version_id"])
+    doc_id = "governance:" + created["document_id"]
+    store.upsert([_record(doc_id, "u_A", "public")])
+    assert service.get_document("u_B", created["document_id"])
+    assert rt.unpublish_document("u_A", doc_id) > 0
+    with pytest.raises(KnowledgeNotFoundError):
+        service.get_document("u_B", created["document_id"])
+    service.reindex("u_A", created["document_id"], created["version_id"])
+    assert service.get_document("u_A", created["document_id"])["visibility"] == "private"
+
+
 def test_knowledge_status_hides_other_users_private_docs(valid_config_data: dict):
     """生产 runtime + 真实 store：B 只能看到自己的私有 + 所有 public。"""
     rt, store = _runtime_with_real_store(valid_config_data)
@@ -71,6 +91,24 @@ def test_knowledge_status_hides_other_users_private_docs(valid_config_data: dict
     # private scope 按 owner_user_id 过滤（不含他人 private；本人 public 同名仍归属本人）
     assert private_docs == {"alice-private", "alice-public"}
     assert "bob-private" not in private_docs
+
+
+def test_publish_governance_updates_database_and_vectors(valid_config_data):
+    from careercrew_core.knowledge.governance import KnowledgeGovernance
+    from careercrew_core.memory.db import FakeMemoryDb
+
+    rt, store = _runtime_with_real_store(valid_config_data)
+    rt.memory_db = FakeMemoryDb()
+    service = KnowledgeGovernance(rt.memory_db)
+    created = service.create_document("u_A", name="private", content_sha256="b" * 64,
+        size_bytes=1, chunks=[{"text": "text"}])
+    service.reindex("u_A", created["document_id"], created["version_id"])
+    doc_id = "governance:" + created["document_id"]
+    store.upsert([_record(doc_id, "u_A", "private")])
+
+    assert rt.publish_document("u_A", doc_id) == 1
+    assert service.get_document("u_B", created["document_id"])["visibility"] == "public"
+    assert doc_id in {d["doc"] for d in rt.knowledge_status("u_B")["docs"]}
 
 
 def test_delete_document_noop_for_other_users_private_doc(valid_config_data: dict):
@@ -117,9 +155,9 @@ def test_delete_document_public_blocked_for_non_admin(valid_config_data: dict):
 
 
 @pytest.mark.parametrize("scope,expected", [
-    ("public", {"visibility": "public"}),
-    ("private", {"owner_user_id": "u_A"}),
-    ("all", {"__access_user": "u_A"}),
+    ("public", {"visibility": "public", "__governance_active": True}),
+    ("private", {"owner_user_id": "u_A", "__governance_active": True}),
+    ("all", {"__access_user": "u_A", "__governance_active": True}),
 ])
 def test_knowledge_scope_filters_shape(scope: str, expected: dict):
     """生产 filter 构造的键名/值逐字段断言（owner_user_id 键名错配会在此暴露）。"""

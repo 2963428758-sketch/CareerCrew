@@ -31,6 +31,14 @@ class StreamResult:
     # match 专属：成功 search_jobs 工具的结构化岗位结果（收藏/岗位卡片用）
     jobs: list[dict] = field(default_factory=list)
     turn: TurnContext | None = None
+    # Internal release/evaluation observability.  API routers continue to
+    # expose only the fields they explicitly serialize; these values let a
+    # protected evaluator prove which product tools/RAG paths actually ran.
+    retrievals: list[dict] = field(default_factory=list)
+    tool_calls: list[dict] = field(default_factory=list)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 @dataclass
