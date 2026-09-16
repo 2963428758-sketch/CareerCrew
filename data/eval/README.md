@@ -1,7 +1,7 @@
 # CareerCrew evaluation dataset contract
 
 `cases.jsonl` is the checked-in, immutable-by-convention baseline dataset for
-Phase 7 real-model and offline regression evaluation.
+the offline regression evaluation.
 
 - Dataset version: `2026-09-10.v1`
 - Format: one UTF-8 JSON object per line.
@@ -24,33 +24,16 @@ python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail
 # Intentional, human-reviewed offline baseline update
 python scripts/eval_runner.py --offline --update-baseline
 
-# Optional product-runtime observation: only unavailable configuration/dependencies may skip
-CAREERCREW_EVAL_RUNTIME=1 CAREERCREW_EVAL_RUN_ID=nightly_20260911 \
-  CAREERCREW_EVAL_USER_ID=eval_nightly_20260911 \
-  CAREERCREW_EVAL_TENANT_ATTESTATION=eval_nightly_20260911:nightly_20260911:provisioned \
-  CAREERCREW_EVAL_TENANT_ATTESTATION_URL=https://<protected-provisioner>/v1/eval-tenants/attest \
-  CAREERCREW_EVAL_TENANT_ATTESTATION_TOKEN=<protected-token> \
-  CAREERCREW_EVAL_TENANT_ATTESTATION_NONCE=<provisioning-nonce> \
-  CAREERCREW_EVAL_DISABLE_REMOTE_TRACING=1 \
-  python scripts/eval_runner.py --real --runtime --allow-skip --report reports/real-eval.json
-
-# Protected release gate: inject the dedicated eval tenant and runtime endpoints
-# from the CI protected environment; missing environment, collection errors,
-# case failures, cleanup failures, or regressions fail.
-python scripts/eval_runner.py --real --runtime --require-real --compare data/eval/baseline.json --fail-on-regression --report reports/real-eval-release.json
 ```
 
-`--model-probe` is a provider-connectivity diagnostic only. It does not run
-CareerCrew's product runtime and is never valid with `--require-real`.
-With `--require-real`, the runner also requires a protected provisioning
-authority receipt matching the dedicated user, run ID, nonce, and a future
-expiry; the local `provisioned` string is only a structural guard.
+真实模型评测（`--real`/`--runtime`/`--require-real`/`--model-probe`）需要受保护
+评测租户的外部 attestation 与可证明的独占写入租约，2026-09-16 决策后已从仓库移除；
+runner 只保留离线 fixture 回归，不再接受这些参数。
 
 Do not edit this dataset to make a failing run pass. Dataset or baseline changes
 require human review, a new documented version, and an intentional baseline
 update. Offline fixtures describe the recorded observation for this exact
-dataset; real-model reports are observations, not approval to alter either
-artifact.
+dataset.
 
 Promoted bad-case JSONL supplied through `--bad-cases` also accepts legacy
 `id`. Its `rubric` must contain a non-empty `must_include` and/or

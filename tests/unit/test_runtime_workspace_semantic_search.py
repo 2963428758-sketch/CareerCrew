@@ -41,7 +41,8 @@ def test_runtime_reuses_workspace_semantic_search_instance() -> None:
             collections={"conversation_messages": "workspace-message-test"},
         ),
     )
-    loader = lambda _owner_id: []
+    def loader(_owner_id):
+        return []
 
     first = runtime._ensure_workspace_semantic_search(message_loader=loader)
     second = runtime._ensure_workspace_semantic_search(message_loader=loader)

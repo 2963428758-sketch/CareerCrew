@@ -76,8 +76,12 @@ Run: `npm run test -- --run`
 - Modify: `.github/workflows/ci.yml` only if the existing manual release job needs a documented invocation.
 
 **Interfaces:**
-- `python scripts/release_acceptance.py --help` documents `--target production`, `--database-url`, `--qdrant-url`, `--backup-dir`, `--qdrant-container`, and `--run-real-eval`.
-- `--target production` requires `CAREERCREW_RELEASE_TARGET=production` and refuses the protected database name when the operator has not explicitly supplied a production target marker.
+
+> 以下为 2026-09-11 的原始接口约定；生产 target 与真实模型评测已于 2026-09-16
+> 按决策移除，当前 `--help` 只包含本地预演参数（见文末《scope decision》）。
+
+- `python scripts/release_acceptance.py --help` documents `--target production`, `--database-url`, `--qdrant-url`, `--backup-dir`, `--qdrant-container`, and `--run-real-eval`. （已废弃）
+- `--target production` requires `CAREERCREW_RELEASE_TARGET=production` and refuses the protected database name when the operator has not explicitly supplied a production target marker. （已废弃）
 - The command runs static migration validation, reads the live Alembic head, validates Qdrant health/required collections, runs ownership dry-run, verifies the supplied backup, runs an isolated restore drill, and optionally invokes `eval_runner.py --real --require-real --fail-on-regression`.
 - A missing target, backup, Qdrant collection, or real-model credential returns nonzero and writes only redacted machine-readable evidence.
 
@@ -192,3 +196,21 @@ Run: `npm run test -- --run`
 - Backend full suite after the fixes: 1375 passed, 0 failed, 1 skipped, with the
   dev database unchanged afterwards (`memory_records=28`, `mm=2`,
   `episodic_v2=24`).
+
+### 2026-09-16 scope decision: production acceptance and real-model eval removed
+
+- The production acceptance path and the protected real-model evaluation were
+  removed from the repository by decision: both require infrastructure this
+  project does not have (a real production target, backup media and
+  reindex/cutover evidence verified by a third-party authority; a protected
+  eval tenant attestation plus a provable exclusive writer lease).
+- Removed: `--target production`, `CAREERCREW_RELEASE_TARGET`,
+  `CAREERCREW_RELEASE_EVIDENCE_VERIFIER_*`, backup-media/reindex evidence
+  validation, `--run-real-eval`, the runtime evaluation session with tenant
+  attestation and its fail-closed isolation error, `scripts/deployment_identity.py`,
+  the `release-real-eval` and `production-release-acceptance` CI jobs, and the
+  matching environment variables in `.env.example`.
+- Kept and still verified: the loopback-only local rehearsal runner
+  (`migration_static`, `migration_live`, `qdrant_health`, `qdrant_ownership`,
+  `backup_verify`, `restore_drill`) and the offline evaluation gate
+  (`eval_runner.py --offline`).

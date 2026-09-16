@@ -30,7 +30,7 @@ def _center(rt: CareerCrewRuntime) -> ToolOperationsCenter:
     center = getattr(rt, "tool_operations_center", None)
     if center is None:
         center = ToolOperationsCenter(store, settings)
-        setattr(rt, "tool_operations_center", center)
+        rt.tool_operations_center = center
     return center
 
 

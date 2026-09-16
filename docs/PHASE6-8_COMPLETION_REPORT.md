@@ -78,11 +78,15 @@ Docker 备份演练；该演练已单独运行并通过。
 
 ## 五、仍未完成（门禁保持未通过）
 
-1. 生产环境迁移/重索引/备份介质/恢复演练：需要真实生产目标标记、备份介质证据、
-   重索引与 canary/cutover 证据以及外部证据验证服务，本地无法替代。
-2. 受保护真实模型评测：需要 `eval_` 专用租户的外部 attestation；且 runtime 目前
-   缺少独占写入租约，无法证明清理后没有在途 worker 重新写入，评测按 fail-closed
-   拒绝启动，不以"跳过"记为通过。
+1. 生产环境迁移/重索引/备份介质/恢复演练：**已按决策移除**。它需要真实生产目标、
+   备份介质证据、重索引与 canary/cutover 证据以及外部证据验证服务，本项目当前
+   无法提供；相关代码（production target、evidence verifier、介质/重索引回执）
+   已删除，`release_acceptance.py` 只保留回环地址的本地预演。
+2. 受保护真实模型评测：**已按决策移除**。它需要 `eval_` 专用租户的外部
+   attestation 与可证明的独占写入租约（证明清理后没有在途 worker 重新写入向量），
+   两者当前都无法实现；相关代码（runtime 评测会话、attestation 校验、
+   `--real/--runtime/--require-real/--model-probe`、`scripts/deployment_identity.py`）
+   已删除，评测只保留离线 fixture 回归。
 3. CI lint 仍有 25 项既有错误（13 个文件，均为 main 上存量：`E402`/`F841`/`E731`
    等），与本次改动无关；CI 的 lint job 在合并前需要单独清理。
 4. 知识库/工作台的账号删除尚未覆盖全部业务表；本次只补齐长期记忆与向量副本，

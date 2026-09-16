@@ -10,7 +10,6 @@ def career_api(client, monkeypatch):
     import careercrew_api.routers.preparation as prep_router
     from careercrew_core.career.store import CareerStore
     from careercrew_core.preparation.store import PreparationStore
-
     from tests.preparation_fakes import SqliteCareerPool
 
     pool = SqliteCareerPool()
@@ -204,7 +203,7 @@ def test_reminders_and_ics(career_api):
     client.put(f"/api/career/board/{oid}", json={
         "stage": "已投递", "next_action": "跟进 HR", "next_action_date": today})
     # HR 待办
-    followup = client.post("/api/career/followups", json={
+    client.post("/api/career/followups", json={
         "company": "测试公司", "content": "沟通", "todo_note": "确认时间"}).json()
 
     items = client.get("/api/career/reminders").json()["items"]
@@ -407,7 +406,6 @@ def test_applied_version_attribution(career_api):
 
 def test_contact_reminders_and_ics(career_api):
     """联系人提醒联动：下次联系时间进入提醒与 ICS。"""
-    import time as time_mod
 
     client, _, _ = career_api
     client.post("/api/career/contacts", json={

@@ -39,14 +39,13 @@ from careercrew_api.schemas import (
     ScoreResponse,
 )
 from careercrew_api.sse import (
-    CancellationEvent,
     done_event,
     error_event,
     friendly_error,
+    register_stream_cancellation,
     stage_event,
     stream_agent,
     turn_done_fields,
-    register_stream_cancellation,
     unregister_stream_cancellation,
 )
 

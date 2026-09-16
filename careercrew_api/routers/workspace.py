@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 from careercrew_api.auth.dependencies import CurrentUser
 from careercrew_api.deps import get_runtime_dep
 from careercrew_api.runtime import CareerCrewRuntime
-from careercrew_core.workspace.traceability import WorkspaceTraceability
 from careercrew_core.workspace.consultation import ConsultationWorkspace
 from careercrew_core.workspace.resume import ResumeWorkspace
+from careercrew_core.workspace.traceability import WorkspaceTraceability
 
 router = APIRouter()
 
@@ -91,7 +91,7 @@ def _workspace(rt: CareerCrewRuntime) -> WorkspaceTraceability:
     service = getattr(rt, "workspace_traceability", None)
     if service is None:
         service = WorkspaceTraceability(store)
-        setattr(rt, "workspace_traceability", service)
+        rt.workspace_traceability = service
     return service
 
 
@@ -103,7 +103,7 @@ def _consultation(rt: CareerCrewRuntime) -> ConsultationWorkspace:
     service = getattr(rt, "consultation_workspace", None)
     if service is None:
         service = ConsultationWorkspace(store)
-        setattr(rt, "consultation_workspace", service)
+        rt.consultation_workspace = service
     return service
 
 
@@ -115,7 +115,7 @@ def _resume_workspace(rt: CareerCrewRuntime) -> ResumeWorkspace:
     service = getattr(rt, "resume_workspace", None)
     if service is None:
         service = ResumeWorkspace(store)
-        setattr(rt, "resume_workspace", service)
+        rt.resume_workspace = service
     return service
 
 

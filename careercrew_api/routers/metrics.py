@@ -7,8 +7,8 @@ import os
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 
-from careercrew_core.state.settings import load_auth_settings
 from careercrew_core.observability.metrics import get_metrics_registry
+from careercrew_core.state.settings import load_auth_settings
 
 router = APIRouter()
 

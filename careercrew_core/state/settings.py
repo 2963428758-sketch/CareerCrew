@@ -452,13 +452,10 @@ def validate_settings(settings: Settings) -> None:
 def load_settings(path: str | Path | None = None) -> Settings:
     """加载并校验配置。fail-fast：文件缺失 / 字段缺失 / 语义非法均抛 SettingsError。
 
-    开发环境中项目根 .env 是本地配置的权威来源；生产环境与受保护评测
-    保留进程注入的值，避免工作区 .env 覆盖真实目标端点或密钥。
+    开发环境中项目根 .env 是本地配置的权威来源；生产环境保留进程注入的
+    值，避免工作区 .env 覆盖真实目标端点或密钥。
     """
-    protected_env = (
-        os.environ.get("CAREERCREW_ENV", "").strip().lower() == "production"
-        or os.environ.get("CAREERCREW_EVAL_RUNTIME", "").strip() == "1"
-    )
+    protected_env = os.environ.get("CAREERCREW_ENV", "").strip().lower() == "production"
     load_dotenv(override=not protected_env)  # .env 仅作为开发环境便捷注入
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
@@ -486,11 +483,8 @@ def load_auth_settings(path: str | Path | None = None) -> AuthSettings:
     LLM、向量库等所有配置在 import 时可用。环境变量 CAREERCREW_ENV 明确覆盖
     YAML 的 auth.environment，方便生产部署与隔离测试。
     """
-    protected_env = (
-        os.environ.get("CAREERCREW_ENV", "").strip().lower() == "production"
-        or os.environ.get("CAREERCREW_EVAL_RUNTIME", "").strip() == "1"
-    )
-    load_dotenv(override=not protected_env)  # 生产/受保护评测不得被工作区 .env 覆盖
+    protected_env = os.environ.get("CAREERCREW_ENV", "").strip().lower() == "production"
+    load_dotenv(override=not protected_env)  # 生产不得被工作区 .env 覆盖
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not config_path.exists():
         raise SettingsError(f"配置文件不存在: {config_path}")

@@ -9,9 +9,9 @@ import argparse
 import json
 import sys
 
-from careercrew_core.state.settings import load_settings
 from careercrew_core.memory import create_memory_db
 from careercrew_core.memory.records import LongTermMemoryRepository, build_legacy_backfill
+from careercrew_core.state.settings import load_settings
 
 
 def main(argv: list[str] | None = None) -> int:

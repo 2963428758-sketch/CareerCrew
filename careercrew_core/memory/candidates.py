@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 _GENERIC_PATTERNS = (
     re.compile(r"(?:是什么|怎么用|如何|教程|原理|天气|新闻|价格|股价|翻译)"),
     re.compile(r"(?:忽略.*指令|system prompt|提示词|密码|token|密钥)", re.I),

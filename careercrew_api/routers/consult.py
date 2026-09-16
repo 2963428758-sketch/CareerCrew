@@ -26,7 +26,6 @@ from careercrew_api.runtime import CareerCrewRuntime, RuntimeInitError
 from careercrew_api.schemas import ConsultRequest
 from careercrew_api.sse import (
     STREAM_IDLE_TIMEOUT_SECONDS,
-    CancellationEvent,
     StreamCancelled,
     friendly_error,
     put_guaranteed,

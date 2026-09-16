@@ -251,11 +251,16 @@ def consolidate(current_user: CurrentUser, force: bool = Query(False),
 
 # Keep the new governance paths alongside the existing data routes so the
 # application registration in main.py remains stable while Phase 5 is dirty.
-from careercrew_api.routers.memory_governance import router as memory_governance_router
-from careercrew_api.routers.knowledge_governance import router as knowledge_governance_router
-from careercrew_api.routers.usage import router as usage_router
-from careercrew_api.routers.workspace import router as workspace_router
-from careercrew_api.routers.tools import router as tools_router
+# 这组注册保持“就地”位置（见上），因此显式豁免 E402。
+from careercrew_api.routers.knowledge_governance import (  # noqa: E402
+    router as knowledge_governance_router,
+)
+from careercrew_api.routers.memory_governance import (  # noqa: E402
+    router as memory_governance_router,
+)
+from careercrew_api.routers.tools import router as tools_router  # noqa: E402
+from careercrew_api.routers.usage import router as usage_router  # noqa: E402
+from careercrew_api.routers.workspace import router as workspace_router  # noqa: E402
 
 router.include_router(memory_governance_router)
 router.include_router(knowledge_governance_router)

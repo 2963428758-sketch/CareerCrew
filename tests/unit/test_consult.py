@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from careercrew_core.supervisor.consult import _synthesize, build_consult_graph, consult, opinion_fallback
+from careercrew_core.supervisor.consult import (
+    _synthesize,
+    build_consult_graph,
+    consult,
+    opinion_fallback,
+)
 
 
 class FakeAgent:

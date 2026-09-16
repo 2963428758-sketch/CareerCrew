@@ -1,10 +1,8 @@
 """Safe tool registry operations, policy overrides, and redacted observability."""
 from __future__ import annotations
 
-import json
 import threading
 from datetime import datetime
-from typing import Any
 
 from careercrew_core.conversation.store import ConversationStore
 from careercrew_core.conversation.uuid7 import uuid7

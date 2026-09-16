@@ -15,7 +15,6 @@ from typing import Any, Literal
 
 from careercrew_core.memory.records import LongTermMemoryRepository, canonical_hash, now_iso
 
-
 MemoryAction = Literal["confirm", "edit", "ignore", "expire"]
 _ACTIONS = frozenset({"confirm", "edit", "ignore", "expire"})
 _ACTIVE_STATUS = "active"
