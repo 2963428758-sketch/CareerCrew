@@ -14,7 +14,7 @@ async (page) => {
   ];
   const out = [];
   for (const c of cases) {
-    await page.goto('http://127.0.0.1:5175/');
+    await page.goto('http://127.0.0.1:5176/');
     await page.waitForTimeout(500);
     const newButton = page.locator('main').getByRole('button', { name: '新对话' });
     if (await newButton.count()) await newButton.first().click();

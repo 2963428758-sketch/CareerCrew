@@ -153,12 +153,12 @@ uvicorn careercrew_api.main:app --reload --port 8000
 ```
 
 ```bash
-# 前端开发模式（端口固定 5175，/api 代理到 8000）
+# 前端开发模式（端口固定 5176，/api 代理到 8000）
 cd careercrew_web
 npm run dev
 ```
 
-打开 <http://localhost:5175>，首次使用在登录页创建初始管理员（仅 development 环境可用，对应 `POST /api/auth/bootstrap`）。
+打开 <http://localhost:5176>，首次使用在登录页创建初始管理员（仅 development 环境可用，对应 `POST /api/auth/bootstrap`）。
 
 **生产模式**：前端构建后由后端单端口托管：
 
@@ -190,7 +190,7 @@ uvicorn careercrew_api.main:app --port 8000   # 检测到 dist/ 即自动托管 
 
 | 服务 | 地址 |
 |------|------|
-| Frontend（开发模式） | <http://localhost:5175> |
+| Frontend（开发模式） | <http://localhost:5176> |
 | Backend / API（同时托管前端生产构建） | <http://localhost:8000> |
 | Swagger UI | <http://localhost:8000/docs> |
 | ReDoc | <http://localhost:8000/redoc> |
@@ -276,7 +276,7 @@ python scripts/eval_runner.py --offline --compare data/eval/baseline.json --fail
 
 | 现象 | 原因与处理 |
 |------|-----------|
-| 前端启动报端口占用退出 | Vite 配置了 `strictPort: true`（5175 固定），释放端口或改 `vite.config.ts`（注意同步 `auth.trusted_origins`） |
+| 前端启动报端口占用退出 | Vite 配置了 `strictPort: true`（5176 固定），释放端口或改 `vite.config.ts`（注意同步 `auth.trusted_origins`） |
 | 后端启动即抛 `SettingsError` | `.env` 缺少必填变量（`DASHSCOPE_API_KEY` / `DATABASE_URL`），或 `config/settings.yaml` 字段非法 |
 | 接口返回 503「AI 服务暂不可用」 | Qdrant / Postgres 未启动，或重组件初始化失败；确认两个容器在跑后重试 |
 | 首个请求卡住 10–30 秒 | 正常现象：embedding 等重组件按需惰性加载 |
