@@ -432,7 +432,22 @@ class LongTermMemoryRepository:
         tenant = str(user_id or "").strip()
         if not _EVAL_USER_PATTERN.fullmatch(tenant):
             raise ValueError("cleanup_eval_tenant 只允许 eval_ 专用租户")
+        return self._purge_user_memory(tenant)
 
+    def delete_all_for_user(self, user_id: str) -> dict[str, int]:
+        """账号删除：清理该用户的长期记忆、来源、关系、队列与追踪。
+
+        治理审计不可变（``memory_record_events`` 带 append-only 触发器），因此
+        该用户已有治理事件时只把记录标为 deleted 并保留审计链，否则物理删除。
+        调用方负责先清理 Qdrant 向量点，避免数据库真相与向量副本出现可检索残留。
+        """
+        tenant = str(user_id or "").strip()
+        if not tenant:
+            raise ValueError("user_id is required")
+        return self._purge_user_memory(tenant)
+
+    def _purge_user_memory(self, tenant: str) -> dict[str, int]:
+        """按租户清理长期记忆；治理审计 append-only，因此有事件时只软删记录。"""
         if self._fake:
             state = self._fake_state()
             record_ids = {

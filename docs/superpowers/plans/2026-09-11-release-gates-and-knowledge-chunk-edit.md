@@ -167,3 +167,28 @@ Run: `npm run test -- --run`
   evidence and the external evidence verifier, plus the protected real-model
   evaluation tenant. No production credentials, media or model runs were used
   in this session.
+
+### 2026-09-16 late: local acceptance green
+
+- Local release acceptance now reports `rehearsal_passed` with every local check
+  green, including the isolated restore drill (restored PostgreSQL verified
+  against schema invariants and cross-table canaries, 92 archived files
+  re-verified by SHA-256, temporary database cleaned):
+  `data/reports/local-release-acceptance-20260916.json`.
+- `pg_dump`/`pg_restore` fall back to the configured PostgreSQL container when
+  the host has no client binaries, mirroring the existing Qdrant fallback; argv
+  never carries a password. Unit-tested with injected runners.
+- Account deletion now purges long-term memory rows plus episodic/knowledge/
+  workspace vector copies, aborting the deletion on failure so it can be
+  retried. Governance audit remains append-only: tenants with
+  `memory_record_events` are soft-deleted instead of physically removed.
+- Incident and recovery (local dev database): the auth API tests resolved the
+  real global runtime, so the delete-user endpoint actually cleaned the
+  developer's own account. 28 `memory_records` rows and 2 knowledge vectors were
+  lost, then restored from the same-day backup (targeted row backfill plus
+  Qdrant snapshot upload). The test module now injects a fake runtime
+  (autouse), and a sentinel row plus Qdrant delete counts confirm the suite no
+  longer touches real data. See `docs/PHASE6-8_COMPLETION_REPORT.md`.
+- Backend full suite after the fixes: 1375 passed, 0 failed, 1 skipped, with the
+  dev database unchanged afterwards (`memory_records=28`, `mm=2`,
+  `episodic_v2=24`).

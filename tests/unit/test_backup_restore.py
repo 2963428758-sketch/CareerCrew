@@ -23,6 +23,57 @@ def test_backup_defaults_cover_conversation_message_vectors() -> None:
     assert "careercrew_workspace_messages" in backup_restore.DEFAULT_COLLECTIONS
 
 
+def test_pg_dump_falls_back_to_container_without_client_binary(tmp_path: Path, monkeypatch) -> None:
+    """主机缺少 pg_dump 时回退到容器内执行，argv 不携带密码。"""
+    calls: list[tuple[list[str], dict]] = []
+
+    def _fake_run(command, **kwargs):
+        calls.append((list(command), dict(kwargs)))
+        stream = kwargs.get("stdout")
+        if stream is not None:
+            stream.write(b"container dump")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backup_restore.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(backup_restore, "resolve_pg_container", lambda explicit=None: "postgres")
+    monkeypatch.setattr(backup_restore.subprocess, "run", _fake_run)
+
+    output = tmp_path / "postgres.dump"
+    config = backup_restore.parse_database_url("postgresql://backup:secret@localhost:5432/demo")
+    backup_restore.run_pg_dump(config, output)
+
+    command = calls[0][0]
+    assert command[:4] == ["docker", "exec", "postgres", "pg_dump"]
+    assert "--dbname" in command and "demo" in command
+    assert not any("secret" in str(part) for part in command)
+    assert output.read_bytes() == b"container dump"
+
+
+def test_pg_restore_falls_back_to_container_without_client_binary(tmp_path: Path, monkeypatch) -> None:
+    """主机缺少 pg_restore 时把 dump 通过 stdin 送进容器执行。"""
+    calls: list[tuple[list[str], dict]] = []
+    dump_path = tmp_path / "postgres.dump"
+    dump_path.write_bytes(b"container dump")
+
+    def _fake_run(command, **kwargs):
+        calls.append((list(command), dict(kwargs)))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backup_restore.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(backup_restore, "resolve_pg_container", lambda explicit=None: "postgres")
+    monkeypatch.setattr(backup_restore.subprocess, "run", _fake_run)
+
+    config = backup_restore.parse_database_url("postgresql://backup:secret@localhost:5432/demo")
+    backup_restore.restore_postgres_dump(dump_path, "careercrew_restore_unit", config)
+
+    command, kwargs = calls[0]
+    assert command[:5] == ["docker", "exec", "-i", "postgres", "pg_restore"]
+    assert "--exit-on-error" in command
+    assert "careercrew_restore_unit" in command
+    assert not any("secret" in str(part) for part in command)
+    assert kwargs["stdin"] is not None
+
+
 def test_qdrant_snapshots_skip_uncreated_optional_workspace_collection(tmp_path: Path, monkeypatch) -> None:
     class _MissingResponse:
         status_code = 404

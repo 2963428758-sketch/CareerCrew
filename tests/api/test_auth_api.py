@@ -442,3 +442,119 @@ def test_delete_user_purges_local_avatar_files(auth_client, tmp_path, monkeypatc
     resp = auth_client.delete(f"/api/auth/users/{painted_id}", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     assert not user_dir.exists()
+
+
+def _runtime_with_recording_stores(calls: dict[str, list]) -> object:
+    """构造只记录调用的假运行时，用于断言账号删除的数据清理边界。"""
+
+    class _VectorStore:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def delete_by_metadata(self, filters):
+            calls["vectors"].append((self._name, dict(filters)))
+            return 3
+
+        def metadata_exists(self, filters):
+            return False
+
+    class _Records:
+        def delete_all_for_user(self, user_id):
+            calls["records"].append(user_id)
+            return {"records_deleted": 2}
+
+    class _MemoryService:
+        records = _Records()
+        _vector_store = _VectorStore("episodic")
+
+    class _Runtime:
+        conversation_store = None
+        memory_db = None
+        attachment_store = None
+        memory_service = _MemoryService()
+        store = _VectorStore("knowledge")
+        _workspace_semantic_search = None
+        settings = None
+
+        def _ensure_heavy(self) -> None:
+            return None
+
+    return _Runtime()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_account_deletion_runtime(monkeypatch):
+    """删号接口会解析全局 runtime：测试必须注入假运行时。
+
+    否则 DELETE /api/auth/users/{id} 会走真实重组件，把开发库里的真实
+    会话/记忆/向量清理掉（历史上确实发生过）。
+    """
+    from careercrew_api.routers import auth as auth_router
+
+    calls: dict[str, list] = {"vectors": [], "records": []}
+    monkeypatch.setattr(
+        auth_router, "get_runtime", lambda: _runtime_with_recording_stores(calls)
+    )
+
+
+@pytest.mark.web
+def test_delete_user_purges_long_term_memory_and_vectors(auth_client, monkeypatch):
+    """删除账号时同时清空长期记忆行与向量副本，避免孤儿数据留在检索库。"""
+    from careercrew_api.routers import auth as auth_router
+
+    calls: dict[str, list] = {"vectors": [], "records": []}
+    monkeypatch.setattr(auth_router, "get_runtime", lambda: _runtime_with_recording_stores(calls))
+
+    _bootstrap(auth_client)
+    admin_token = auth_client.post(
+        "/api/auth/token", json={"username": "admin", "password": PASSWORD}
+    ).json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    created = auth_client.post(
+        "/api/auth/users",
+        json={"username": "purge-me", "password": USER_PASSWORD},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    doomed_id = created.json()["id"]
+
+    resp = auth_client.delete(f"/api/auth/users/{doomed_id}", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    assert calls["records"] == [doomed_id]
+    assert ("episodic", {"user_id": doomed_id}) in calls["vectors"]
+    assert ("knowledge", {"owner_user_id": doomed_id}) in calls["vectors"]
+    assert ("knowledge", {"__access_user": doomed_id}) in calls["vectors"]
+
+
+@pytest.mark.web
+def test_delete_user_aborts_when_vector_purge_fails(auth_client, monkeypatch):
+    """向量清理失败时中止账号删除，保留账号供重试，避免留下不可检索的孤儿数据。"""
+    from careercrew_api.routers import auth as auth_router
+
+    runtime = _runtime_with_recording_stores({"vectors": [], "records": []})
+
+    def _explode(filters):
+        raise RuntimeError("vector backend unavailable")
+
+    runtime.memory_service._vector_store.delete_by_metadata = _explode
+    monkeypatch.setattr(auth_router, "get_runtime", lambda: runtime)
+
+    _bootstrap(auth_client)
+    admin_token = auth_client.post(
+        "/api/auth/token", json={"username": "admin", "password": PASSWORD}
+    ).json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    created = auth_client.post(
+        "/api/auth/users",
+        json={"username": "keep-me", "password": USER_PASSWORD},
+        headers=admin_headers,
+    )
+    kept_id = created.json()["id"]
+
+    resp = auth_client.delete(f"/api/auth/users/{kept_id}", headers=admin_headers)
+    assert resp.status_code == 500
+    names = [
+        item["username"]
+        for item in auth_client.get("/api/auth/users", headers=admin_headers).json()["items"]
+    ]
+    assert "keep-me" in names

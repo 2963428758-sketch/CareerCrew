@@ -164,6 +164,38 @@ def _compact_error(value: str) -> str:
 
 def run_pg_dump(config: DatabaseConfig, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("pg_dump") is None:
+        # 主机没有 PostgreSQL 客户端时回退到 Docker 容器内的 pg_dump（与 Qdrant
+        # 快照回退一致）。容器内走本地 socket 认证，因此 argv 不携带密码。
+        container = resolve_pg_container(os.getenv("CAREERCREW_PG_CONTAINER"))
+        with output_path.open("wb") as stream:
+            process = subprocess.run(  # noqa: S603 -- argv is built from parsed non-secret fields
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "pg_dump",
+                    "--format=custom",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--username",
+                    config.user,
+                    "--dbname",
+                    config.database,
+                ],
+                cwd=ROOT,
+                stdout=stream,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        if process.returncode != 0:
+            raise BackupValidationError(
+                f"pg_dump failed: {_compact_error(process.stderr or '')}"
+            )
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise BackupValidationError("pg_dump did not create a non-empty dump")
+        return
     process = subprocess.run(  # noqa: S603 -- argv is built from parsed non-secret fields
         pg_dump_command(config, output_path),
         cwd=ROOT,
@@ -737,6 +769,39 @@ def restore_postgres_dump(
     dump_path = Path(dump_path).expanduser().resolve()
     if not dump_path.is_file():
         raise BackupValidationError("PostgreSQL dump does not exist")
+    if runner is None and shutil.which("pg_restore") is None:
+        # 主机没有 PostgreSQL 客户端时回退到容器内 pg_restore，从 stdin 读取 dump
+        # （与 Qdrant 快照回退一致）。容器内走本地 socket，argv 不带密码。
+        container = resolve_pg_container(os.getenv("CAREERCREW_PG_CONTAINER"))
+        with dump_path.open("rb") as stream:
+            process = subprocess.run(  # noqa: S603 -- argv is built from parsed non-secret fields
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    container,
+                    "pg_restore",
+                    "--exit-on-error",
+                    "--clean",
+                    "--if-exists",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--username",
+                    config.user,
+                    "--dbname",
+                    target_database,
+                ],
+                cwd=ROOT,
+                stdin=stream,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        if process.returncode != 0:
+            raise BackupValidationError(
+                f"pg_restore failed: {_compact_error(process.stderr or process.stdout or '')}"
+            )
+        return
     command = pg_restore_command(config, target_database, dump_path)
     process_runner = runner or subprocess.run
     process = process_runner(
@@ -821,6 +886,63 @@ def resolve_qdrant_container(explicit: str | None = None) -> str:
         if legacy_target:
             return _validate_docker_target(legacy_target)
     raise BackupValidationError("Qdrant container could not be resolved")
+
+
+def resolve_pg_container(explicit: str | None = None) -> str:
+    """Resolve a running PostgreSQL container for hosts without client binaries."""
+
+    requested = _validate_docker_target(explicit) if explicit and explicit.strip() else None
+    if requested:
+        try:
+            inspect_process = subprocess.run(  # noqa: S603 -- explicit validated docker target
+                ["docker", "inspect", "--format", "{{.Id}}|{{.State.Running}}", requested],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            inspect_process = None
+        if inspect_process is not None and inspect_process.returncode == 0:
+            inspected = inspect_process.stdout.strip().split("|", 1)
+            if len(inspected) == 2 and inspected[0] and inspected[1].lower() == "true":
+                return requested
+        raise BackupValidationError("PostgreSQL container could not be resolved")
+
+    try:
+        compose_process = subprocess.run(  # noqa: S603 -- fixed docker compose argv
+            ["docker", "compose", "ps", "-q", "postgres"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        compose_process = None
+    if compose_process is not None and compose_process.returncode == 0:
+        compose_target = next(
+            (line.strip() for line in compose_process.stdout.splitlines() if line.strip()), ""
+        )
+        if compose_target:
+            return _validate_docker_target(compose_target)
+
+    try:
+        legacy_process = subprocess.run(  # noqa: S603 -- fixed exact-name compatibility fallback
+            ["docker", "ps", "--filter", "name=^postgres$", "--format", "{{.ID}}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        legacy_process = None
+    if legacy_process is not None and legacy_process.returncode == 0:
+        legacy_target = next(
+            (line.strip() for line in legacy_process.stdout.splitlines() if line.strip()), ""
+        )
+        if legacy_target:
+            return _validate_docker_target(legacy_target)
+    raise BackupValidationError("PostgreSQL container could not be resolved")
 
 
 @contextmanager

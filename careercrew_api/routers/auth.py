@@ -372,6 +372,61 @@ def reset_password(
     return {"ok": True}
 
 
+def _workspace_vector_store(rt) -> object | None:
+    """返回工作区消息向量集合的客户端；不触发 embedding 模型加载。"""
+    existing = getattr(
+        getattr(rt, "_workspace_semantic_search", None), "_vector_store", None
+    )
+    if existing is not None:
+        return existing
+    settings = getattr(rt, "settings", None)
+    vector_cfg = getattr(settings, "vector_store", None)
+    if vector_cfg is None or getattr(vector_cfg, "backend", "") != "qdrant":
+        return None
+    from careercrew_ai.vector_store.qdrant_store import QdrantStore
+
+    collection = (getattr(vector_cfg, "collections", {}) or {}).get(
+        "conversation_messages", "careercrew_workspace_messages"
+    )
+    return QdrantStore(settings, collection_name=collection)
+
+
+def _purge_user_vectors(rt, user_id: str) -> dict[str, int]:
+    """账号删除：按元数据清空该用户在全部向量集合中的副本，绝不触碰他人数据。"""
+    memory_service = getattr(rt, "memory_service", None)
+    targets: list[tuple[str, object | None, dict[str, str]]] = [
+        ("episodic_memory", getattr(memory_service, "_vector_store", None), {"user_id": user_id}),
+    ]
+    knowledge_store = getattr(rt, "store", None)
+    if knowledge_store is not None:
+        targets.append(("knowledge_owner", knowledge_store, {"owner_user_id": user_id}))
+        targets.append(("knowledge_legacy_access", knowledge_store, {"__access_user": user_id}))
+    targets.append(("workspace_messages", _workspace_vector_store(rt), {"owner_user_id": user_id}))
+
+    deleted: dict[str, int] = {}
+    for label, store, filters in targets:
+        if store is None:
+            continue
+        deleter = getattr(store, "delete_by_metadata", None)
+        if not callable(deleter):
+            raise RuntimeError(f"向量存储 {label} 不支持按元数据删除")
+        deleted[label] = int(deleter(filters) or 0)
+        checker = getattr(store, "metadata_exists", None)
+        if callable(checker) and checker(filters):
+            raise RuntimeError(f"向量存储 {label} 仍残留该用户数据")
+    return deleted
+
+
+def _purge_long_term_memory(rt, user_id: str) -> dict[str, int]:
+    """账号删除：清空该用户的长期记忆行（新 memory_records 模型）。"""
+    records = getattr(getattr(rt, "memory_service", None), "records", None)
+    purge = getattr(records, "delete_all_for_user", None)
+    if not callable(purge):
+        return {}
+    result = purge(user_id)
+    return dict(result) if isinstance(result, dict) else {}
+
+
 @router.delete("/users/{user_id}")
 def delete_user(
     user_id: str,
@@ -397,6 +452,10 @@ def delete_user(
                 rt.memory_db.delete_all_for_user(user_id)
             if rt.attachment_store is not None:
                 storage_keys = rt.attachment_store.delete_all_for_user(user_id)
+            # 向量副本与长期记忆行必须一起清理：只删数据库行会留下可检索的孤儿向量。
+            # 失败时上抛 500 中止账号删除，账号保留可重试（调用本方法幂等）。
+            _purge_user_vectors(rt, user_id)
+            _purge_long_term_memory(rt, user_id)
         except Exception as err:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
