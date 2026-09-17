@@ -42,9 +42,6 @@ export default function CareerCenterPage() {
     <div className="flex h-full flex-col">
       <header className="border-b border-[var(--border-soft)] px-4 py-3 md:px-6">
         <div className="flex items-center gap-2.5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-button-ink text-on-ink">
-            <Compass className="h-4 w-4" />
-          </span>
           <div>
             <h1 className="text-[15px] font-[600] text-ink">求职中心</h1>
             <p className="text-[11.5px] text-ink-faint">看板 · 行动 · 素材 · 跟进 · 复盘 · 统计</p>

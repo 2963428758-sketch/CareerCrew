@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { ArrowLeft, Briefcase, Plus, RefreshCw } from "lucide-react"
+import { ArrowLeft, Plus, RefreshCw } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -158,9 +158,6 @@ export default function PreparationPage() {
               <ArrowLeft className="h-4 w-4" />
             </Button>
           )}
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-button-ink text-on-ink">
-            <Briefcase className="h-4 w-4" />
-          </span>
           <div>
             <h1 className="text-[15px] font-[600] text-ink">岗位准备</h1>
             <p className="text-[11.5px] text-ink-faint">收藏目标岗位，关联简历版本，一键带入简历定制与模拟面试</p>
